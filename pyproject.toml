@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+requires-python = ">=3.13"
+name = "odin"
+version = "0.0.1"
+description = "MBTA Fare Data Repository Engine"
+authors = [
+    {name = "Ryan Rymarczk", email = "rymarczy@gmail.com"},
+]
+
+dependencies = [
+    "boto3",
+    "polars",
+    "psutil",
+    "pyarrow",
+]
+optional-dependencies.dev = [
+    "ipykernel",
+    "mypy",
+    "pyarrow-stubs",
+    "pytest",
+    "ruff",
+    "types-psutil",
+]
+
+[project.scripts]
+start-odin = "odin.run:start"
+
+[tool.pip-tools]
+generate-hashes = true
+
+[tool.mypy]
+ignore_missing_imports = true
+python_version = 3.13
+
+[tool.ruff]
+line-length = 100
+indent-width = 4
+target-version = "py313"
+exclude = [
+    ".egg-info",
+    ".git",
+    ".git-rewrite",
+    ".ipynb",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".venv",
+    ".vscode",
+    "__pypackages__",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint]
+select = ["D","E","F","N","W"]
+ignore = [
+    "D100", # Missing docstring in public module
+    "D203", # conflicts with (D211) `no-blank-line-before-class` 
+    "D212", # conflicts with (D213) `multi-line-summary-second-line` 
+    "D400", # First line should end with a period
+    "D415", # First line should end with a period, question mark, or exclamation point
+]
