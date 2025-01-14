@@ -27,7 +27,7 @@ def get_client() -> BaseClient:
 
 def split_object(object: str) -> Tuple[str, str]:
     """
-    Split s3 object as "s3://bucket/object_key" into Tuple[bucket, key].
+    Split S3 object as "s3://bucket/object_key" into Tuple[bucket, key].
 
     :param object: s3 object as "s3://bucket/object_key" or "bucket/object_key"
 
@@ -39,16 +39,14 @@ def split_object(object: str) -> Tuple[str, str]:
 
 
 def list_objects(
-    bucket: str,
-    prefix: str,
+    partition: str,
     max_objects: int = 1_000_000,
     in_filter: Optional[str] = None,
 ) -> List[str]:
     """
-    Get list of S3 objects in 'bucket' starting with 'prefix'
+    Get list of S3 objects starting with 'partition'.
 
-    :param bucket: the name of the bucket with objects
-    :param prefix: prefix for objs to return
+    :param partition: S3 partition as "s3://bucket/prefix" or "bucket/prefix"
     :param max_objects: maximum number of objects to return
     :param in_filter: will filter for objects containing string
 
@@ -56,11 +54,11 @@ def list_objects(
     """
     logger = ProcessLog(
         "list_objects",
-        bucket=bucket,
-        prefix=prefix,
+        partition=partition,
         max_objects=max_objects,
         in_filter=in_filter,
     )
+    bucket, prefix = split_object(partition)
     try:
         client = get_client()
         paginator = client.get_paginator("list_objects_v2")
@@ -111,7 +109,7 @@ def object_exists(object: str) -> bool:
 
 def upload_file(file_name: str, object: str, extra_args: Optional[Dict] = None) -> bool:
     """
-    Upload a local file to an S3 Bucket
+    Upload a local file to S3 as an object.
 
     :param file_name: local file path to upload
     :param object: S3 object path as 's3://bucket/object' or 'bucket/object'
@@ -173,9 +171,9 @@ def download_object(object: str, local_path: str) -> bool:
         return False
 
 
-def get_object(object: str) -> StreamingBody:
+def stream_object(object: str) -> StreamingBody:
     """
-    Get an S3 object as StreamingBody
+    Stream an S3 object as StreamingBody.
 
     :param object: S3 object path as 's3://bucket/object' or 'bucket/object'
 
@@ -196,7 +194,7 @@ def get_object(object: str) -> StreamingBody:
 
 def delete_object(object: str) -> bool:
     """
-    Delete s3 object
+    Delete an S3 object.
 
     :param object: S3 object to delete as 's3://bucket/object' or 'bucket/object'
 
@@ -217,7 +215,7 @@ def delete_object(object: str) -> bool:
 
 def rename_object(from_object: str, to_object: str) -> bool:
     """
-    Rename from_object TO to_object as copy and delete operation.
+    Rename an S3 object as copy and delete operation.
 
     :param from_object: COPY from as 's3://bucket/object' or 'bucket/object'
     :param to_object: COPY to as 's3://bucket/object' or 'bucket/object'

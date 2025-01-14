@@ -20,6 +20,8 @@ asdf install
 `pip-tools` is used by to manage python dependencies. 
 
 > `direnv` will automatically create (and activate) a python virutal environemnt in the project folder for local development. `pip-tools` is also automatically run (by `direnv`) to install project dependencies when moving into the project directory.
+>
+> `pip-tools` creates [requirements.txt](requirements.txt) and [requirements-dev.txt](requirements-dev.txt) files containing versions and hashes of all python library dependencies for the project. 
 
 `docker` is required to run containerized version of application for local development.
 

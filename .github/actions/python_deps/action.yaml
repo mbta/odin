@@ -1,0 +1,30 @@
+name: Setup Python Dependencies
+description: Loads python dependencies for a CI/CD job, install them if not cached
+
+runs:
+  using: composite
+  steps:
+    - name: ASDF Tools Install
+      uses: ./.github/actions/tools
+
+    - name: Python Deps Cache
+      uses: actions/cache@v3
+      id: python-cache
+      with:
+        path: ./.venv
+        key: ${{ runner.os }}-python-deps-${{ hashFiles('**/requirements*.txt') }}
+
+    - run: python3 -m venv .venv
+      if: "!steps.python-cache.outputs.cache-hit"
+      shell: bash
+
+    - run: |
+        source .venv/bin/activate
+        echo "VIRTUAL_ENV=${VIRTUAL_ENV}" >> $GITHUB_ENV
+        echo "${VIRTUAL_ENV}/bin" >> $GITHUB_PATH
+      shell: bash
+
+    - run: pip install -r requirements.txt -r requirements-dev.txt
+      if: "!steps.python-cache.outputs.cache-hit"
+      shell: bash
+      
