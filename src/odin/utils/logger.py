@@ -21,7 +21,8 @@ else:
     LOG_FORMAT = "{asctime} {levelname:>8s} {message}"
 
 # Use/Create logger based on SERVICE_NAME, don't use root logger
-LOGGER = logging.getLogger("odin_app")
+LOGGER_NAME = "odin_app"
+LOGGER = logging.getLogger(LOGGER_NAME)
 if len(LOGGER.handlers) == 0:
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter(fmt=LOG_FORMAT, datefmt=DATE_FORMAT, style="{"))
@@ -42,7 +43,6 @@ class ProcessLog:
         "duration",
         "error_type",
         "auto_start",
-        "print_log",
     ]
 
     def __init__(self, process: str, auto_start: bool = True, **metadata: MdValues) -> None:
