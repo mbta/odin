@@ -28,6 +28,6 @@ runs:
       if: "!steps.python-cache.outputs.cache-hit"
       shell: bash
 
-    - run: pip install .
+    - run: pip install --editable .
       shell: bash
       
