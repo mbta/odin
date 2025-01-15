@@ -24,9 +24,10 @@ runs:
         echo "${VIRTUAL_ENV}/bin" >> $GITHUB_PATH
       shell: bash
 
-    - run: |
-        pip install -r requirements.txt -r requirements-dev.txt
-        pip install .
+    - run: pip install -r requirements.txt -r requirements-dev.txt
       if: "!steps.python-cache.outputs.cache-hit"
+      shell: bash
+
+    - run: pip install .
       shell: bash
       
