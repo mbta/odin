@@ -146,7 +146,7 @@ class ProcessLog:
         # Last 2 stacks are ProcessLog calls and should be dropped
         # This is for exceptions that are not 'raised'
         # 'raised' exceptions will also be logged to sys.stderr
-        if os.environ["CONFIG_LOG_PRINT_TRACEBACK"] != "False":
+        if os.getenv("CONFIG_LOG_PRINT_TRACEBACK", default="True") != "False":
             for stack_entry in traceback.format_stack()[:-2]:
                 for line in stack_entry.strip("\n").split("\n"):
                     LOGGER.error(f"uuid={self.uuid}, {line.strip('\n')}")
