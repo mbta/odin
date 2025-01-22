@@ -1,9 +1,10 @@
-import logging
 import os
 import time
 import uuid
 import shutil
+import logging
 import traceback
+
 from typing import Dict
 from typing import Union
 from typing import Optional
@@ -14,11 +15,10 @@ import psutil
 MdValues = Optional[Union[str, int, float]]
 
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
+LOG_FORMAT = "{asctime} {levelname:>8s} {message}"
 # if running on AWS drop timestamp because Splunk handles that
 if bool(os.getenv("AWS_DEFAULT_REGION")):
     LOG_FORMAT = "{levelname:>8s} {message}"
-else:
-    LOG_FORMAT = "{asctime} {levelname:>8s} {message}"
 
 # Use/Create logger based on SERVICE_NAME, don't use root logger
 LOGGER_NAME = "odin_app"
@@ -146,9 +146,10 @@ class ProcessLog:
         # Last 2 stacks are ProcessLog calls and should be dropped
         # This is for exceptions that are not 'raised'
         # 'raised' exceptions will also be logged to sys.stderr
-        for stack_entry in traceback.format_stack()[:-2]:
-            for line in stack_entry.strip("\n").split("\n"):
-                LOGGER.error(f"uuid={self.uuid}, {line.strip('\n')}")
+        if os.environ["CONFIG_LOG_PRINT_TRACEBACK"] != "False":
+            for stack_entry in traceback.format_stack()[:-2]:
+                for line in stack_entry.strip("\n").split("\n"):
+                    LOGGER.error(f"uuid={self.uuid}, {line.strip('\n')}")
 
         # Log Exception
         for line in traceback.format_exception_only(exception):
