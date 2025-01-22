@@ -15,7 +15,7 @@ dependencies = [
     "boto3",
     "polars",
     "psutil",
-    "pyarrow",
+    "pyarrow>=19.0.0",
 ]
 optional-dependencies.dev = [
     "ipykernel",
