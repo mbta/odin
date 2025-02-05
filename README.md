@@ -17,16 +17,19 @@ asdf plugin-add direnv
 asdf install
 ```
 
-`pip-tools` is used by to manage python dependencies. 
+### Local Environment
 
-> `direnv` will automatically create (and activate) a python virutal environemnt in the project folder for local development. `pip-tools` is also automatically run (by `direnv`) to install project dependencies when moving into the project directory.
+`direnv` manages the loading/unloading of environmental variables, as well as the creation of a python virtual environment for local development. Using `direnv`, whenever a shell moves into the project directory, appropriate environmental variables will be loaded automagically and the python virtual environment will be activated.
+
+> copy [.env.template](.env.template) to [.env](.env) to bootstrap the expected project environmental variables.
+
+
+`direnv - python layout` combined with `pip-tools` is used by to manage python dependencies and the local python virtual environment. 
+
+> Python package dependencies are defined in [pyproject.toml](pyproject.toml). 
 >
-> `pip-tools` creates [requirements.txt](requirements.txt) and [requirements-dev.txt](requirements-dev.txt) files containing versions and hashes of all python library dependencies for the project. 
+> Run `./config_venv.sh` after a repository clone, or after changing [pyproject.toml](pyproject.toml) dependencies. The [config_venv.sh](config_venv.sh) script will update `requirements` files and sync packages to local python virtual environment.
+
+### Containers
 
 `docker` is required to run containerized version of application for local development.
-
-## Environmental Variables
-
-Project environmental variables are stored in [.env](.env) and managed for command line usage with `direnv`.
-
-Using `direnv`, whenever a shell moves into any project directory, the environmental variables defined in [.env](.env) are loaded automagically. 
