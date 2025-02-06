@@ -1,9 +1,13 @@
 import os
+import datetime
 from typing import List
 from typing import Tuple
 from typing import Optional
 from typing import Dict
+from typing import NamedTuple
+from collections.abc import Callable
 from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 
 import boto3
 from botocore.client import BaseClient
@@ -12,8 +16,17 @@ from botocore.exceptions import ClientError
 from botocore.response import StreamingBody
 
 from odin.utils.logger import ProcessLog
+from odin.utils.runtime import thread_cpus
 
 S3_POOL_COUNT = 50
+
+
+class S3Object(NamedTuple):
+    """S3 Object return tuple"""
+
+    path: str
+    last_modified: datetime.datetime
+    size_bytes: int
 
 
 @lru_cache
@@ -42,13 +55,17 @@ def list_objects(
     partition: str,
     max_objects: int = 1_000_000,
     in_filter: Optional[str] = None,
-) -> List[str]:
+    in_func: Optional[Callable[[S3Object], bool]] = None,
+) -> List[S3Object]:
     """
     Get list of S3 objects starting with 'partition'.
 
     :param partition: S3 partition as "s3://bucket/prefix" or "bucket/prefix"
-    :param max_objects: maximum number of objects to return
-    :param in_filter: will filter for objects containing string
+    :param max_objects: (Optional) maximum number of objects to return
+    :param in_filter: (Optional) will filter for objects containing string
+    :param in_func:
+        (Optional) function that accepts S3Object and returns bool
+        return True to include Key in results or False to exclude from results
 
     :return: List[s3://bucket/key, ...]
     """
@@ -71,8 +88,16 @@ def list_objects(
             for obj in page["Contents"]:
                 if obj["Size"] == 0:
                     continue
-                if in_filter is None or in_filter in obj["Key"]:
-                    filepaths.append(os.path.join("s3://", bucket, obj["Key"]))
+                if isinstance(in_filter, str) and in_filter not in obj["Key"]:
+                    continue
+                append_obj = S3Object(
+                    path=os.path.join("s3://", bucket, obj["Key"]),
+                    last_modified=obj["LastModified"],
+                    size_bytes=obj["Size"],
+                )
+                if callable(in_func) and in_func(append_obj) is False:
+                    continue
+                filepaths.append(append_obj)
 
             if len(filepaths) >= max_objects:
                 break
@@ -83,6 +108,49 @@ def list_objects(
     except Exception as exception:
         logger.failed(exception)
         return []
+
+
+def list_partitions(
+    partition: str,
+    max_objects: int = 10_000,
+) -> List[str]:
+    """
+    Get list of S3 "partitions/folders" starting with 'partition'.
+
+    S3 doesn't really have "folders" so this is a bit of a hack
+
+    :param partition: S3 partition as "s3://bucket/prefix" or "bucket/prefix"
+    :param max_objects: maximum number of partitions to return
+
+    :return: List[folder, ...]
+    """
+    partitions = []
+    logger = ProcessLog(
+        "list_partitions",
+        partition=partition,
+        max_objects=max_objects,
+    )
+    bucket, prefix = split_object(partition)
+    if not prefix.endswith("/"):
+        prefix = f"{prefix}/"
+    try:
+        client = get_client()
+        paginator = client.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/")
+
+        for page in pages:
+            if "CommonPrefixes" in page:
+                for part in page["CommonPrefixes"]:
+                    partitions.append(str(part["Prefix"]).replace(prefix, "").strip("/"))
+
+            if len(partitions) >= max_objects:
+                break
+        logger.complete(partitions_found=len(partitions))
+
+    except Exception as exception:
+        logger.failed(exception)
+
+    return partitions
 
 
 def object_exists(object: str) -> bool:
@@ -157,6 +225,7 @@ def download_object(object: str, local_path: str) -> bool:
     """
     logger = ProcessLog("download_object", object=object, local_path=local_path)
     try:
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
         if os.path.exists(local_path):
             os.remove(local_path)
 
@@ -179,12 +248,11 @@ def stream_object(object: str) -> StreamingBody:
 
     :return: http streaming body response
     """
-    logger = ProcessLog("get_object", object=object)
+    logger = ProcessLog("stream_object", object=object)
     try:
         bucket, key = split_object(object)
         client = get_client()
         object_stream = client.get_object(Bucket=bucket, Key=key)["Body"]
-        logger.complete()
         return object_stream
 
     except Exception as exception:
@@ -192,54 +260,145 @@ def stream_object(object: str) -> StreamingBody:
         raise exception
 
 
-def delete_object(object: str) -> bool:
+def delete_object(del_object: str) -> Optional[str]:
     """
     Delete an S3 object.
 
-    :param object: S3 object to delete as 's3://bucket/object' or 'bucket/object'
+    :param del_object: S3 object to delete as 's3://bucket/object' or 'bucket/object'
 
-    :return: True if delete success, else False
+    :return: 'del_object' if failed, else None
     """
-    logger = ProcessLog("delete_object", object=object)
+    logger = ProcessLog("delete_object", del_object=del_object)
     try:
         client = get_client()
-        bucket, key = split_object(object)
+        bucket, key = split_object(del_object)
         client.delete_object(Bucket=bucket, Key=key)
         logger.complete()
-        return True
+        return None
 
     except Exception as exception:
         logger.failed(exception)
-        return False
+
+    return del_object
 
 
-def rename_object(from_object: str, to_object: str) -> bool:
+def delete_objects(objects: List[str]):
+    """
+    Delete S3 objects.
+
+    :param objects: objects to delete as 's3://bucket/object' or 'bucket/object'
+
+    :return: list of objects that failed to delete
+    """
+    logger = ProcessLog("delete_objects", object_count=len(objects))
+
+    thread_workers = 24
+    failed_delete = []
+    with ThreadPoolExecutor(max_workers=thread_workers) as pool:
+        for result in pool.map(delete_object, objects):
+            if isinstance(result, str):
+                failed_delete.append(result)
+
+    logger.add_metadata(failed_count=len(failed_delete))
+    if len(failed_delete) == 0:
+        logger.complete()
+    else:
+        exception = FileExistsError(f"Failed to delete S3 objects: ({','.join(failed_delete)})")
+        logger.failed(exception=exception)
+
+    return failed_delete
+
+
+def rename_object(from_object: str, to_object: str) -> Optional[str]:
     """
     Rename an S3 object as copy and delete operation.
 
     :param from_object: COPY from as 's3://bucket/object' or 'bucket/object'
     :param to_object: COPY to as 's3://bucket/object' or 'bucket/object'
 
-    :return: True if success, else False
+    :return: 'from_object' if failed, else None
     """
     logger = ProcessLog("rename_object", from_object=from_object, to_object=to_object)
     try:
         client = get_client()
-        from_object = os.path.join(*split_object(from_object))
+        copy_source = os.path.join(*split_object(from_object))
         to_bucket, to_key = split_object(to_object)
 
         client.copy_object(
             Bucket=to_bucket,
-            CopySource=from_object,
+            CopySource=copy_source,
             Key=to_key,
         )
-        if not delete_object(from_object):
+        if not delete_object(copy_source):
             raise FileExistsError(f"failed to delete {from_object}")
 
         logger.complete()
-        return True
+        return None
 
     except Exception as exception:
         logger.failed(exception)
 
-    return False
+    return from_object
+
+
+def _thread_rename_object(args: Tuple[str, str]) -> Optional[str]:
+    """Threaded version of rename_object."""
+    from_object, to_object = args
+    return rename_object(from_object, to_object)
+
+
+def rename_objects(
+    objects: List[str],
+    to_bucket: str,
+    prepend_prefix: Optional[str] = None,
+    replace_prefix: Optional[str] = None,
+):
+    """
+    Rename S3 objects as copy and delete operation.
+
+    'prepend_prefix' and 'replace_prefix' can not be used together,if both are provided,
+    'prepend_prefix' will be used and 'replace_prefix' ignored
+
+    :param objects: objects to copy as 's3://bucket/object' or 'bucket/object'
+    :param to_bucket: destination bucket as 's3://bucket' or 'bucket'
+    :param prepend_prefix: (Optional) prefix to be added to the beginning of all renamed objects
+    :param replace_prefix: (Optional) new prefix for all renamed objects
+
+    :return: list of objects that failed to move
+    """
+    logger = ProcessLog(
+        "rename_objects",
+        object_count=len(objects),
+        to_bucket=to_bucket,
+        prepend_prefix=prepend_prefix,
+        replace_prefix=replace_prefix,
+    )
+
+    failed_rename = []
+    to_bucket = to_bucket.replace("s3://", "").split("/", 1)[0]
+
+    thread_objects = []
+    for obj in objects:
+        _, from_prefix = split_object(obj)
+        to_object = os.path.join(to_bucket, from_prefix)
+        if prepend_prefix is not None:
+            prepend_prefix = prepend_prefix.strip("/")
+            to_object = os.path.join(to_bucket, prepend_prefix, from_prefix)
+        elif replace_prefix is not None:
+            replace_prefix = replace_prefix.strip("/")
+            to_object = os.path.join(to_bucket, replace_prefix, os.path.basename(from_prefix))
+        thread_objects.append((obj, to_object))
+
+    with ThreadPoolExecutor(max_workers=thread_cpus()) as pool:
+        for result in pool.map(_thread_rename_object, thread_objects):
+            if isinstance(result, str):
+                failed_rename.append(result)
+
+    logger.add_metadata(failed_count=len(failed_rename))
+    if len(failed_rename) == 0:
+        logger.complete()
+    else:
+        exception = FileExistsError(f"Failed to rename S3 objects: ({','.join(failed_rename)})")
+        logger.failed(exception=exception)
+
+    return failed_rename

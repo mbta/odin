@@ -20,7 +20,7 @@ dependencies = [
 optional-dependencies.dev = [
     "ipykernel",
     "mypy",
-    "pyarrow-stubs",
+    "pyarrow-stubs>=17.16",
     "pytest",
     "ruff",
     "types-psutil",
@@ -28,9 +28,13 @@ optional-dependencies.dev = [
 
 [project.scripts]
 start-odin = "odin.run:start"
+start-log-odin = "odin.run:start_log_file"
 
 [tool.pip-tools]
 generate-hashes = true
+
+[tool.pytest]
+log_level = 20
 
 [tool.mypy]
 ignore_missing_imports = true

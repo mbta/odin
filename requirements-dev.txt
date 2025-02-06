@@ -247,9 +247,9 @@ pyarrow==19.0.0 \
     # via
     #   odin (pyproject.toml)
     #   pyarrow-stubs
-pyarrow-stubs==17.14 \
-    --hash=sha256:278bad474eeaa0a300d030b0f85a4be335878c31d5dc8a836e695b24114e074e \
-    --hash=sha256:bfebf760db2154cdb2c0fcb0e43024056d6f5a6f0b96b85a039ab224a13b43c8
+pyarrow-stubs==17.16 \
+    --hash=sha256:76eebeb2433fe93754c74a252e976b4e76a182f8f054748872aa3a98d347621d \
+    --hash=sha256:ab74652db59855a09d5de7009f57d079f4fb318650ff767ec91841f3d2fa550c
     # via odin (pyproject.toml)
 pygments==2.18.0 \
     --hash=sha256:786ff802f32e91311bff3889f6e9a86e81505fe99f2735bb6d60ae0c5004f199 \

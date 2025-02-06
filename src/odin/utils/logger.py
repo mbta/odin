@@ -3,6 +3,7 @@ import time
 import uuid
 import shutil
 import logging
+import threading
 import traceback
 
 from typing import Dict
@@ -28,6 +29,8 @@ if len(LOGGER.handlers) == 0:
     handler.setFormatter(logging.Formatter(fmt=LOG_FORMAT, datefmt=DATE_FORMAT, style="{"))
     LOGGER.addHandler(handler)
     LOGGER.setLevel(logging.INFO)
+
+_PROC = psutil.Process(os.getpid())
 
 
 class ProcessLog:
@@ -70,8 +73,9 @@ class ProcessLog:
     def _get_log_string(self) -> str:
         """Create logging string from all default_data and metadata."""
         _, _, free_disk_bytes = shutil.disk_usage("/")
-        self.default_data["disk_mb_free"] = int(free_disk_bytes / (1000 * 1000))
-        self.default_data["mem_pct_free"] = int(100 - psutil.virtual_memory().percent)
+        self.default_data["disk_free_mb"] = int(free_disk_bytes / (1024 * 1024))
+        self.default_data["sys_mem_free_pct"] = int(100 - psutil.virtual_memory().percent)
+        self.default_data["proc_mem_used_mb"] = int(_PROC.memory_info().rss / (1024 * 1024))
         logging_list = []
         # add default data to log output with uuid first
         logging_list.append(f"uuid={self.uuid}")
@@ -143,13 +147,11 @@ class ProcessLog:
         self.default_data["duration"] = f"{duration:.2f}"
         self.default_data["error_type"] = type(exception).__name__
 
-        # Last 2 stacks are ProcessLog calls and should be dropped
         # This is for exceptions that are not 'raised'
         # 'raised' exceptions will also be logged to sys.stderr
-        if os.getenv("CONFIG_LOG_PRINT_TRACEBACK", default="True") != "False":
-            for stack_entry in traceback.format_stack()[:-2]:
-                for line in stack_entry.strip("\n").split("\n"):
-                    LOGGER.error(f"uuid={self.uuid}, {line.strip('\n')}")
+        for tb in traceback.format_tb(exception.__traceback__):
+            for line in tb.strip("\n").split("\n"):
+                LOGGER.error(f"uuid={self.uuid}, {line.strip('\n')}")
 
         # Log Exception
         for line in traceback.format_exception_only(exception):
@@ -157,3 +159,18 @@ class ProcessLog:
 
         # Log Process Failure
         LOGGER.info(self._get_log_string())
+
+
+def log_max_mem_usage(stop_log_event: threading.Event) -> None:
+    """Log maximum memory usage of application process."""
+    log = ProcessLog("process_max_mem_mb")
+    max_memory_mb = 0.0
+    while True:
+        last_memory_mb = _PROC.memory_info().rss / (1024 * 1024)
+        if last_memory_mb > max_memory_mb:
+            max_memory_mb = last_memory_mb
+            log.add_metadata(max_memory_mb=f"{max_memory_mb:.2f}")
+        if stop_log_event.is_set():
+            break
+        time.sleep(1)
+    log.complete()

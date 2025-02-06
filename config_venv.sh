@@ -8,39 +8,33 @@ red='\033[0;31m'
 green='\033[0;32m'
 blue='\033[0;34m'
 cyan='\033[0;36m'
-pip_prefix="$green[use pip-tools]$nc"
+pip_prefix="$green[config_venv]$nc"
 python_version=$(python3 -c "import platform; print(platform.python_version())")
 which_python=$(which python)
 
-# if VIRTUAL_ENV is not set to direnv default, delete direnv default dir as clean-up
-if [[ $which_python != "$PWD/.venv"* ]]
-then
+# verify that Python from local .venv is being used
+if [[ $which_python != "$PWD/.venv"* ]]; then
     echo -e "$pip_prefix$red shell is using Python from ($which_python), needs to use project Python version in ($PWD/.venv)$nc"
     exit 1
 fi
 
 has_pip=0
-if command -v pip 2>&1 >/dev/null
-then
-    if [[ $(which pip) = "$PWD/"* ]]
-    then
+if command -v pip 2>&1 >/dev/null; then
+    if [[ $(which pip) = "$PWD/"* ]]; then
         has_pip=1
     fi
 fi
-if [ $has_pip -eq 0 ]
-then
+if [ $has_pip -eq 0 ]; then
     echo -e "$pip_prefix$red ERROR: No pip installed via layout; add 'layout python3' to .envrc$nc"
     exit 1
 fi
 
-if ! command -v pip-compile 2>&1 >/dev/null
-then
+if ! command -v pip-compile 2>&1 >/dev/null; then
     echo -e "$pip_prefix pip-tools missing; installing..."
     pip install pip-tools
 fi
 
-if [ ! -f "pyproject.toml" ]
-then
+if [ ! -f "pyproject.toml" ]; then
     echo -e "$pip_prefix$red ERROR: No 'pyproject.toml' file exists, please create one!$nc"
     exit 1
 fi
