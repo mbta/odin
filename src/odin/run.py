@@ -24,7 +24,18 @@ def start():
     """Application Entry."""
     signal.signal(signal.SIGTERM, handle_sigterm)
     os.environ["SERVICE_NAME"] = "odin"
-    validate_env_vars(required=[])
+    validate_env_vars(
+        required=[
+            "DATA_ARCHIVE",
+            "DATA_ERROR",
+            "DATA_INCOMING",
+            "DATA_SPRINGBOARD",
+        ],
+        aws=[
+            "ECS_CLUSTER",
+            "ECS_TASK_GROUP",
+        ],
+    )
 
     scheduler = sched.scheduler(time.monotonic, time.sleep)
 
