@@ -19,6 +19,7 @@ from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES
 from odin.utils.aws.ecs import running_in_aws
 from odin.ingestion.qlik.clean import clean_old_snapshots
 
+
 def start():
     """Application Entry."""
     signal.signal(signal.SIGTERM, handle_sigterm)

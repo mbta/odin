@@ -98,7 +98,7 @@ class ArchiveCubicQlikTable(OdinJob):
     def reset_tmpdir(self, make_new: bool = True) -> None:
         """Reset TemporaryDirectory folder."""
         if hasattr(self, "_tdir"):
-            self._tdir.cleanup() # type: ignore
+            self._tdir.cleanup()  # type: ignore
         if make_new:
             self._tdir = tempfile.TemporaryDirectory()
             self.tmpdir = self._tdir.name
