@@ -329,7 +329,7 @@ def rename_object(from_object: str, to_object: str) -> Optional[str]:
             CopySource=copy_source,
             Key=to_key,
         )
-        if not delete_object(copy_source):
+        if delete_object(copy_source) is not None:
             raise FileExistsError(f"failed to delete {from_object}")
 
         logger.complete()
