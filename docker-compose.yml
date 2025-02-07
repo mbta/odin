@@ -1,0 +1,17 @@
+version: '3.2'
+
+services:
+
+  odin_ingestion:
+    container_name: odin_ingestion
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 12G 
+    env_file: .env
+    build: .
+    working_dir: /runner
+    volumes:
+      - ~/.aws:/home/odin/.aws:ro  # map credentials to be used by boto3, read-only
+    command: ["start-odin"]
