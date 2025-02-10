@@ -1,0 +1,26 @@
+name: Manual Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment
+        type: choice
+        options:
+          - dev
+      deploy-odin:
+        description: Deploy Odin
+        default: false
+        type: boolean
+
+jobs:
+  deploy:
+    concurrency:
+      group: github.event.inputs.environment
+    uses: ./.github/workflows/deploy-base.yaml
+    with:
+      # pass the inputs from the workflow dispatch through to the deploy base. the booleans are
+      # converted to strings, so flip them back using fromJson function
+      environment: ${{ github.event.inputs.environment }}
+      deploy-odin: ${{ fromJson(github.event.inputs.deploy-odin) }}
+    secrets: inherit
