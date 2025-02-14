@@ -50,16 +50,11 @@ def clean_find_qlik_load_files(table: str) -> List[Tuple[str, QlikDFM]]:
             for obj in list_objects(f"{prefix}/", in_filter="LOAD"):
                 if not obj.path.endswith("csv.gz"):
                     continue
-                if obj.last_modified > (datetime.now(tz=UTC) - timedelta(hours=6)):
-                    raise RecentSnapshotError(f"{obj.path} modified with the last 6 hours.")
                 try:
                     paths.append((obj.path, dfm_from_s3(obj.path)))
                 except Exception as _:
                     error_paths.append(obj.path)
         log.complete(num_load_files=len(paths))
-    except RecentSnapshotError as exception:
-        log.complete(skipped_recent_snapshot=True)
-        raise exception
     except Exception as exception:
         log.failed(exception)
         raise exception
@@ -93,6 +88,14 @@ def clean_old_snapshots(table: str) -> None:
     if snaps:
         min_good_dt = datetime.strptime(re_get_first(snaps[0], RE_SNAPSHOT_TS), SNAPSHOT_FMT)
     else:
+        # Each group in groups will be a List[Tuple[str,datetime]]
+        #       with str = path of snapshot file, datetime = datetime snapshot was generated
+        # a group represents all of the individual snapshot files associated with a unique Qlik snapshot
+        # e.g.: [
+        #           (s3://mbta-ctd-dataplatform-archive/cubic/ods_qlik/EDW.ABP_TAP/snapshot=20250131T041823Z/LOAD00000001.csv.gz, datetime(2025,01,30,23,25,46)),
+        #           (s3://mbta-ctd-dataplatform-archive/cubic/ods_qlik/EDW.ABP_TAP/snapshot=20250131T041823Z/LOAD00000002.csv.gz, datetime(2025,01,30,23,28,13)),
+        #           ...
+        #       ] 
         groups = []
         current_group: List[Tuple[str, datetime]] = []
         for path, dfm in clean_find_qlik_load_files(table):
@@ -103,6 +106,9 @@ def clean_old_snapshots(table: str) -> None:
             current_group.append((path, snapshot_dt))
         if current_group:
             groups.append(current_group)
+        # groups is sorted from oldest snapshot group to most recent
+        # this is indexing the most recent (last in groups) snapshot group
+        # then indexing the creation datetime of the first snapshot file of the group (LOAD00000001.csv.gz)
         min_good_dt = groups[-1][0][1]
 
         move_snap_paths = []

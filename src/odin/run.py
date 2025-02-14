@@ -21,7 +21,19 @@ from odin.ingestion.qlik.clean import clean_old_snapshots
 
 
 def start():
-    """Application Entry."""
+    """
+    Application Entry.
+
+    Odin runs "jobs" on a continuous event loop. All jobs are initiated by a sched.scheduler general
+    purpose event scheduler. 
+
+    Currently, all jobs are added to the scheduler via the "delayed" scheduling type, which will 
+    re-exectue the job after the specified "delay" period has passed, since the last execution. 
+
+    All jobs must be a child of the OdinJob base class, specified in job.py. The OdinJob base class 
+    guarantees certain logging characteristics for every job and makes certain that the Job will not 
+    fail in a way that interrupts the execution of subsequently scheduled jobs.     
+    """
     signal.signal(signal.SIGTERM, handle_sigterm)
     os.environ["SERVICE_NAME"] = "odin"
     validate_env_vars(
@@ -46,7 +58,11 @@ def start():
             # This will be not be a permanent part of the pipeline and can be removed in the future
             # This will move any qlik files, not associated with the most recent snapshot, to the
             # "Ignore" odin partition
-            clean_old_snapshots(table)
+            try:
+                clean_old_snapshots(table)
+            except Exception as _:
+                # skip table processing if error occurs
+                continue
         job = ArchiveCubicQlikTable(table)
         scheduler.enter(0, 1, job.start, (scheduler,))
 
