@@ -25,14 +25,14 @@ def start():
     Application Entry.
 
     Odin runs "jobs" on a continuous event loop. All jobs are initiated by a sched.scheduler general
-    purpose event scheduler. 
+    purpose event scheduler.
 
-    Currently, all jobs are added to the scheduler via the "delayed" scheduling type, which will 
-    re-exectue the job after the specified "delay" period has passed, since the last execution. 
+    Currently, all jobs are added to the scheduler via the "delayed" scheduling type, which will
+    re-exectue the job after the specified "delay" period has passed, since the last execution.
 
-    All jobs must be a child of the OdinJob base class, specified in job.py. The OdinJob base class 
-    guarantees certain logging characteristics for every job and makes certain that the Job will not 
-    fail in a way that interrupts the execution of subsequently scheduled jobs.     
+    All jobs must be a child of the OdinJob base class, specified in job.py. The OdinJob base class
+    guarantees certain logging characteristics for every job and makes certain that the Job will not
+    fail in a way that interrupts the execution of subsequently scheduled jobs.
     """
     signal.signal(signal.SIGTERM, handle_sigterm)
     os.environ["SERVICE_NAME"] = "odin"
