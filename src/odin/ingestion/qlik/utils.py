@@ -73,7 +73,7 @@ def find_qlik_load_files(table: str, save_local=bool) -> List[Tuple[str, QlikDFM
 
     :param table: QLIK Table name
 
-    :return: sorted list of LOAD**.csv.gz files
+    :return: list of load file tuples sorted from oldest to newest
     """
     prefixes = (
         os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, table),
@@ -84,6 +84,7 @@ def find_qlik_load_files(table: str, save_local=bool) -> List[Tuple[str, QlikDFM
     try:
         for prefix in prefixes:
             in_func = None
+            # If running locally, find last file processed to use as filter for S3 objects
             if save_local:
                 try:
                     ds = ds_from_path(os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DATA, table))

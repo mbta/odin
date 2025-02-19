@@ -171,6 +171,7 @@ class ArchiveCubicQlikTable(OdinJob):
         """
         if len(group) == 0:
             return
+        log = ProcessLog("load_qlik_snapshot_group", group_len=len(group))
         assert group[0][0].endswith("0001.csv.gz")
         snap_dt = dfm_snapshot_dt(group[0][1])
         snap_part = f"snapshot={snap_dt.strftime(SNAPSHOT_FMT)}"
@@ -181,6 +182,9 @@ class ArchiveCubicQlikTable(OdinJob):
             pq_snap_paths.append(snapshot_to_parquet(path, dfm, part_folder))
             self.archive_objects.append(path)
 
+            # If more than 20 snapshot files are being processed, they will be "synced"
+            # in batches of 20. This limits to amount of local storage used during the
+            # snapshot load process.
             if len(pq_snap_paths) > 19:
                 self.sync_tmp_paths(pq_snap_paths)
                 self.reset_tmpdir()
@@ -190,12 +194,21 @@ class ArchiveCubicQlikTable(OdinJob):
 
         self.sync_tmp_paths(pq_snap_paths)
         self.reset_tmpdir()
+        log.complete()
 
     def load_snapshots(self) -> None:
-        """Archive Qlik LOAD file(s) to parquet partitions."""
+        """
+        Archive Qlik LOAD file(s) to parquet partitions.
+
+        In the case that there are multiple Qlik snapshots are available for processsing, this
+        function will group files belonging to the same snapshot together.
+
+        All of the LOAD files, belonging to a snapshot group, are then processed individually and
+        added to the same snapshot partition.
+        """
         snapshot_group: List[Tuple[str, QlikDFM]] = []
         for path, dfm in find_qlik_load_files(self.table):
-            if path.endswith("0001.csv.gz"):
+            if path.endswith("00001.csv.gz"):
                 self.process_snapshot_group(snapshot_group)
                 snapshot_group.clear()
             snapshot_group.append((path, dfm))
@@ -246,13 +259,16 @@ class ArchiveCubicQlikTable(OdinJob):
         for snap_part in sorted(groups.keys()):
             if len(groups[snap_part]) == 0:
                 continue
-            log = ProcessLog("load_changes_group", snapshot=snap_part)
+            log = ProcessLog("load_qlik_changes_group", snapshot=snap_part)
             os.makedirs(os.path.join(self.tmpdir, snap_part))
             changes_bytes = 0
             change_paths = []
             # Create temporary directory for change file downloads
             with tempfile.TemporaryDirectory() as tmpdir:
                 work_objs = [(obj.path, tmpdir) for obj in groups[snap_part]]
+                # download .csv.gz change files in batches using ThreadPool download operation
+                # returns size of uncompressed csv file to determine when a bunch of downloaded
+                # csv files should be converted to parquet
                 for batch in batched(work_objs, thread_cpus() * 2):
                     for size_bytes, obj_path in pool.map(thread_save_csv, batch):
                         changes_bytes += size_bytes
@@ -266,7 +282,7 @@ class ArchiveCubicQlikTable(OdinJob):
                         change_paths += written
                         self.archive_objects += archive
                         self.error_objects += error
-                    # Process max of 20 files.
+                    # create maximum of 20 parquet files in one event loop.
                     if len(change_paths) > 19:
                         break
                 if changes_bytes > 0:

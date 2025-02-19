@@ -98,7 +98,7 @@ def clean_old_snapshots(table: str) -> None:
         current_group: List[Tuple[str, datetime]] = []
         for path, dfm in clean_find_qlik_load_files(table):
             snapshot_dt = dfm_snapshot_dt(dfm)
-            if path.endswith("0001.csv.gz") and current_group:
+            if path.endswith("00001.csv.gz") and current_group:
                 groups.append(current_group)
                 current_group = []
             current_group.append((path, snapshot_dt))
