@@ -118,7 +118,7 @@ def find_qlik_load_files(table: str, save_local=bool) -> List[Tuple[str, QlikDFM
     return sorted(paths, key=lambda tup: tup[1]["fileInfo"]["startWriteTimestamp"])
 
 
-def find_qlik_change_files(table: str, save_local: bool, max_change_files: int) -> List[S3Object]:
+def find_qlik_cdc_files(table: str, save_local: bool, max_cdc_files: int) -> List[S3Object]:
     """
     Get cdc .csv.gz from from bucket locations with no sorting.
 
@@ -127,10 +127,10 @@ def find_qlik_change_files(table: str, save_local: bool, max_change_files: int) 
 
     :return: list of CDC .csv.gz files
     """
-    change_table = f"{table}__ct/"
+    cdc_table = f"{table}__ct/"
     prefixes = (
-        os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, change_table),
-        os.path.join(DATA_ERROR, IN_QLIK_PREFIX, change_table),
+        os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, cdc_table),
+        os.path.join(DATA_ERROR, IN_QLIK_PREFIX, cdc_table),
     )
     paths = []
     for prefix in prefixes:
@@ -151,7 +151,7 @@ def find_qlik_change_files(table: str, save_local: bool, max_change_files: int) 
                     in_func = filter_func
 
         paths += list_objects(
-            prefix, in_filter=".csv.gz", max_objects=max_change_files, in_func=in_func
+            prefix, in_filter=".csv.gz", max_objects=max_cdc_files, in_func=in_func
         )
 
     return paths
@@ -204,7 +204,7 @@ def snapshot_to_parquet(obj_path: str, dfm: QlikDFM, write_folder: str) -> str:
     return write_file
 
 
-def change_csv_to_parquet(
+def cdc_csv_to_parquet(
     read_folder: str, write_folder: str
 ) -> Tuple[List[str], List[str], List[str]]:
     """
@@ -222,7 +222,7 @@ def change_csv_to_parquet(
     error_objects = []
     for header_folder in os.listdir(read_folder):
         try:
-            log = ProcessLog("change_csv_to_parquet", header_folder=header_folder)
+            log = ProcessLog("cdc_csv_to_parquet", header_folder=header_folder)
             header_folder = os.path.join(read_folder, header_folder)
             merge_file = os.path.join(header_folder, "merge.csv")
             csv_paths = [os.path.join(header_folder, f) for f in os.listdir(header_folder)]

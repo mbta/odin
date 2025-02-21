@@ -65,9 +65,9 @@ def clean_find_qlik_load_files(table: str) -> List[Tuple[str, QlikDFM]]:
 
 def clean_old_snapshots(table: str) -> None:
     """
-    Move old snapshot and change files to ignore in S3.
+    Move old snapshot and cdc files to ignore in S3.
 
-    This process moves snapshot and change from from the Archive and Error buckets
+    This process moves snapshot and cdc from from the Archive and Error buckets
     to an "IGNORED" prefix of the archive bucket.
 
     If existing Odin snapshot partitions are found, the oldest partition is used as the
@@ -121,7 +121,7 @@ def clean_old_snapshots(table: str) -> None:
 
     log.add_metadata(min_good_dt=min_good_dt)
 
-    # Move change files
+    # Move cdc files
     prefixes = (
         os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, table),
         os.path.join(DATA_ERROR, IN_QLIK_PREFIX, table),
@@ -129,17 +129,17 @@ def clean_old_snapshots(table: str) -> None:
     objects_moved = 0
     while True:
         found_objects: List[S3Object] = []
-        move_change_paths: List[str] = []
+        move_cdc_paths: List[str] = []
         for prefix in prefixes:
             found_objects += list_objects(f"{prefix}__ct/", max_objects=100_000)
 
         for obj in found_objects:
             if datetime.fromisoformat(re_get_first(obj.path, RE_CDC_TS)) < min_good_dt:
-                move_change_paths.append(obj.path)
+                move_cdc_paths.append(obj.path)
 
-        if len(move_change_paths) == 0:
+        if len(move_cdc_paths) == 0:
             break
-        objects_moved += len(move_change_paths)
-        rename_objects(move_change_paths, DATA_ARCHIVE, prepend_prefix=CUBIC_QLIK_IGNORED)
+        objects_moved += len(move_cdc_paths)
+        rename_objects(move_cdc_paths, DATA_ARCHIVE, prepend_prefix=CUBIC_QLIK_IGNORED)
 
     log.complete(objects_moved=objects_moved)
