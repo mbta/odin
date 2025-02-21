@@ -1,0 +1,38 @@
+name: Change Task Count
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        description: What environment to change the task count for
+        options:
+          - dev
+      new_count:
+        description: 1 to turn on 0 to turn off
+        required: true
+
+jobs:
+  set_count:
+    if: |
+      ( github.event.inputs.new_count == 0 || github.event.inputs.new_count == 1)
+
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Run ECS Update Service Command
+        # yamllint disable rule:line-length
+        run: >
+          aws ecs update-service
+          --cluster odin
+          --service odin-${{ github.event.inputs.environment }}
+          --desired-count ${{ github.event.inputs.new_count }}
+        # yamllint enable
