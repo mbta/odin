@@ -226,14 +226,16 @@ def cdc_csv_to_parquet(
             header_folder = os.path.join(read_folder, header_folder)
             merge_file = os.path.join(header_folder, "merge.csv")
             csv_paths = [os.path.join(header_folder, f) for f in os.listdir(header_folder)]
-            csv_objects = [f.replace("|", "/") for f in os.listdir(header_folder)]
+            csv_gz_objects = [
+                f.replace("|", "/").replace(".csv", ".csv.gz") for f in os.listdir(header_folder)
+            ]
             with open(merge_file, "wb") as fout:
                 for csv_path in csv_paths:
                     with open(csv_path, "rb") as f:
                         fout.write(f.read())
 
             schema = dfm_to_polars_schema(
-                dfm_from_s3(csv_objects[0]),
+                dfm_from_s3(csv_gz_objects[0]),
                 prefix={"header__from_csv": pl.String()},
             )
             pq_written.append(
@@ -259,12 +261,12 @@ def cdc_csv_to_parquet(
                 row_group_size=int(1024 * 1024 / (8 * schema.len())),
             )
             shutil.rmtree(header_folder, ignore_errors=True)
-            archive_objects += csv_objects
-            log.complete(pq_written=pq_written[-1], num_archive_objects=len(csv_objects))
+            archive_objects += csv_gz_objects
+            log.complete(pq_written=pq_written[-1], num_archive_objects=len(csv_gz_objects))
 
         except Exception as exception:
-            error_objects += csv_objects
-            log.add_metadata(print_log=False, num_error_objects=len(csv_objects))
+            error_objects += csv_gz_objects
+            log.add_metadata(print_log=False, num_error_objects=len(csv_gz_objects))
             log.failed(exception)
 
     return (pq_written, archive_objects, error_objects)

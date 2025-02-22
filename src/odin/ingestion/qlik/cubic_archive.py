@@ -89,9 +89,6 @@ class ArchiveCubicQlikTable(OdinJob):
         if running_in_aws():
             self.save_local = False
 
-        self.start_kwargs = {"table": table, "save_local": self.save_local}
-        self.archive_objects: List[str] = []
-        self.error_objects: List[str] = []
         self.export_folder = os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DATA, self.table)
         self.reset_tmpdir(make_new=True)
 
@@ -333,6 +330,10 @@ class ArchiveCubicQlikTable(OdinJob):
                 * when cdc files > half of max_cdc_files requested
         """
         try:
+            self.start_kwargs = {"table": self.table, "save_local": self.save_local}
+            self.archive_objects: List[str] = []
+            self.error_objects: List[str] = []
+
             next_run_secs = 60 * 60
             max_cdc_files = 10_000
             cdc_files = find_qlik_cdc_files(self.table, self.save_local, max_cdc_files)
@@ -347,6 +348,7 @@ class ArchiveCubicQlikTable(OdinJob):
 
         except RecentSnapshotError:
             self.start_kwargs["skipped_recent_snapshot"] = True
+            next_run_secs = 60 * 60
 
         finally:
             self.reset_tmpdir(make_new=False)
