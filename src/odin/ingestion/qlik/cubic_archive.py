@@ -149,12 +149,12 @@ class ArchiveCubicQlikTable(OdinJob):
         for new_path in new_paths:
             # Save merged parquet paths to local disk
             if self.save_local:
-                move_path = str(new_path).replace(self.tmpdir, ".")
+                move_path = new_path.replace(self.tmpdir, ".")
                 os.makedirs(os.path.dirname(move_path), exist_ok=True)
                 shutil.move(new_path, move_path)
             # Upload merged parquet paths to S3
             else:
-                move_path = str(new_path).lstrip(self.tmpdir)
+                move_path = new_path.replace(f"{self.tmpdir}/", "")
                 upload_file(new_path, move_path)
 
     def process_snapshot_group(self, group: List[Tuple[str, QlikDFM]]) -> None:
