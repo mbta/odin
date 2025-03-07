@@ -1,20 +1,25 @@
 from abc import ABC
 from abc import abstractmethod
 from typing import Dict
-from typing import Any
+import tempfile
 import sched
 
 from odin.utils.logger import ProcessLog
+from odin.utils.logger import MdValues
 from odin.utils.runtime import sigterm_check
 
 
 class OdinJob(ABC):
     """Base Class for Odin Event Loop Jobs."""
 
-    @property
-    @abstractmethod
-    def start_kwargs(self) -> Dict[str, Any]:
-        """Return dictonary of kwargs for start method."""
+    start_kwargs: Dict[str, MdValues] = {}
+
+    def reset_tmpdir(self) -> None:
+        """Reset TemporaryDirectory folder."""
+        if hasattr(self, "_tdir"):
+            self._tdir.cleanup()  # type: ignore
+        self._tdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.tmpdir = self._tdir.name
 
     @abstractmethod
     def run(self) -> int:
@@ -27,6 +32,7 @@ class OdinJob(ABC):
     def start(self, schedule: sched.scheduler) -> None:
         """Start Odin job with logging."""
         sigterm_check()
+        self.reset_tmpdir()
         # default run delay of 6 hours
         run_delay_secs = 60 * 60 * 6
         process_name = self.__class__.__name__
@@ -46,6 +52,8 @@ class OdinJob(ABC):
             )
 
         except Exception as exception:
+            # Don't run again for 12 hours on failure
+            run_delay_secs = 60 * 60 * 12
             log.add_metadata(
                 print_log=False,
                 run_delay_mins=f"{run_delay_secs/60:.2f}",
@@ -54,4 +62,5 @@ class OdinJob(ABC):
             log.failed(exception)
 
         finally:
+            self.reset_tmpdir()
             schedule.enter(run_delay_secs, 1, self.start, (schedule,))

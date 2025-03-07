@@ -9,9 +9,13 @@ from typing import List
 from typing import Any
 from typing import Literal
 from functools import reduce
+from operator import gt
+from operator import lt
 from operator import and_
+from operator import attrgetter
 from itertools import chain
 
+import polars as pl
 import pyarrow as pa
 import pyarrow.fs as pafs
 import pyarrow.parquet as pq
@@ -61,7 +65,11 @@ def pq_rows_per_mb(source: Union[str, Sequence[str]], num_rows: Optional[int] = 
     log = ProcessLog("pq_rows_per_mb")
     paths = []
     if isinstance(source, str):
-        paths.append(source)
+        if not source.endswith(".parquet"):
+            # assume S3 partition
+            paths += [obj.path for obj in list_objects(source)]
+        else:
+            paths.append(source)
         log.add_metadata(source=source)
     elif isinstance(source, Sequence):
         paths += source
@@ -157,6 +165,139 @@ def ds_column_min_max(
         raise exception
 
     return (r["min"], r["max"])  # type: ignore[assignment,index]
+
+
+def fast_last_mod_ds_max(partition: str, column: str) -> Any:
+    """
+    Find max value of column from the file of parquet partition that was most recently modified.
+
+    This is usefull for very large datasets where it is guaranteed that the max value of a column
+    will be in the most recently modified file of the partition.
+
+    TODO: make this work locally as well??
+
+    :param partition: S3 partition that will be used to find most recently modified file.
+    :param column: Column to pull max from.
+
+    :return: column max value
+    """
+    log = ProcessLog("fast_last_mod_ds_max", partition=partition, column=column)
+    part_objs = list_objects(partition, in_filter=".parquet")
+    if len(part_objs) == 0:
+        raise IndexError(f"No parquet files found in S3 partition: {partition}")
+    last_mod_path = sorted(part_objs, key=attrgetter("last_modified"))[-1].path
+    _, max = ds_column_min_max(ds_from_path(last_mod_path), column=column)
+    log.complete()
+
+    return max
+
+
+def ds_limit_k_sorted(
+    ds: pd.Dataset,
+    sort_column: str,
+    batch_size: int,
+    sort_direction: Literal["ascending", "descending"] = "ascending",
+    max_nbytes: int = 256 * 1024 * 1024,
+) -> pl.DataFrame:
+    """
+    Produce limited number of sorted results from large parquet dataset.
+
+    This function scans very large parquet datsets and produces sorted results in a memory
+    constrained environment. Currently only supports one sort column.
+
+    :param ds: Dataset to scan, pre-filtered if possible.
+    :param sort_column: Column to sort results on.
+    :param sort_direction: "ascending" or "descending".
+    :param max_nbytes: Max bytes (reported by RecordBatch.nbytes) to keep in results.
+
+    :return: polars Dataframe of sorted results
+    """
+    log = ProcessLog(
+        "ds_limit_k_sorted",
+        sort_column=sort_column,
+        sort_direction=sort_direction,
+        max_nbytes=max_nbytes,
+    )
+    result_compare_op = pc.min
+    batch_compare_op = pc.max
+    check_batch_op = gt
+    if sort_direction == "ascending":
+        result_compare_op = pc.max
+        batch_compare_op = pc.min
+        check_batch_op = lt
+
+    bytes_read = 0
+    result_compare_value = None
+    result_batch = pa.RecordBatch.from_pylist([], schema=ds.schema)
+    max_result_rows = 0
+    for batch in ds.to_batches(batch_size=batch_size, batch_readahead=0, fragment_readahead=0):
+        if batch.num_rows == 0:
+            continue
+        if result_compare_value is None:
+            result_compare_value = result_compare_op(batch.column(sort_column)).as_py()
+        batch_compare_value = batch_compare_op(batch.column(sort_column)).as_py()
+        if bytes_read < max_nbytes or check_batch_op(batch_compare_value, result_compare_value):
+            bytes_read += batch.nbytes
+            result_batch: pa.RecordBatch = pa.concat_batches([result_batch, batch]).sort_by(  # type: ignore[attr-defined, no-redef]
+                [(sort_column, sort_direction)]
+            )
+            if bytes_read > max_nbytes:
+                if max_result_rows == 0:
+                    max_result_rows = result_batch.num_rows
+                result_batch = result_batch.slice(length=max_result_rows)
+            result_compare_value = result_compare_op(result_batch.column(sort_column)).as_py()
+
+    log.complete(num_results=result_batch.num_rows)
+    return_df = pl.from_arrow(result_batch)
+    if isinstance(return_df, pl.Series):
+        raise TypeError("Always dataframe.")
+    return return_df
+
+
+def ds_batched_join(
+    ds: pd.Dataset, match_frame: pl.DataFrame, keys: List[str], batch_size: int
+) -> pl.DataFrame:
+    """
+    Join polars dataframe to very large parquet dataset.
+
+    Join a limited polars dataframe against a very large parquet dataset in memory constrained
+    environment.
+
+    :param ds: Dataset to join against match_frame
+    :param match_frame: Dataframe to join to ds
+    :param keys: List of columns to match between ds and match_frame
+
+    :return: ds records that joined to match_frame as polars Dataframe
+    """
+    log = ProcessLog("ds_batched_join", keys="|".join(keys))
+    for key in keys:
+        if match_frame.get_column(key).null_count() == 0:
+            key_min = match_frame.get_column(key).min()
+            key_max = match_frame.get_column(key).max()
+            ds = ds.filter((pc.field(key) >= key_min) & (pc.field(key) <= key_max))
+            break
+    join_frames = []
+    match_cols = match_frame.select(keys).unique()
+    for batch in ds.to_batches(batch_size=batch_size, batch_readahead=0, fragment_readahead=0):
+        if batch.num_rows == 0:
+            continue
+        _df = pl.from_arrow(batch)
+        if isinstance(_df, pl.Series):
+            raise TypeError("Always dataframe.")
+        _df = _df.join(match_cols, on=keys, how="inner", join_nulls=True)
+        if _df.shape[0] > 0:
+            join_frames.append(_df)
+
+    if join_frames:
+        return_frame = pl.concat(join_frames, how="diagonal")
+    else:
+        return_frame = pl.from_arrow(pa.Table.from_pylist([], schema=ds.schema))  # type: ignore[assignment]
+
+    if isinstance(return_frame, pl.Series):
+        raise TypeError("Always dataframe.")
+
+    log.complete(num_results=return_frame.height)
+    return return_frame
 
 
 def ds_unique_values(ds: pd.Dataset, columns: List[str]) -> pa.Table:
