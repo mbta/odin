@@ -158,7 +158,7 @@ class CubicODSFact(OdinJob):
         else:
             part_columns = None
             search_paths = [f"{self.s3_export}/"]
-    
+
         for search_path in search_paths:
             found_objs = list_objects(search_path, in_filter=".parquet")
             if found_objs:
