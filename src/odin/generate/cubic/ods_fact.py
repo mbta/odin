@@ -31,6 +31,10 @@ from odin.utils.aws.s3 import upload_file
 from odin.ingestion.qlik.dfm import dfm_from_s3
 from odin.ingestion.qlik.dfm import QlikDFM
 
+NEXT_RUN_DEFAULT = 60 * 60  # 1 hour
+NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
+NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
+
 
 def cdc_to_fact(
     cdc_df: pl.DataFrame,
@@ -147,18 +151,16 @@ class CubicODSFact(OdinJob):
         sync_paths = []
         if self.part_columns:
             part_columns = self.part_columns
+            search_paths = []
             for part in ds_unique_values(ds_from_path(tmp_paths), self.part_columns).to_pylist():
                 part_prefix = "/".join([f"{k}={v}" for k, v in part.items()])
-                search_path = f"{os.path.join(self.s3_export, part_prefix)}/"
-                found_objs = list_objects(search_path, in_filter=".parquet")
-                if found_objs:
-                    sync_file = found_objs[-1].path.replace("s3://", "")
-                    destination = os.path.join(self.tmpdir, sync_file.replace("/year_", "/temp_"))
-                    download_object(found_objs[-1].path, destination)
-                    sync_paths.append(destination)
+                search_paths.append(f"{os.path.join(self.s3_export, part_prefix)}/")
         else:
             part_columns = None
-            found_objs = list_objects(f"{self.s3_export}/", in_filter=".parquet")
+            search_paths = [f"{self.s3_export}/"]
+    
+        for search_path in search_paths:
+            found_objs = list_objects(search_path, in_filter=".parquet")
             if found_objs:
                 sync_file = found_objs[-1].path.replace("s3://", "")
                 destination = os.path.join(self.tmpdir, sync_file.replace("/year_", "/temp_"))
@@ -232,7 +234,18 @@ class CubicODSFact(OdinJob):
         self.reset_tmpdir()
 
     def load_cdc_records(self) -> int:
-        """Load change records from history files."""
+        """
+        Load change records from history files.
+
+        Qlik CDC Records consists of 5 potential header__change_seq values:
+        - I (Insert records)
+        - D (Delete records)
+        - U (After Update records)
+        - B (Before Update records)
+        - L (Initial snapshot load reocrds (same as Insert but from LOAD.. files))
+
+        "B" Records are ignored for this process as they do not contain any relevant information.
+        """
         fact_ds = ds_from_path(f"s3://{self.s3_export}/")
         _, max_fact_seq = ds_column_min_max(fact_ds, "header__change_seq")
         cdc_filter = (pc.field("header__change_seq") > max_fact_seq) & (
@@ -247,7 +260,7 @@ class CubicODSFact(OdinJob):
         max_load_records = max(10_000, cdc_df.height)
 
         if cdc_df.height == 0:
-            return 60 * 60 * 12
+            return NEXT_RUN_LONG
 
         dfm = dfm_from_cdc_records(cdc_df)
         keys = [
@@ -331,8 +344,8 @@ class CubicODSFact(OdinJob):
             upload_file(new_path, move_path)
 
         if cdc_iter > 1:
-            return 60 * 5
-        return 60 * 60
+            return NEXT_RUN_IMMEDIATE
+        return NEXT_RUN_DEFAULT
 
     def run(self) -> int:
         """
@@ -361,7 +374,7 @@ class CubicODSFact(OdinJob):
          - Merge CDC FACT conversion with existing FACT S3 dataset.
          - Upload merged FACT files to S3.
         """
-        next_run_secs = 60 * 60
+        next_run_secs = NEXT_RUN_DEFAULT
 
         self.snapshot_check()
         if self.history_snapshot != self.fact_snapshot:

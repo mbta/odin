@@ -8,6 +8,9 @@ from odin.utils.logger import ProcessLog
 from odin.utils.logger import MdValues
 from odin.utils.runtime import sigterm_check
 
+NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
+NEXT_RUN_FAILED = 60 * 60 * 12  # 12 hours
+
 
 class OdinJob(ABC):
     """Base Class for Odin Event Loop Jobs."""
@@ -33,8 +36,7 @@ class OdinJob(ABC):
         """Start Odin job with logging."""
         sigterm_check()
         self.reset_tmpdir()
-        # default run delay of 6 hours
-        run_delay_secs = 60 * 60 * 6
+        run_delay_secs = NEXT_RUN_DEFAULT
         process_name = self.__class__.__name__
         try:
             log = ProcessLog(
@@ -52,8 +54,7 @@ class OdinJob(ABC):
             )
 
         except Exception as exception:
-            # Don't run again for 12 hours on failure
-            run_delay_secs = 60 * 60 * 12
+            run_delay_secs = NEXT_RUN_FAILED
             log.add_metadata(
                 print_log=False,
                 run_delay_mins=f"{run_delay_secs/60:.2f}",

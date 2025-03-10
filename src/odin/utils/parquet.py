@@ -171,7 +171,7 @@ def fast_last_mod_ds_max(partition: str, column: str) -> Any:
     """
     Find max value of column from the file of parquet partition that was most recently modified.
 
-    This is usefull for very large datasets where it is guaranteed that the max value of a column
+    This is useful for very large datasets where it is guaranteed that the max value of a column
     will be in the most recently modified file of the partition.
 
     TODO: make this work locally as well??
