@@ -13,6 +13,12 @@ from typing import Optional
 import psutil
 
 
+def free_disk_bytes() -> int:
+    """Bytes of free disk space in root partition."""
+    _, _, free_disk_bytes = shutil.disk_usage("/")
+    return free_disk_bytes
+
+
 MdValues = Optional[Union[str, int, float]]
 
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
@@ -72,8 +78,7 @@ class ProcessLog:
 
     def _get_log_string(self) -> str:
         """Create logging string from all default_data and metadata."""
-        _, _, free_disk_bytes = shutil.disk_usage("/")
-        self.default_data["disk_free_mb"] = int(free_disk_bytes / (1024 * 1024))
+        self.default_data["disk_free_mb"] = int(free_disk_bytes() / (1024 * 1024))
         self.default_data["sys_mem_free_pct"] = int(100 - psutil.virtual_memory().percent)
         self.default_data["proc_mem_used_mb"] = int(_PROC.memory_info().rss / (1024 * 1024))
         logging_list = []

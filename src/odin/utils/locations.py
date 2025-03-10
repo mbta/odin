@@ -17,3 +17,6 @@ CUBIC_QLIK_DATA = f"{ODIN_DATA}/cubic_qlik"
 CUBIC_QLIK_ERROR = f"{ODIN_ERROR}/cubic_qlik"
 CUBIC_QLIK_PROCESSED = f"{ODIN_ARCHIVE}/cubic_qlik/processed"
 CUBIC_QLIK_IGNORED = f"{ODIN_ARCHIVE}/cubic_qlik/ignored"
+
+# CUBIC ODS FACT
+CUBIC_ODS_FACT_DATA = f"{ODIN_DATA}/cubic_ods"
