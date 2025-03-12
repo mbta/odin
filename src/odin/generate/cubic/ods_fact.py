@@ -23,6 +23,7 @@ from odin.utils.parquet import ds_unique_values
 from odin.utils.parquet import pq_dataset_writer
 from odin.utils.parquet import ds_limit_k_sorted
 from odin.utils.parquet import ds_batched_join
+from odin.utils.parquet import polars_decimal_as_string
 from odin.utils.aws.s3 import list_partitions
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import delete_objects
@@ -57,12 +58,19 @@ def cdc_to_fact(
     insert_df = pl.concat([insert_df, cdc_df.filter(pl.col("header__change_oper").eq("I"))])
     delete_df = pl.concat([delete_df, cdc_df.filter(pl.col("header__change_oper").eq("D"))])
 
+    mod_cast, orig_cast = polars_decimal_as_string(cdc_df.select(keys))
+    cdc_df = cdc_df.cast(mod_cast)
+
     # add keys from cdc to update, if not present
     if update_df.shape[0] == 0:
         update_df = cdc_df.select(keys).unique()
     else:
-        update_df = update_df.join(
-            cdc_df.select(keys).unique(), on=keys, how="full", join_nulls=True, coalesce=True
+        update_df = update_df.cast(mod_cast).join(
+            cdc_df.select(keys).unique(),
+            on=keys,
+            how="full",
+            join_nulls=True,
+            coalesce=True,
         )
 
     # perform per-column cdc -> fact update
@@ -85,7 +93,7 @@ def cdc_to_fact(
         else:
             update_df = update_df.join(_df, on=keys, how="left", join_nulls=True, coalesce=True)
 
-    return (insert_df, update_df, delete_df)
+    return (insert_df, update_df.cast(orig_cast), delete_df)
 
 
 def dfm_from_cdc_records(cdc_df: pl.DataFrame) -> QlikDFM:
@@ -137,11 +145,10 @@ class CubicODSFact(OdinJob):
         frag: pd.ParquetFileFragment
         for frag in self.history_ds.get_fragments():
             history_ds_groups += frag.num_row_groups
-        self.batch_size = int(history_ds_rows / (20 * history_ds_groups))
+        self.batch_size = max(5000, int(history_ds_rows / (20 * history_ds_groups)))
 
         try:
-            max = fast_last_mod_ds_max(self.s3_export, "odin_snapshot")
-            self.fact_snapshot = str(max)
+            self.fact_snapshot = str(fast_last_mod_ds_max(self.s3_export, "odin_snapshot"))
         except IndexError:
             self.fact_snapshot = ""
 
@@ -181,7 +188,7 @@ class CubicODSFact(OdinJob):
 
     def load_new_snapshot(self) -> None:
         """Load new snapshot from history tables"""
-        delete_objects(list_objects(f"{self.s3_export}/", in_filter=".parquet"))
+        delete_objects([o.path for o in list_objects(f"{self.s3_export}/", in_filter=".parquet")])
         write_schema = self.history_ds.schema
         for col in self.history_drop_columns:
             write_schema = write_schema.remove(write_schema.get_field_index(col))
@@ -305,8 +312,19 @@ class CubicODSFact(OdinJob):
 
         drop_indices = pl.Series("odin_index", [], pl.Int64())
         if update_df.height > 0:
+            mod_cast, orig_cast = polars_decimal_as_string(update_df.select(keys))
             s3_update_df = ds_batched_join(fact_ds, update_df, keys, self.batch_size)
-            s3_update_df = s3_update_df.update(update_df, on=keys, how="left")
+            if "odin_year" in s3_update_df.columns:
+                s3_update_df = s3_update_df.cast({"odin_year": pl.Int32()})
+            s3_update_df = (
+                s3_update_df.cast(mod_cast)
+                .update(
+                    update_df.cast(mod_cast),
+                    on=keys,
+                    how="left",
+                )
+                .cast(orig_cast)
+            )
             insert_df = pl.concat([s3_update_df, insert_df], how="diagonal")
             del update_df
             drop_indices = pl.concat([drop_indices, insert_df.get_column("odin_index")])
@@ -374,12 +392,18 @@ class CubicODSFact(OdinJob):
          - Merge CDC FACT conversion with existing FACT S3 dataset.
          - Upload merged FACT files to S3.
         """
+        self.start_kwargs = {"table": self.table}
         next_run_secs = NEXT_RUN_DEFAULT
 
-        self.snapshot_check()
-        if self.history_snapshot != self.fact_snapshot:
-            # New snapshot detected
-            self.load_new_snapshot()
-        next_run_secs = self.load_cdc_records()
+        try:
+            self.snapshot_check()
+            if self.history_snapshot != self.fact_snapshot:
+                # New snapshot detected
+                self.load_new_snapshot()
+            next_run_secs = self.load_cdc_records()
+        # For development, other ODIN running...
+        except pa.ArrowInvalid:
+            self.start_kwargs["other_odin_running"] = "True"
+            return NEXT_RUN_IMMEDIATE
 
         return next_run_secs
