@@ -49,7 +49,7 @@ class OdinJob(ABC):
             assert isinstance(run_delay_secs, int)
 
             log.complete(
-                run_delay_mins=f"{run_delay_secs/60:.2f}",
+                run_delay_mins=f"{run_delay_secs / 60:.2f}",
                 **self.start_kwargs,
             )
 
@@ -57,7 +57,7 @@ class OdinJob(ABC):
             run_delay_secs = NEXT_RUN_FAILED
             log.add_metadata(
                 print_log=False,
-                run_delay_mins=f"{run_delay_secs/60:.2f}",
+                run_delay_mins=f"{run_delay_secs / 60:.2f}",
                 **self.start_kwargs,
             )
             log.failed(exception)

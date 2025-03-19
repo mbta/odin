@@ -37,6 +37,32 @@ NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
 
+def pl_pipe_update(left: pl.DataFrame, right: pl.DataFrame, keys: List[str]) -> pl.DataFrame:
+    """
+    DataFrame UPDATE operation that will join on NULL values.
+
+    :param left: Dataframe to UPDATE
+    :param right: Dataframe to UPDATE from
+    :prarm keys: JOIN keys
+
+    :return: left Dataframe with UPDATED values from right
+    """
+    non_keys = [c for c in right.columns if c not in keys and c in left.columns]
+    suffix = "_update_NEW_"
+    return (
+        left.join(
+            right.select(keys + non_keys),
+            how="left",
+            on=keys,
+            suffix=suffix,
+            coalesce=True,
+            nulls_equal=True,
+        )
+        .with_columns(**{c: pl.coalesce([pl.col(c + suffix), pl.col(c)]) for c in non_keys})
+        .drop([c + suffix for c in non_keys])
+    )
+
+
 def cdc_to_fact(
     cdc_df: pl.DataFrame,
     insert_df: pl.DataFrame,
@@ -55,8 +81,14 @@ def cdc_to_fact(
 
     :return: Tuple[new INSERT df, new UPDATE df, new DELETE df]
     """
-    insert_df = pl.concat([insert_df, cdc_df.filter(pl.col("header__change_oper").eq("I"))])
-    delete_df = pl.concat([delete_df, cdc_df.filter(pl.col("header__change_oper").eq("D"))])
+    insert_df = pl.concat(
+        [insert_df, cdc_df.filter(pl.col("header__change_oper").eq("I"))],
+        how="diagonal",
+    )
+    delete_df = pl.concat(
+        [delete_df, cdc_df.filter(pl.col("header__change_oper").eq("D"))],
+        how="diagonal",
+    )
 
     mod_cast, orig_cast = polars_decimal_as_string(cdc_df.select(keys))
     cdc_df = cdc_df.cast(mod_cast)
@@ -69,7 +101,7 @@ def cdc_to_fact(
             cdc_df.select(keys).unique(),
             on=keys,
             how="full",
-            join_nulls=True,
+            nulls_equal=True,
             coalesce=True,
         )
 
@@ -89,9 +121,9 @@ def cdc_to_fact(
         if _df.shape[0] == 0:
             continue
         if col in update_df.columns:
-            update_df = update_df.update(_df, on=keys, how="left")
+            update_df = update_df.pipe(pl_pipe_update, _df, keys)
         else:
-            update_df = update_df.join(_df, on=keys, how="left", join_nulls=True, coalesce=True)
+            update_df = update_df.join(_df, on=keys, how="left", nulls_equal=True, coalesce=True)
 
     return (insert_df, update_df.cast(orig_cast), delete_df)
 
@@ -316,17 +348,14 @@ class CubicODSFact(OdinJob):
             s3_update_df = ds_batched_join(fact_ds, update_df, keys, self.batch_size)
             if "odin_year" in s3_update_df.columns:
                 s3_update_df = s3_update_df.cast({"odin_year": pl.Int32()})
-            s3_update_df = (
-                s3_update_df.cast(mod_cast)
-                .update(
-                    update_df.cast(mod_cast),
-                    on=keys,
-                    how="left",
-                )
+            insert_df = pl.concat([s3_update_df, insert_df], how="diagonal")
+            insert_df = (
+                insert_df.cast(mod_cast)
+                .pipe(pl_pipe_update, update_df.cast(mod_cast), keys)
                 .cast(orig_cast)
             )
-            insert_df = pl.concat([s3_update_df, insert_df], how="diagonal")
             del update_df
+            del s3_update_df
             drop_indices = pl.concat([drop_indices, insert_df.get_column("odin_index")])
 
         if delete_df.height > 0:

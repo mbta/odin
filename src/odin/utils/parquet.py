@@ -314,7 +314,7 @@ def ds_batched_join(
         _df = pl.from_arrow(batch)
         if isinstance(_df, pl.Series):
             raise TypeError("Always dataframe.")
-        _df = _df.cast(mod_cast).join(match_cols, on=keys, how="inner", join_nulls=True)
+        _df = _df.cast(mod_cast).join(match_cols, on=keys, how="inner", nulls_equal=True)
         if _df.shape[0] > 0:
             join_frames.append(_df)
 
@@ -391,7 +391,7 @@ def _pq_write_batches(
     files_created.append(
         os.path.join(
             export_folder,
-            f"{export_file_prefix}_{len(files_created)+part_offset:03}.parquet",
+            f"{export_file_prefix}_{len(files_created) + part_offset:03}.parquet",
         )
     )
     log.add_metadata(file_created=files_created[-1])
@@ -433,7 +433,7 @@ def _pq_write_batches(
                 files_created.append(
                     os.path.join(
                         export_folder,
-                        f"{export_file_prefix}_{len(files_created)+part_offset:03}.parquet",
+                        f"{export_file_prefix}_{len(files_created) + part_offset:03}.parquet",
                     )
                 )
                 log.add_metadata(file_created=files_created[-1])

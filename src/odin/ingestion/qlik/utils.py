@@ -140,7 +140,7 @@ def find_qlik_cdc_files(table: str, save_local: bool, max_cdc_files: int) -> Lis
                 ds = ds_from_path(os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DATA, table))
                 filter = pc.starts_with(pc.field("header__from_csv"), f"s3://{prefix}")
                 _, min_path = ds_column_min_max(ds, "header__from_csv", ds_filter=filter)
-            except Exception as _:
+            except Exception:
                 pass
             else:
                 if min_path is not None:
