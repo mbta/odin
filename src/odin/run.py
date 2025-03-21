@@ -15,6 +15,7 @@ from odin.utils.logger import LOG_FORMAT
 from odin.utils.logger import DATE_FORMAT
 from odin.utils.logger import log_max_mem_usage
 from odin.ingestion.qlik.cubic_archive import ArchiveCubicQlikTable
+from odin.generate.cubic.ods_fact import CubicODSFact
 from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES
 from odin.utils.aws.ecs import running_in_aws
 from odin.ingestion.qlik.clean import clean_old_snapshots
@@ -64,6 +65,8 @@ def start():
                 # skip table processing if error occurs
                 continue
         job = ArchiveCubicQlikTable(table)
+        scheduler.enter(0, 1, job.start, (scheduler,))
+        job = CubicODSFact(table)
         scheduler.enter(0, 1, job.start, (scheduler,))
 
     scheduler.run()
