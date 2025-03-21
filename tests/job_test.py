@@ -45,10 +45,10 @@ def test_odin_job(caplog, monkeypatch) -> None:
     assert "status=failed" in caplog.messages[-1]
     assert "added=this" in caplog.messages[-1]
     assert scheduler.empty() is False
-    # Job re-scheduled for 6 hours after failure
-    assert "run_delay_mins=360.00" in caplog.messages[-1]
-    assert scheduler.queue[0][0] > t_start + (60 * 60 * 6)
-    assert scheduler.queue[0][0] < time.monotonic() + (60 * 60 * 6)
+    # Job re-scheduled for 12 hours after failure
+    assert "run_delay_mins=720.00" in caplog.messages[-1]
+    assert scheduler.queue[0][0] > t_start + (60 * 60 * 12)
+    assert scheduler.queue[0][0] < time.monotonic() + (60 * 60 * 12)
 
     scheduler.cancel(scheduler.queue[0])
     assert scheduler.empty() is True

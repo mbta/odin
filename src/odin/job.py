@@ -1,20 +1,28 @@
 from abc import ABC
 from abc import abstractmethod
 from typing import Dict
-from typing import Any
+import tempfile
 import sched
 
 from odin.utils.logger import ProcessLog
+from odin.utils.logger import MdValues
 from odin.utils.runtime import sigterm_check
+
+NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
+NEXT_RUN_FAILED = 60 * 60 * 12  # 12 hours
 
 
 class OdinJob(ABC):
     """Base Class for Odin Event Loop Jobs."""
 
-    @property
-    @abstractmethod
-    def start_kwargs(self) -> Dict[str, Any]:
-        """Return dictonary of kwargs for start method."""
+    start_kwargs: Dict[str, MdValues] = {}
+
+    def reset_tmpdir(self) -> None:
+        """Reset TemporaryDirectory folder."""
+        if hasattr(self, "_tdir"):
+            self._tdir.cleanup()  # type: ignore
+        self._tdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.tmpdir = self._tdir.name
 
     @abstractmethod
     def run(self) -> int:
@@ -27,8 +35,8 @@ class OdinJob(ABC):
     def start(self, schedule: sched.scheduler) -> None:
         """Start Odin job with logging."""
         sigterm_check()
-        # default run delay of 6 hours
-        run_delay_secs = 60 * 60 * 6
+        self.reset_tmpdir()
+        run_delay_secs = NEXT_RUN_DEFAULT
         process_name = self.__class__.__name__
         try:
             log = ProcessLog(
@@ -41,17 +49,19 @@ class OdinJob(ABC):
             assert isinstance(run_delay_secs, int)
 
             log.complete(
-                run_delay_mins=f"{run_delay_secs/60:.2f}",
+                run_delay_mins=f"{run_delay_secs / 60:.2f}",
                 **self.start_kwargs,
             )
 
         except Exception as exception:
+            run_delay_secs = NEXT_RUN_FAILED
             log.add_metadata(
                 print_log=False,
-                run_delay_mins=f"{run_delay_secs/60:.2f}",
+                run_delay_mins=f"{run_delay_secs / 60:.2f}",
                 **self.start_kwargs,
             )
             log.failed(exception)
 
         finally:
+            self.reset_tmpdir()
             schedule.enter(run_delay_secs, 1, self.start, (schedule,))

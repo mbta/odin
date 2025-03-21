@@ -9,7 +9,6 @@ from typing import List
 from typing import Tuple
 from typing import Dict
 from typing import Optional
-from typing import Any
 from itertools import batched
 from concurrent.futures import ThreadPoolExecutor
 
@@ -79,8 +78,6 @@ def thread_save_csv(args: Tuple[str, str]) -> Tuple[int, Optional[str]]:
 class ArchiveCubicQlikTable(OdinJob):
     """Combine Qlik files into single parquet file."""
 
-    start_kwargs: Dict[str, Any] = {}
-
     def __init__(self, table: str) -> None:
         """Create QlikSingleTable instance."""
         self.table = table
@@ -90,15 +87,7 @@ class ArchiveCubicQlikTable(OdinJob):
             self.save_local = False
 
         self.export_folder = os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DATA, self.table)
-        self.reset_tmpdir(make_new=True)
-
-    def reset_tmpdir(self, make_new: bool = True) -> None:
-        """Reset TemporaryDirectory folder."""
-        if hasattr(self, "_tdir"):
-            self._tdir.cleanup()  # type: ignore
-        if make_new:
-            self._tdir = tempfile.TemporaryDirectory()
-            self.tmpdir = self._tdir.name
+        self.start_kwargs = {"table": self.table, "save_local": self.save_local}
 
     def sync_tmp_paths(self, tmp_paths: List[str]) -> None:
         """
@@ -349,8 +338,5 @@ class ArchiveCubicQlikTable(OdinJob):
         except RecentSnapshotError:
             self.start_kwargs["skipped_recent_snapshot"] = True
             next_run_secs = 60 * 60
-
-        finally:
-            self.reset_tmpdir(make_new=False)
 
         return next_run_secs
