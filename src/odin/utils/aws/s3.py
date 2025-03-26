@@ -292,7 +292,10 @@ def delete_objects(objects: List[str]):
     """
     logger = ProcessLog("delete_objects", object_count=len(objects))
 
-    thread_workers = 24
+    thread_workers = thread_cpus()
+    if len(objects) > S3_POOL_COUNT:
+        thread_workers = S3_POOL_COUNT
+
     failed_delete = []
     with ThreadPoolExecutor(max_workers=thread_workers) as pool:
         for result in pool.map(delete_object, objects):
@@ -389,7 +392,11 @@ def rename_objects(
             to_object = os.path.join(to_bucket, replace_prefix, os.path.basename(from_prefix))
         thread_objects.append((obj, to_object))
 
-    with ThreadPoolExecutor(max_workers=thread_cpus()) as pool:
+    thread_workers = thread_cpus()
+    if len(objects) > S3_POOL_COUNT:
+        thread_workers = S3_POOL_COUNT
+
+    with ThreadPoolExecutor(max_workers=thread_workers) as pool:
         for result in pool.map(_thread_rename_object, thread_objects):
             if isinstance(result, str):
                 failed_rename.append(result)

@@ -37,10 +37,9 @@ class OdinJob(ABC):
         sigterm_check()
         self.reset_tmpdir()
         run_delay_secs = NEXT_RUN_DEFAULT
-        process_name = self.__class__.__name__
         try:
             log = ProcessLog(
-                process=process_name,
+                process=self.__class__.__name__,
                 **self.start_kwargs,
             )
 

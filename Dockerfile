@@ -9,6 +9,10 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 # UTF Language Support
 ENV LANG=C.UTF-8
 
+# Mount /tmp VOLUME for AWS mem leak bug
+RUN mkdir -p /tmp && chmod 777 /tmp
+VOLUME ["/tmp"]
+
 # Install required project packages
 WORKDIR /install/
 COPY requirements.txt requirements.txt
