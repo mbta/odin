@@ -1,0 +1,17 @@
+name: Deploy to Prod Environment
+
+on:
+  # deploy when version tags are pushed
+  push:
+    tags:
+      - v[0-9]+.[0-9]+.[0-9]+	
+    
+jobs:
+  deploy:
+    concurrency:
+      group: prod
+    uses: ./.github/workflows/deploy_base.yaml
+    with:
+      environment: prod
+      deploy-odin: true
+    secrets: inherit
