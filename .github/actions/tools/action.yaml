@@ -9,7 +9,7 @@ runs:
   steps:
     # cache the ASDF directory, using values from .tool-versions
     - name: ASDF Tools Cache
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       id: asdf-cache
       with:
         path: ~/.asdf
@@ -17,7 +17,7 @@ runs:
         key: ${{ runner.os}}-asdf-${{ hashFiles('**/.tool-versions') }}
 
     - name: Install ASDF Tools
-      uses: asdf-vm/actions/install@v2
+      uses: asdf-vm/actions/install@v4
       if: steps.asdf-cache.outputs.cache-hit != 'true'
 
     - name: Re-shim ASDF Install
