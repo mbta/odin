@@ -1,4 +1,5 @@
 import os
+import sched
 from typing import List
 from typing import Tuple
 
@@ -9,6 +10,7 @@ import pyarrow.parquet as pq
 import pyarrow.dataset as pd
 
 from odin.job import OdinJob
+from odin.job import job_proc_schedule
 from odin.utils.logger import ProcessLog
 from odin.utils.logger import free_disk_bytes
 from odin.utils.locations import DATA_SPRINGBOARD
@@ -31,6 +33,7 @@ from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import upload_file
 from odin.ingestion.qlik.dfm import dfm_from_s3
 from odin.ingestion.qlik.dfm import QlikDFM
+from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES
 
 NEXT_RUN_DEFAULT = 60 * 60  # 1 hour
 NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
@@ -436,3 +439,14 @@ class CubicODSFact(OdinJob):
             return NEXT_RUN_IMMEDIATE
 
         return next_run_secs
+
+
+def cubic_ods_gen_fact_schedule(schedule: sched.scheduler) -> None:
+    """
+    Schedule All Jobs for generate cubic ODS fact tables process.
+
+    :param schedule: application scheduler
+    """
+    for table in CUBIC_ODS_TABLES:
+        job = CubicODSFact(table)
+        schedule.enter(0, 1, job_proc_schedule, (job, schedule))

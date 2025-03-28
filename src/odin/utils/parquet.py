@@ -8,7 +8,6 @@ from typing import Optional
 from typing import List
 from typing import Any
 from typing import Literal
-from typing import Mapping
 from functools import reduce
 from operator import gt
 from operator import lt
@@ -17,8 +16,7 @@ from operator import attrgetter
 from itertools import chain
 
 import polars as pl
-from polars.type_aliases import ColumnNameOrSelector
-from polars.type_aliases import PolarsDataType
+from polars._typing import SchemaDict
 import pyarrow as pa
 import pyarrow.fs as pafs
 import pyarrow.parquet as pq
@@ -30,11 +28,7 @@ from odin.utils.logger import ProcessLog
 from odin.utils.aws.s3 import list_objects
 
 
-def polars_decimal_as_string(
-    df: pl.DataFrame,
-) -> Tuple[
-    Mapping[ColumnNameOrSelector, PolarsDataType], Mapping[ColumnNameOrSelector, PolarsDataType]
-]:
+def polars_decimal_as_string(df: pl.DataFrame) -> Tuple[SchemaDict, SchemaDict]:
     """
     Create polars dtype mapping for Decimal to String type cast.
 
@@ -307,14 +301,14 @@ def ds_batched_join(
     join_frames = []
     match_cols = match_frame.select(keys).unique()
     mod_cast, orig_cast = polars_decimal_as_string(match_cols)
-    match_cols = match_cols.cast(dtypes=mod_cast)
+    match_cols = match_cols.cast(dtypes=mod_cast)  # type: ignore[arg-type]
     for batch in ds.to_batches(batch_size=batch_size, batch_readahead=0, fragment_readahead=0):
         if batch.num_rows == 0:
             continue
         _df = pl.from_arrow(batch)
         if isinstance(_df, pl.Series):
             raise TypeError("Always dataframe.")
-        _df = _df.cast(mod_cast).join(match_cols, on=keys, how="inner", nulls_equal=True)
+        _df = _df.cast(mod_cast).join(match_cols, on=keys, how="inner", nulls_equal=True)  # type: ignore[arg-type]
         if _df.shape[0] > 0:
             join_frames.append(_df)
 
@@ -327,7 +321,7 @@ def ds_batched_join(
         raise TypeError("Always dataframe.")
 
     log.complete(num_results=return_frame.height)
-    return return_frame.cast(orig_cast)
+    return return_frame.cast(orig_cast)  # type: ignore[arg-type]
 
 
 def ds_unique_values(ds: pd.Dataset, columns: List[str]) -> pa.Table:

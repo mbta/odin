@@ -65,7 +65,7 @@ class OdinJob(ABC):
 
         finally:
             self.reset_tmpdir()
-        
+
         return run_delay_secs
 
 
@@ -73,11 +73,11 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler) -> None:
     """
     Odin Job Runner as Process.
 
-    This function runs each OdinJob as it's own process so resource usage can be fully cleaned 
-    after each job completion.
+    This function runs each OdinJob as it's own process so resource usage can be fully cleared
+    between job runs.
 
     :param job: Job to be run and re-scheduled
-    :param schedule: main applicated scheduler
+    :param schedule: main application scheduler
     """
     with get_context("spawn").Pool(1) as pool:
         run_delay_secs = pool.apply(job.start)
