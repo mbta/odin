@@ -1,8 +1,10 @@
 from abc import ABC
 from abc import abstractmethod
+from multiprocessing import get_context
 from typing import Dict
 import tempfile
 import sched
+
 
 from odin.utils.logger import ProcessLog
 from odin.utils.logger import MdValues
@@ -32,7 +34,7 @@ class OdinJob(ABC):
         :return: seconds to delay until next run of job
         """
 
-    def start(self, schedule: sched.scheduler) -> None:
+    def start(self) -> int:
         """Start Odin job with logging."""
         sigterm_check()
         self.reset_tmpdir()
@@ -63,4 +65,20 @@ class OdinJob(ABC):
 
         finally:
             self.reset_tmpdir()
-            schedule.enter(run_delay_secs, 1, self.start, (schedule,))
+        
+        return run_delay_secs
+
+
+def job_proc_schedule(job: OdinJob, schedule: sched.scheduler) -> None:
+    """
+    Odin Job Runner as Process.
+
+    This function runs each OdinJob as it's own process so resource usage can be fully cleaned 
+    after each job completion.
+
+    :param job: Job to be run and re-scheduled
+    :param schedule: main applicated scheduler
+    """
+    with get_context("spawn").Pool(1) as pool:
+        run_delay_secs = pool.apply(job.start)
+    schedule.enter(run_delay_secs, 1, job_proc_schedule, (job, schedule))

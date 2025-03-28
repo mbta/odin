@@ -14,6 +14,7 @@ from odin.utils.logger import LOGGER_NAME
 from odin.utils.logger import LOG_FORMAT
 from odin.utils.logger import DATE_FORMAT
 from odin.utils.logger import log_max_mem_usage
+from odin.job import job_proc_schedule
 from odin.ingestion.qlik.cubic_archive import ArchiveCubicQlikTable
 from odin.generate.cubic.ods_fact import CubicODSFact
 from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES
@@ -50,7 +51,7 @@ def start():
         ],
     )
 
-    scheduler = sched.scheduler(time.monotonic, time.sleep)
+    schedule = sched.scheduler(time.monotonic, time.sleep)
 
     log = ProcessLog("odin_event_loop")
 
@@ -65,11 +66,11 @@ def start():
                 # skip table processing if error occurs
                 continue
         job = ArchiveCubicQlikTable(table)
-        scheduler.enter(0, 1, job.start, (scheduler,))
+        schedule.enter(0, 1, job_proc_schedule, (job, schedule,))
         job = CubicODSFact(table)
-        scheduler.enter(0, 1, job.start, (scheduler,))
+        schedule.enter(0, 1, job_proc_schedule, (job, schedule,))
 
-    scheduler.run()
+    schedule.run()
     log.complete()
 
 
