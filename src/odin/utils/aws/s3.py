@@ -18,7 +18,7 @@ from botocore.response import StreamingBody
 from odin.utils.logger import ProcessLog
 from odin.utils.runtime import thread_cpus
 
-S3_POOL_COUNT = 50
+S3_POOL_COUNT = 30 * thread_cpus()
 
 
 class S3Object(NamedTuple):

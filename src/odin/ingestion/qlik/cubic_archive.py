@@ -2,6 +2,7 @@ import os
 import gzip
 import shutil
 import hashlib
+import sched
 import tempfile
 
 from datetime import datetime
@@ -14,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from odin.utils.logger import ProcessLog
 from odin.job import OdinJob
+from odin.job import job_proc_schedule
 from odin.utils.runtime import thread_cpus
 from odin.utils.aws.s3 import S3Object
 from odin.utils.aws.s3 import upload_file
@@ -33,6 +35,8 @@ from odin.ingestion.qlik.utils import snapshot_to_parquet
 from odin.ingestion.qlik.utils import re_get_first
 from odin.ingestion.qlik.dfm import QlikDFM
 from odin.ingestion.qlik.dfm import dfm_snapshot_dt
+from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES
+from odin.ingestion.qlik.clean import clean_old_snapshots
 from odin.utils.locations import CUBIC_QLIK_DATA
 from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import DATA_ARCHIVE
@@ -340,3 +344,22 @@ class ArchiveCubicQlikTable(OdinJob):
             next_run_secs = 60 * 60
 
         return next_run_secs
+
+
+def schedule_cubic_archive_qlik(schedule: sched.scheduler) -> None:
+    """
+    Schedule All Jobs for Cubic Qlik Archive process.
+
+    :param schedule: application scheduler
+    """
+    for table in CUBIC_ODS_TABLES:
+        # This will be not be a permanent part of the pipeline and can be removed in the future
+        # This will move any qlik files, not associated with the most recent snapshot, to the
+        # "Ignore" odin partition
+        try:
+            clean_old_snapshots(table)
+        except Exception as _:
+            # skip table processing if error occurs
+            continue
+        job = ArchiveCubicQlikTable(table)
+        schedule.enter(0, 1, job_proc_schedule, (job, schedule))

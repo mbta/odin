@@ -1,4 +1,5 @@
 import os
+import sched
 import sys
 from typing import List
 from typing import Optional
@@ -81,3 +82,14 @@ def sigterm_check() -> None:
     if os.environ.get("GOT_SIGTERM") is not None:
         ProcessLog("stopping_ecs")
         sys.exit(0)
+
+
+def schedule_sigterm_check(schedule: sched.scheduler) -> None:
+    """
+    Schedule sigterm check to always be running between idle jobs.
+
+    :param schedule: application scheduler
+    """
+    sig_check_delay_secs = 30
+    sigterm_check()
+    schedule.enter(sig_check_delay_secs, 1, schedule_sigterm_check, (schedule,))

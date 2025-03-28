@@ -14,11 +14,11 @@ from odin.utils.logger import LOGGER_NAME
 from odin.utils.logger import LOG_FORMAT
 from odin.utils.logger import DATE_FORMAT
 from odin.utils.logger import log_max_mem_usage
-from odin.ingestion.qlik.cubic_archive import ArchiveCubicQlikTable
-from odin.generate.cubic.ods_fact import CubicODSFact
-from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES
-from odin.utils.aws.ecs import running_in_aws
-from odin.ingestion.qlik.clean import clean_old_snapshots
+
+# Job Schedule functions
+from odin.utils.runtime import schedule_sigterm_check
+from odin.ingestion.qlik.cubic_archive import schedule_cubic_archive_qlik
+from odin.generate.cubic.ods_fact import schedule_cubic_ods_fact_gen
 
 
 def start():
@@ -50,26 +50,16 @@ def start():
         ],
     )
 
-    scheduler = sched.scheduler(time.monotonic, time.sleep)
+    schedule = sched.scheduler(time.monotonic, time.sleep)
 
     log = ProcessLog("odin_event_loop")
 
-    for table in CUBIC_ODS_TABLES:
-        if running_in_aws():
-            # This will be not be a permanent part of the pipeline and can be removed in the future
-            # This will move any qlik files, not associated with the most recent snapshot, to the
-            # "Ignore" odin partition
-            try:
-                clean_old_snapshots(table)
-            except Exception as _:
-                # skip table processing if error occurs
-                continue
-        job = ArchiveCubicQlikTable(table)
-        scheduler.enter(0, 1, job.start, (scheduler,))
-        job = CubicODSFact(table)
-        scheduler.enter(0, 1, job.start, (scheduler,))
+    # Schedule ODIN Jobs
+    schedule_sigterm_check(schedule)
+    schedule_cubic_archive_qlik(schedule)
+    schedule_cubic_ods_fact_gen(schedule)
 
-    scheduler.run()
+    schedule.run()
     log.complete()
 
 
