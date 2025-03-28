@@ -441,7 +441,7 @@ class CubicODSFact(OdinJob):
         return next_run_secs
 
 
-def cubic_ods_gen_fact_schedule(schedule: sched.scheduler) -> None:
+def schedule_cubic_ods_fact_gen(schedule: sched.scheduler) -> None:
     """
     Schedule All Jobs for generate cubic ODS fact tables process.
 

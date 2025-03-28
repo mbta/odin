@@ -17,8 +17,8 @@ from odin.utils.logger import log_max_mem_usage
 
 # Job Schedule functions
 from odin.utils.runtime import schedule_sigterm_check
-from odin.ingestion.qlik.cubic_archive import cubic_archive_qlik_schedule
-from odin.generate.cubic.ods_fact import cubic_ods_gen_fact_schedule
+from odin.ingestion.qlik.cubic_archive import schedule_cubic_archive_qlik
+from odin.generate.cubic.ods_fact import schedule_cubic_ods_fact_gen
 
 
 def start():
@@ -56,8 +56,8 @@ def start():
 
     # Schedule ODIN Jobs
     schedule_sigterm_check(schedule)
-    cubic_archive_qlik_schedule(schedule)
-    cubic_ods_gen_fact_schedule(schedule)
+    schedule_cubic_archive_qlik(schedule)
+    schedule_cubic_ods_fact_gen(schedule)
 
     schedule.run()
     log.complete()

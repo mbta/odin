@@ -346,7 +346,7 @@ class ArchiveCubicQlikTable(OdinJob):
         return next_run_secs
 
 
-def cubic_archive_qlik_schedule(schedule: sched.scheduler) -> None:
+def schedule_cubic_archive_qlik(schedule: sched.scheduler) -> None:
     """
     Schedule All Jobs for Cubic Qlik Archive process.
 
