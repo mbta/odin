@@ -86,7 +86,7 @@ def sigterm_check() -> None:
 
 def schedule_sigterm_check(schedule: sched.scheduler) -> None:
     """
-    Schedule sigterm check to run always be running inbetween jobs.
+    Schedule sigterm check to always be running between idle jobs.
 
     :param schedule: application scheduler
     """
