@@ -225,22 +225,25 @@ def cdc_csv_to_parquet(
             log = ProcessLog("cdc_csv_to_parquet", header_folder=header_folder)
             header_folder = os.path.join(read_folder, header_folder)
             merge_file = os.path.join(header_folder, "merge.csv")
-            csv_paths = [os.path.join(header_folder, f) for f in os.listdir(header_folder)]
+
+            # Convert file names in header folder to list of S3 csv objects
             csv_gz_objects = [
                 f.replace("|", "/").replace(".csv", ".csv.gz") for f in os.listdir(header_folder)
             ]
+
+            # Create joined csv file from all files in header folder
+            csv_paths = [os.path.join(header_folder, f) for f in os.listdir(header_folder)]
             with open(merge_file, "wb") as fout:
                 for csv_path in csv_paths:
                     with open(csv_path, "rb") as f:
                         fout.write(f.read())
 
+            # Create parquet file from joined csv
             schema = dfm_to_polars_schema(
                 dfm_from_s3(csv_gz_objects[0]),
                 prefix={"header__from_csv": pl.String()},
             )
-            pq_written.append(
-                os.path.join(write_folder, f"{len(os.listdir(write_folder))}.parquet")
-            )
+            pq_out = os.path.join(write_folder, f"{len(os.listdir(write_folder))}.parquet")
             pl.scan_csv(
                 merge_file,
                 schema=schema,
@@ -255,18 +258,22 @@ def cdc_csv_to_parquet(
                 .cast(pl.Int32())
                 .alias("header__month"),
             ).sink_parquet(
-                pq_written[-1],
+                pq_out,
                 compression="zstd",
                 compression_level=3,
                 row_group_size=int(1024 * 1024 / (8 * schema.len())),
             )
-            shutil.rmtree(header_folder, ignore_errors=True)
             archive_objects += csv_gz_objects
-            log.complete(pq_written=pq_written[-1], num_archive_objects=len(csv_gz_objects))
+            pq_written.append(pq_out)
+            log.complete(pq_written=pq_out, num_archive_objects=len(csv_gz_objects))
 
         except Exception as exception:
+            # TODO: Process each failed file indvidually, to limit files sent to error bucket
             error_objects += csv_gz_objects
             log.add_metadata(print_log=False, num_error_objects=len(csv_gz_objects))
             log.failed(exception)
+
+        finally:
+            shutil.rmtree(header_folder, ignore_errors=True)
 
     return (pq_written, archive_objects, error_objects)
