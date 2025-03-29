@@ -166,7 +166,8 @@ def ds_column_min_max(
     :return: (min, max)
     """
     agg_col = "__agg_result"
-    declarations = [ac.Declaration("scan", ac.ScanNodeOptions(ds, columns=[column]))]  # type: ignore[attr-defined]
+    scan_node = ac.ScanNodeOptions(ds, columns=[column], batch_readahead=0, fragment_readahead=1)  # type: ignore[attr-defined]
+    declarations = [ac.Declaration("scan", scan_node)]
     if ds_filter is not None:
         declarations.append(ac.Declaration("filter", ac.FilterNodeOptions(ds_filter)))
     declarations.append(
@@ -334,8 +335,9 @@ def ds_unique_values(ds: pd.Dataset, columns: List[str]) -> pa.Table:
     :return: pyarrow table with unique results
     """
     log = ProcessLog("ds_unique_values", columns="|".join(columns))
+    scan_node = ac.ScanNodeOptions(ds, columns=columns, batch_readahead=0, fragment_readahead=1)  # type: ignore[attr-defined]
     declarations: List[ac.Declaration] = [
-        ac.Declaration("scan", ac.ScanNodeOptions(ds, columns=columns)),  # type: ignore[attr-defined]
+        ac.Declaration("scan", scan_node),
         ac.Declaration("aggregate", ac.AggregateNodeOptions(aggregates=[], keys=columns)),  # type: ignore[arg-type]
     ]
     table = ac.Declaration.from_sequence(declarations).to_table()
