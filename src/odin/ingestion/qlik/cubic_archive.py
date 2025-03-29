@@ -272,8 +272,8 @@ class ArchiveCubicQlikTable(OdinJob):
                         cdc_paths += written
                         self.archive_objects += archive
                         self.error_objects += error
-                    # create maximum of 20 parquet files in one event loop.
-                    if len(cdc_paths) > 19:
+                    # create maximum of 10 parquet files in one event loop.
+                    if len(cdc_paths) > 9:
                         break
                 if cdc_bytes > 0:
                     written, archive, error = cdc_csv_to_parquet(
