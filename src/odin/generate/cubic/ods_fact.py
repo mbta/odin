@@ -35,7 +35,7 @@ from odin.ingestion.qlik.dfm import dfm_from_s3
 from odin.ingestion.qlik.dfm import QlikDFM
 from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES
 
-NEXT_RUN_DEFAULT = 60 * 60  # 1 hour
+NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
 NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 

@@ -46,6 +46,10 @@ from odin.utils.parquet import pq_dataset_writer
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_unique_values
 
+NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
+NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
+NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
+
 
 def thread_save_csv(args: Tuple[str, str]) -> Tuple[int, Optional[str]]:
     """
@@ -327,13 +331,13 @@ class ArchiveCubicQlikTable(OdinJob):
             self.archive_objects: List[str] = []
             self.error_objects: List[str] = []
 
-            next_run_secs = 60 * 60
+            next_run_secs = NEXT_RUN_DEFAULT
             max_cdc_files = 10_000
             cdc_files = find_qlik_cdc_files(self.table, self.save_local, max_cdc_files)
             if len(cdc_files) == 0:
-                next_run_secs = 60 * 60 * 6
+                next_run_secs = NEXT_RUN_LONG
             elif len(cdc_files) / max_cdc_files > 0.5:
-                next_run_secs = 60 * 5
+                next_run_secs = NEXT_RUN_IMMEDIATE
 
             self.load_snapshots()
             self.load_cdc(cdc_files)
@@ -341,7 +345,7 @@ class ArchiveCubicQlikTable(OdinJob):
 
         except RecentSnapshotError:
             self.start_kwargs["skipped_recent_snapshot"] = True
-            next_run_secs = 60 * 60
+            next_run_secs = NEXT_RUN_DEFAULT
 
         return next_run_secs
 
