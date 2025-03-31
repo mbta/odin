@@ -257,7 +257,9 @@ class CubicODSFact(OdinJob):
             if "edw_inserted_dtm" in write_schema.names:
                 batch = batch.append_column(
                     "odin_year",
-                    pa.array(pc.strftime(batch.column("edw_inserted_dtm"), "%Y"), type=pa.int32()),
+                    pc.coalesce(pc.strftime(batch.column("edw_inserted_dtm"), "%Y"), "0").cast(
+                        pa.int32()
+                    ),
                 )
             batch = batch.drop_columns(self.history_drop_columns)
             writer.write_batch(batch)
@@ -342,7 +344,9 @@ class CubicODSFact(OdinJob):
             ).drop(self.history_drop_columns)
             if "edw_inserted_dtm" in insert_df.columns:
                 insert_df = insert_df.with_columns(
-                    pl.col("edw_inserted_dtm").dt.strftime("%Y").cast(pl.Int32()).alias("odin_year")
+                    pl.coalesce(pl.col("edw_inserted_dtm").dt.strftime("%Y"), 0)
+                    .cast(pl.Int32())
+                    .alias("odin_year")
                 )
 
         drop_indices = pl.Series("odin_index", [], pl.Int64())
