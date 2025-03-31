@@ -204,22 +204,19 @@ def snapshot_to_parquet(obj_path: str, dfm: QlikDFM, write_folder: str) -> str:
     return write_file
 
 
-def cdc_csv_to_parquet(
-    read_folder: str, write_folder: str
-) -> Tuple[List[str], List[str], List[str]]:
+def cdc_csv_to_parquet(read_folder: str, write_folder: str) -> Tuple[List[str], List[str]]:
     """
     Merge all csv subfolder files and create parquet files in write_folder.
 
-    'read_folder' must contain "header" sub-folders.
+    'read_folder' must contain "header" sub-folders. Will raise on error.
 
     :param read_folder: local folder containing 'header' folders
     :param write_folder: local destination folder for parquet files create from merged csv files
 
-    :return: (parquet_files_created, archive_objects, error_objects)
+    :return: (parquet_files_created, archive_objects)
     """
     pq_written = []
     archive_objects = []
-    error_objects = []
     for header_folder in os.listdir(read_folder):
         try:
             log = ProcessLog("cdc_csv_to_parquet", header_folder=header_folder)
@@ -268,12 +265,12 @@ def cdc_csv_to_parquet(
             log.complete(pq_written=pq_out, num_archive_objects=len(csv_gz_objects))
 
         except Exception as exception:
-            # TODO: Process each failed file indvidually, to limit files sent to error bucket
-            error_objects += csv_gz_objects
-            log.add_metadata(print_log=False, num_error_objects=len(csv_gz_objects))
+            # Stop processing on any CDC file error. Processing relies on records being available in
+            # correct order
             log.failed(exception)
+            raise exception
 
         finally:
             shutil.rmtree(header_folder, ignore_errors=True)
 
-    return (pq_written, archive_objects, error_objects)
+    return (pq_written, archive_objects)

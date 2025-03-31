@@ -40,7 +40,6 @@ from odin.ingestion.qlik.clean import clean_old_snapshots
 from odin.utils.locations import CUBIC_QLIK_DATA
 from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import DATA_ARCHIVE
-from odin.utils.locations import CUBIC_QLIK_ERROR
 from odin.utils.locations import CUBIC_QLIK_PROCESSED
 from odin.utils.parquet import pq_dataset_writer
 from odin.utils.parquet import ds_from_path
@@ -250,60 +249,64 @@ class ArchiveCubicQlikTable(OdinJob):
         batch_limit_bytes = 1_000 * 1024 * 1024
         groups = self.group_cdc(cdc_files)
         pool = ThreadPoolExecutor(max_workers=thread_cpus())
-        for snap_part in sorted(groups.keys()):
-            if len(groups[snap_part]) == 0:
-                continue
-            log = ProcessLog("load_qlik_cdc_group", snapshot=snap_part)
-            os.makedirs(os.path.join(self.tmpdir, snap_part))
-            cdc_bytes = 0
-            cdc_paths = []
-            # Create temporary directory for cdc file downloads
-            with tempfile.TemporaryDirectory() as tmpdir:
-                work_objs = [(obj.path, tmpdir) for obj in groups[snap_part]]
-                # download .csv.gz cdc files in batches using ThreadPool download operation
-                # returns size of uncompressed csv file to determine when a bunch of downloaded
-                # csv files should be converted to parquet
-                for batch in batched(work_objs, thread_cpus() * 2):
-                    for size_bytes, obj_path in pool.map(thread_save_csv, batch):
-                        cdc_bytes += size_bytes
-                        if isinstance(obj_path, str):
-                            self.error_objects.append(obj_path)
-                    if cdc_bytes > batch_limit_bytes:
-                        written, archive, error = cdc_csv_to_parquet(
+        log = ProcessLog("load_qlik_cdc_groups")
+        try:
+            for snap_part in sorted(groups.keys()):
+                if len(groups[snap_part]) == 0:
+                    continue
+                log.add_metadata(snapshot=snap_part)
+                os.makedirs(os.path.join(self.tmpdir, snap_part))
+                cdc_bytes = 0
+                cdc_paths = []
+                failed_objects: List[str] = []
+                # Create temporary directory for cdc file downloads
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    work_objs = [(obj.path, tmpdir) for obj in groups[snap_part]]
+                    # download .csv.gz cdc files in batches using ThreadPool download operation
+                    # returns size of uncompressed csv file to determine when a bunch of downloaded
+                    # csv files should be converted to parquet
+                    for batch in batched(work_objs, thread_cpus() * 2):
+                        for size_bytes, obj_path in pool.map(thread_save_csv, batch):
+                            cdc_bytes += size_bytes
+                            if isinstance(obj_path, str):
+                                failed_objects.append(obj_path)
+                        if failed_objects:
+                            raise Exception(f"Failed to save csv(s): {','.join(failed_objects)}")
+                        if cdc_bytes > batch_limit_bytes:
+                            written, archive = cdc_csv_to_parquet(
+                                tmpdir, os.path.join(self.tmpdir, snap_part)
+                            )
+                            cdc_bytes = 0
+                            cdc_paths += written
+                            self.archive_objects += archive
+                        # create maximum of 10 parquet files in one event loop.
+                        if len(cdc_paths) > 9:
+                            break
+                    if cdc_bytes > 0:
+                        written, archive = cdc_csv_to_parquet(
                             tmpdir, os.path.join(self.tmpdir, snap_part)
                         )
-                        cdc_bytes = 0
                         cdc_paths += written
                         self.archive_objects += archive
-                        self.error_objects += error
-                    # create maximum of 10 parquet files in one event loop.
-                    if len(cdc_paths) > 9:
-                        break
-                if cdc_bytes > 0:
-                    written, archive, error = cdc_csv_to_parquet(
-                        tmpdir, os.path.join(self.tmpdir, snap_part)
-                    )
-                    cdc_paths += written
-                    self.archive_objects += archive
-                    self.error_objects += error
 
-            self.sync_tmp_paths(cdc_paths)
-            self.reset_tmpdir()
+                self.sync_tmp_paths(cdc_paths)
+                self.reset_tmpdir()
+
             log.complete()
+        except Exception as exception:
+            log.failed(exception)
+            raise exception
 
-        pool.shutdown()
+        finally:
+            pool.shutdown()
 
     def move_objects(self) -> None:
-        """Move objects to Archive and error locations"""
+        """Move objects to Archive location"""
         if self.save_local:
             return
         dfm_archive = [s.replace(".csv.gz", ".dfm") for s in self.archive_objects]
         to_archive = self.archive_objects + dfm_archive
         rename_objects(to_archive, DATA_ARCHIVE, prepend_prefix=CUBIC_QLIK_PROCESSED)
-
-        dfm_error = [s.replace(".csv.gz", ".dfm") for s in self.error_objects]
-        to_error = self.error_objects + dfm_error
-        rename_objects(to_error, DATA_ARCHIVE, prepend_prefix=CUBIC_QLIK_ERROR)
 
     def run(self) -> int:
         """
@@ -329,7 +332,6 @@ class ArchiveCubicQlikTable(OdinJob):
         try:
             self.start_kwargs = {"table": self.table, "save_local": self.save_local}
             self.archive_objects: List[str] = []
-            self.error_objects: List[str] = []
 
             next_run_secs = NEXT_RUN_DEFAULT
             max_cdc_files = 10_000
