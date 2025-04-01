@@ -190,6 +190,47 @@ def ds_column_min_max(
     return (r["min"], r["max"])  # type: ignore[assignment,index]
 
 
+def ds_metadata_min_max(ds: pd.UnionDataset, column: str) -> Tuple[Any, Any]:
+    """
+    Get min & max value of column from Dataset metadata.
+
+    This is a very fast and efficient way to get min/max from large dataset with accurate
+    metadata statistics.
+
+    :param ds: pyarrow.Dataset to scan
+    :param column: column to query
+
+    :return: (min, max)
+    """
+    log = ProcessLog("ds_metadata_min_max", column=column)
+    column_mins = []
+    column_maxs = []
+    try:
+        for child in ds.children:
+            for frag in child.get_fragments():
+                metadata: pq.FileMetaData = frag.metadata
+                for rg_index in range(metadata.num_row_groups):
+                    rg_meta = metadata.row_group(rg_index).to_dict()
+                    for col in rg_meta["columns"]:
+                        if col["path_in_schema"] != column:  # type: ignore[index]
+                            continue
+                        if col["statistics"]["min"] is not None:  # type: ignore[index]
+                            column_mins.append(col["statistics"]["min"])  # type: ignore[index]
+                        if col["statistics"]["max"] is not None:  # type: ignore[index]
+                            column_maxs.append(col["statistics"]["max"])  # type: ignore[index]
+                        break
+        assert len(column_mins) > 0
+        assert len(column_maxs) > 0
+        col_min = min(column_mins)
+        col_max = max(column_maxs)
+        log.complete()
+    except Exception as exception:
+        log.failed(exception)
+        raise exception
+
+    return (col_min, col_max)
+
+
 def fast_last_mod_ds_max(partition: str, column: str) -> Any:
     """
     Find max value of column from the file of parquet partition that was most recently modified.
