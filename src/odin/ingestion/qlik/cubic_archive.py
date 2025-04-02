@@ -14,6 +14,7 @@ from itertools import batched
 from concurrent.futures import ThreadPoolExecutor
 
 from odin.utils.logger import ProcessLog
+from odin.utils.runtime import sigterm_check
 from odin.job import OdinJob
 from odin.job import job_proc_schedule
 from odin.utils.runtime import thread_cpus
@@ -139,6 +140,8 @@ class ArchiveCubicQlikTable(OdinJob):
             export_file_prefix="month",
         )
 
+        # Check for sigterm before upload (can't be un-done)
+        sigterm_check()
         for new_path in new_paths:
             # Save merged parquet paths to local disk
             if self.save_local:

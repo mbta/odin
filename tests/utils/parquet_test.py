@@ -24,7 +24,8 @@ PQ_MAX_INT = 50_000
 def pq_files(tmp_path) -> List[str]:
     """Create temporary parquet files for testing."""
     pq_files = []
-    pq_files.append(os.path.join(tmp_path, "t1.parquet"))
+    pq_files.append(os.path.join(tmp_path, "file=t1", "t1.parquet"))
+    os.makedirs(os.path.dirname(pq_files[-1]), exist_ok=True)
     (
         pl.DataFrame()
         .with_columns(
@@ -34,7 +35,8 @@ def pq_files(tmp_path) -> List[str]:
         .write_parquet(pq_files[-1], row_group_size=int(PQ_NUM_ROWS / 10))
     )
 
-    pq_files.append(os.path.join(tmp_path, "t2.parquet"))
+    pq_files.append(os.path.join(tmp_path, "file=t2", "t2.parquet"))
+    os.makedirs(os.path.dirname(pq_files[-1]), exist_ok=True)
     (
         pl.DataFrame()
         .with_columns(
@@ -46,7 +48,8 @@ def pq_files(tmp_path) -> List[str]:
         .write_parquet(pq_files[-1], row_group_size=int(PQ_NUM_ROWS / 10))
     )
 
-    pq_files.append(os.path.join(tmp_path, "t3.parquet"))
+    pq_files.append(os.path.join(tmp_path, "file=t3", "t3.parquet"))
+    os.makedirs(os.path.dirname(pq_files[-1]), exist_ok=True)
     (
         pl.DataFrame()
         .with_columns(
@@ -96,7 +99,7 @@ def test_ds_from_path(pq_files) -> None:
     ds = ds_from_path(pq_files)
     assert isinstance(ds, pd.UnionDataset)
     assert ds.count_rows() == PQ_NUM_ROWS * len(pq_files)
-    assert len(ds.schema.names) == 7
+    assert len(ds.schema.names) == 8
 
 
 def test_ds_column_min_max(pq_files) -> None:
@@ -104,6 +107,9 @@ def test_ds_column_min_max(pq_files) -> None:
     # Keep an eye on this test, the source data is technically random so this could fail...
     ds = ds_from_path(pq_files)
     assert ds_column_min_max(ds, "row1") == (0, PQ_MAX_INT - 1)
+
+    # test partition column
+    assert ds_column_min_max(ds, "file") == ("t1", "t3")
 
     ds_filter = pc.field("row1") < 50
     assert ds_column_min_max(ds, "row1", ds_filter) == (0, 49)
@@ -114,6 +120,9 @@ def test_ds_metadata_min_max(pq_files) -> None:
     # Keep an eye on this test, the source data is technically random so this could fail...
     ds = ds_from_path(pq_files)
     assert ds_metadata_min_max(ds, "row1") == (0, PQ_MAX_INT - 1)
+
+    # test partition column
+    assert ds_metadata_min_max(ds, "file") == ("t1", "t3")
 
     assert ds_metadata_min_max(ds, "row7") == ("single_value", "single_value")
 

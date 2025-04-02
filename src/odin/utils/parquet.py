@@ -207,6 +207,14 @@ def ds_metadata_min_max(ds: pd.UnionDataset, column: str) -> Tuple[Any, Any]:
     column_maxs = []
     try:
         for child in ds.children:
+            # check if column in ds partition
+            joined_files = ",".join(child.files)  # type: ignore[attr-defined]
+            if f"/{column}=" in joined_files:
+                column_re = re.compile(rf"\/{column}=([^\/]*)\/")
+                column_parts = column_re.findall(joined_files)
+                column_mins += column_parts
+                column_maxs += column_parts
+                continue
             for frag in child.get_fragments():
                 metadata: pq.FileMetaData = frag.metadata
                 for rg_index in range(metadata.num_row_groups):
@@ -250,7 +258,7 @@ def fast_last_mod_ds_max(partition: str, column: str) -> Any:
     if len(part_objs) == 0:
         raise IndexError(f"No parquet files found in S3 partition: {partition}")
     last_mod_path = sorted(part_objs, key=attrgetter("last_modified"))[-1].path
-    _, max = ds_column_min_max(ds_from_path(last_mod_path), column=column)
+    _, max = ds_metadata_min_max(ds_from_path(last_mod_path), column=column)
     log.complete()
 
     return max
