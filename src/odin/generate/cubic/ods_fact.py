@@ -13,13 +13,14 @@ from odin.job import OdinJob
 from odin.job import job_proc_schedule
 from odin.utils.logger import ProcessLog
 from odin.utils.logger import free_disk_bytes
+from odin.utils.runtime import sigterm_check
 from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import CUBIC_ODS_FACT_DATA
 from odin.utils.locations import CUBIC_QLIK_DATA
 from odin.utils.locations import DATA_ARCHIVE
 from odin.utils.locations import CUBIC_QLIK_PROCESSED
 from odin.utils.parquet import fast_last_mod_ds_max
-from odin.utils.parquet import ds_column_min_max
+from odin.utils.parquet import ds_metadata_min_max
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_unique_values
 from odin.utils.parquet import pq_dataset_writer
@@ -217,6 +218,8 @@ class CubicODSFact(OdinJob):
             export_file_prefix="year",
         )
 
+        # Check for sigterm before upload (can't be un-done)
+        sigterm_check()
         for new_path in new_paths:
             move_path = new_path.replace(f"{self.tmpdir}/", "")
             upload_file(new_path, move_path)
@@ -291,7 +294,7 @@ class CubicODSFact(OdinJob):
         "B" Records are ignored for this process as they do not contain any relevant information.
         """
         fact_ds = ds_from_path(f"s3://{self.s3_export}/")
-        _, max_fact_seq = ds_column_min_max(fact_ds, "header__change_seq")
+        _, max_fact_seq = ds_metadata_min_max(fact_ds, "header__change_seq")
         cdc_filter = (pc.field("header__change_seq") > max_fact_seq) & (
             pc.field("header__change_oper") != "B"
         )
@@ -334,7 +337,7 @@ class CubicODSFact(OdinJob):
             )
 
         if insert_df.height > 0:
-            _, max_odin_index = ds_column_min_max(fact_ds, "odin_index")
+            _, max_odin_index = ds_metadata_min_max(fact_ds, "odin_index")
             start_odin_index = max_odin_index + 1
             insert_df = insert_df.with_columns(
                 pl.arange(
@@ -393,6 +396,8 @@ class CubicODSFact(OdinJob):
             export_file_prefix="year",
         )
 
+        # Check for sigterm before upload (can't be un-done)
+        sigterm_check()
         for new_path in new_paths:
             move_path = new_path.replace(f"{self.tmpdir}/", "")
             upload_file(new_path, move_path)
