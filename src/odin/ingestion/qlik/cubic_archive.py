@@ -104,6 +104,8 @@ class ArchiveCubicQlikTable(OdinJob):
         For each table partition, if existing partition files exist, sync them to the local
         temporary directory to be joined with newly ingested records.
         """
+        if len(tmp_paths) == 0:
+            return
         ProcessLog("sync_tmp_paths")
         part_columns = ["snapshot", "header__year", "header__month"]
         sync_paths = []
