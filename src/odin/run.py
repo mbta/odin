@@ -19,6 +19,7 @@ from odin.utils.logger import log_max_mem_usage
 from odin.utils.runtime import schedule_sigterm_check
 from odin.ingestion.qlik.cubic_archive import schedule_cubic_archive_qlik
 from odin.generate.cubic.ods_fact import schedule_cubic_ods_fact_gen
+from odin.ingestion.afc.afc_archive import schedule_afc_archive
 
 
 def start():
@@ -43,6 +44,8 @@ def start():
             "DATA_ERROR",
             "DATA_INCOMING",
             "DATA_SPRINGBOARD",
+            "AFC_API_CLIENT_ID",
+            "AFC_API_CLIENT_SECRET",
         ],
         aws=[
             "ECS_CLUSTER",
@@ -58,6 +61,7 @@ def start():
     schedule_sigterm_check(schedule)
     schedule_cubic_archive_qlik(schedule)
     schedule_cubic_ods_fact_gen(schedule)
+    schedule_afc_archive(schedule)
 
     schedule.run()
     log.complete()
