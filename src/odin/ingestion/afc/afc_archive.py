@@ -98,8 +98,8 @@ class ArchiveAFCAPI(OdinJob):
         :return: API Response
         """
         headers = {
-            "client_id": os.getenv("AFC_API_CLIENT_ID",""),
-            "client_secret": os.getenv("AFC_API_CLIENT_SECRET",""),
+            "client_id": os.getenv("AFC_API_CLIENT_ID", ""),
+            "client_secret": os.getenv("AFC_API_CLIENT_SECRET", ""),
         }
         r = self.req_pool.request("GET", url=url, headers=headers, fields=fields)
         if r.status != 200:
