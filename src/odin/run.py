@@ -1,8 +1,10 @@
+import os
 import sched
 import signal
 import time
 import logging
 import threading
+import tomllib
 from datetime import datetime
 
 
@@ -35,6 +37,8 @@ def start():
     fail in a way that interrupts the execution of subsequently scheduled jobs.
     """
     signal.signal(signal.SIGTERM, handle_sigterm)
+    config = load_config()
+    ProcessLog("load_config", config=config)
     validate_env_vars(
         required=[
             "DATA_ARCHIVE",
@@ -84,3 +88,16 @@ def start_log_file():
     finally:
         stop_event.set()
         mem_thread.join()
+
+
+def load_config():
+    """Load from env var `ODIN_CONFIG`, fallback to file `config.toml`. Raise if neither exist."""
+    config_string = os.getenv("ODIN_CONFIG")
+    if config_string is not None:
+        return tomllib.loads(config_string)
+    else:
+        try:
+            with open("config.toml", "rb") as f:
+                return tomllib.load(f)
+        except FileNotFoundError as e:
+            raise Exception("Missing config. Needs env var ODIN_CONFIG or file config.toml") from e
