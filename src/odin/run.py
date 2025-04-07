@@ -1,4 +1,3 @@
-import os
 import sched
 import signal
 import time
