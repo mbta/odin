@@ -23,9 +23,6 @@ def validate_env_vars(
     """
     logger = ProcessLog("validate_env_vars")
 
-    # every pipeline needs a service name for logging
-    required.append("SERVICE_NAME")
-
     if private is None:
         private = []
 

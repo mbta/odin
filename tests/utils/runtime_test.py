@@ -11,12 +11,10 @@ from odin.utils.runtime import sigterm_check
 
 def test_validate_env_vars(caplog, monkeypatch) -> None:
     """Test validate_env_vars util."""
-    # Should throw because "SERVICE_NAME" is not set
-    with pytest.raises(RuntimeError):
-        validate_env_vars(required=[])
+    # Passes if no requirements
+    validate_env_vars(required=[])
     caplog.clear()
 
-    monkeypatch.setenv("SERVICE_NAME", "odin")
     monkeypatch.setenv("PRIVATE", "hide_me")
     monkeypatch.setenv("REQUIRED", "see_me")
     monkeypatch.setenv("IN_AWS", "true")
