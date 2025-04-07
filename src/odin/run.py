@@ -58,8 +58,10 @@ def start():
 
     # Schedule ODIN Jobs
     schedule_sigterm_check(schedule)
-    schedule_cubic_archive_qlik(schedule)
-    schedule_cubic_ods_fact_gen(schedule)
+    if "cubic_archive_qlik" in config:
+        schedule_cubic_archive_qlik(schedule, config["cubic_archive_qlik"])
+    if "cubic_ods_fact" in config:
+        schedule_cubic_ods_fact_gen(schedule, config["cubic_ods_fact"])
 
     schedule.run()
     log.complete()
