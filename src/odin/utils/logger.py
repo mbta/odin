@@ -22,8 +22,10 @@ def free_disk_bytes() -> int:
 MdValues = Optional[Union[str, int, float]]
 
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
-# skip "{asctime}" timestamp because Splunk handles that.
-LOG_FORMAT = "{levelname:>8s} {message}"
+LOG_FORMAT = "{asctime} {levelname:>8s} {message}"
+# if running on AWS drop timestamp because Splunk handles that
+if bool(os.getenv("AWS_DEFAULT_REGION")):
+    LOG_FORMAT = "{levelname:>8s} {message}"
 
 # Use/Create logger based on service name, don't use root logger
 LOGGER_NAME = "odin_app"
