@@ -27,7 +27,7 @@ LOG_FORMAT = "{asctime} {levelname:>8s} {message}"
 if bool(os.getenv("AWS_DEFAULT_REGION")):
     LOG_FORMAT = "{levelname:>8s} {message}"
 
-# Use/Create logger based on SERVICE_NAME, don't use root logger
+# Use/Create logger based on service name, don't use root logger
 LOGGER_NAME = "odin_app"
 LOGGER = logging.getLogger(LOGGER_NAME)
 if len(LOGGER.handlers) == 0:
@@ -65,7 +65,7 @@ class ProcessLog:
         self.default_data: Dict[str, MdValues] = {}
         self.metadata: Dict[str, MdValues] = {}
 
-        self.default_data["parent"] = os.getenv("SERVICE_NAME", "unset")
+        self.default_data["parent"] = "odin"
         self.default_data["process"] = process
 
         self.start_time = 0.0

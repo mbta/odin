@@ -1,4 +1,3 @@
-import os
 import sched
 import signal
 import time
@@ -36,7 +35,6 @@ def start():
     fail in a way that interrupts the execution of subsequently scheduled jobs.
     """
     signal.signal(signal.SIGTERM, handle_sigterm)
-    os.environ["SERVICE_NAME"] = "odin"
     validate_env_vars(
         required=[
             "DATA_ARCHIVE",

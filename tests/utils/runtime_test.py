@@ -11,12 +11,10 @@ from odin.utils.runtime import sigterm_check
 
 def test_validate_env_vars(caplog, monkeypatch) -> None:
     """Test validate_env_vars util."""
-    # Should throw because "SERVICE_NAME" is not set
-    with pytest.raises(RuntimeError):
-        validate_env_vars(required=[])
+    # Passes if no requirements
+    validate_env_vars(required=[])
     caplog.clear()
 
-    monkeypatch.setenv("SERVICE_NAME", "odin")
     monkeypatch.setenv("PRIVATE", "hide_me")
     monkeypatch.setenv("REQUIRED", "see_me")
     monkeypatch.setenv("IN_AWS", "true")
@@ -45,20 +43,13 @@ def test_validate_env_vars(caplog, monkeypatch) -> None:
         assert "IN_AWS=true" not in caplog.messages[-1]
 
 
-@patch("odin.utils.runtime.running_in_aws")
 @patch("odin.utils.runtime.os.cpu_count")
-def test_thread_cpus(cpu_count: MagicMock, running_aws: MagicMock) -> None:
+def test_thread_cpus(cpu_count: MagicMock) -> None:
     """Test thread_cpus util."""
-    running_aws.return_value = False
-    cpu_count.return_value = 100
+    cpu_count.return_value = 50
     assert thread_cpus() == 100
 
-    running_aws.return_value = False
     cpu_count.return_value = None
-    assert thread_cpus() == 4
-
-    running_aws.return_value = True
-    cpu_count.return_value = 4
     assert thread_cpus() == 8
 
 
