@@ -311,7 +311,7 @@ class ArchiveCubicQlikTable(OdinJob):
             return
         dfm_archive = [s.replace(".csv.gz", ".dfm") for s in self.archive_objects]
         to_archive = self.archive_objects + dfm_archive
-        rename_objects(to_archive, DATA_ARCHIVE, prepend_prefix=CUBIC_QLIK_PROCESSED)
+        rename_objects(to_archive, os.path.join(DATA_ARCHIVE, CUBIC_QLIK_PROCESSED))
 
     def run(self) -> int:
         """

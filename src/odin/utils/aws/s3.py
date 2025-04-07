@@ -353,14 +353,16 @@ def _thread_rename_object(args: Tuple[str, str]) -> Optional[str]:
 def rename_objects(
     objects: List[str],
     to_bucket: str,
-    prepend_prefix: Optional[str] = None,
 ):
     """
     Rename S3 objects as copy and delete operation.
 
+    If a prefix is given with the destination, it will be prepended to all objects.
+    e.g. rename_objects([bucket1/prefix1/object], bucket2/prefix2)
+    will result in an object at bucket2/prefix2/prefix1/object
+
     :param objects: objects to copy as 's3://bucket/object' or 'bucket/object'
-    :param to_bucket: destination bucket as 's3://bucket' or 'bucket'
-    :param prepend_prefix: (Optional) prefix to be added to the beginning of all renamed objects
+    :param to_bucket: destination bucket as 's3://bucket/prefix' or 'bucket/prefix'
 
     :return: list of objects that failed to move
     """
@@ -368,19 +370,14 @@ def rename_objects(
         "rename_objects",
         object_count=len(objects),
         to_bucket=to_bucket,
-        prepend_prefix=prepend_prefix,
     )
 
     failed_rename = []
-    to_bucket = to_bucket.replace("s3://", "").split("/", 1)[0]
 
     thread_objects = []
     for obj in objects:
         _, from_prefix = split_object(obj)
         to_object = os.path.join(to_bucket, from_prefix)
-        if prepend_prefix is not None:
-            prepend_prefix = prepend_prefix.strip("/")
-            to_object = os.path.join(to_bucket, prepend_prefix, from_prefix)
         thread_objects.append((obj, to_object))
 
     thread_workers = thread_cpus()
