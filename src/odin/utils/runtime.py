@@ -62,12 +62,9 @@ def thread_cpus() -> int:
     """
     os_cpu_count = os.cpu_count()
     if os_cpu_count is None:
-        os_cpu_count = 4
-
-    if running_in_aws():
-        os_cpu_count *= 2
-
-    return os_cpu_count
+        return 8
+    else:
+        return os_cpu_count * 2
 
 
 def handle_sigterm(_: int, __: Any) -> None:

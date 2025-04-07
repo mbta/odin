@@ -45,20 +45,13 @@ def test_validate_env_vars(caplog, monkeypatch) -> None:
         assert "IN_AWS=true" not in caplog.messages[-1]
 
 
-@patch("odin.utils.runtime.running_in_aws")
 @patch("odin.utils.runtime.os.cpu_count")
-def test_thread_cpus(cpu_count: MagicMock, running_aws: MagicMock) -> None:
+def test_thread_cpus(cpu_count: MagicMock) -> None:
     """Test thread_cpus util."""
-    running_aws.return_value = False
-    cpu_count.return_value = 100
+    cpu_count.return_value = 50
     assert thread_cpus() == 100
 
-    running_aws.return_value = False
     cpu_count.return_value = None
-    assert thread_cpus() == 4
-
-    running_aws.return_value = True
-    cpu_count.return_value = 4
     assert thread_cpus() == 8
 
 
