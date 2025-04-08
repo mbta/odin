@@ -84,7 +84,7 @@ class ArchiveCubicQlikTable(OdinJob):
     def __init__(self, table: str, config) -> None:
         """Create QlikSingleTable instance."""
         self.table = table
-        self.save_local = config.get("save_local", True)
+        self.save_local = config["save_local"]
         self.export_folder = os.path.join(config["source"], self.table)
         self.archive_processed = config["archive_processed"]
         self.source_prefixes = config["source_prefixes"]
