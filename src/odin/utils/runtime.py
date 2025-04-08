@@ -10,23 +10,16 @@ from odin.utils.aws.ecs import running_in_aws
 
 
 def validate_env_vars(
-    required: List[str],
-    private: Optional[List[str]] = None,
     aws: Optional[List[str]] = None,
 ) -> None:
     """
     Check that exepected environment variables are set before application starts.
 
-    :param required: ENV vars needed for application runtime
-    :param private: required ENV vars that will not be logged
     :param aws: ENV vars only needed when running on AWS
     """
     logger = ProcessLog("validate_env_vars")
 
-    if private is None:
-        private = []
-
-    required_set = set(required) | set(private)
+    required_set = set()
 
     if aws and running_in_aws():
         required_set = required_set | set(aws)
@@ -36,8 +29,6 @@ def validate_env_vars(
         value = os.environ.get(key, None)
         if value is None:
             missing.append(key)
-        elif key in private:
-            logger.add_metadata(**{key: "**********"}, print_log=False)
         else:
             logger.add_metadata(**{key: value}, print_log=False)
 

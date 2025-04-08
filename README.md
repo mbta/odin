@@ -23,11 +23,6 @@ Follow [instructions](https://direnv.net/) for hooking `direnv` into your shell.
 
 `direnv` manages the loading/unloading of environmental variables, as well as the creation & activation of a local python virtual environment for development. Using `direnv`, whenever a shell moves into the project directory, appropriate environmental variables will be loaded automagically and the python virtual environment will be created/activated.
 
-Copy [.env.template](.env.template) to [.env](.env) to bootstrap the expected project environmental variables.
-```sh
-cp .env.template .env
-```
-
 After `direnv` is properly hooked, allow in project:
 ```sh
 direnv allow
@@ -40,6 +35,12 @@ Run the [config_venv.sh](config_venv.sh) script after a repository clone, or aft
 # script updates `requirements` files and syncs packages to local python virtual environment.
 ./config_venv.sh
 ```
+
+## Job Configuration
+
+Which jobs to run, and their configuration, is controlled by a file `config.toml`. (It can also be passed in as an environment variable `ODIN_CONFIG`).
+
+Copy `config.toml.template` to `config.toml`, then uncomment the jobs you want to be started when the application starts.
 
 ## Containers
 

@@ -40,12 +40,6 @@ def start():
     config = load_config()
     ProcessLog("load_config", config=config)
     validate_env_vars(
-        required=[
-            "DATA_ARCHIVE",
-            "DATA_ERROR",
-            "DATA_INCOMING",
-            "DATA_SPRINGBOARD",
-        ],
         aws=[
             "ECS_CLUSTER",
             "ECS_TASK_GROUP",
