@@ -42,6 +42,13 @@ Which jobs to run, and their configuration, is controlled by a file `config.toml
 
 Copy `config.toml.template` to `config.toml`, then uncomment the jobs you want to be started when the application starts.
 
-## Containers
+## Running the application.
 
-`docker` is required to run containerized version of application for local development.
+For local development, it's recommended to use `docker` to run  a containerized version of the application.
+
+It's also possible to run the run the application with `python -c 'from odin.run import start; start()'`.
+
+Take care, it is possible for a local version of the application to modify files in s3, if you have permissions and the application is configured that way.
+
+- Run tests with `pytest tests`
+- Run the formatter with `ruff format .`
