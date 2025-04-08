@@ -12,11 +12,6 @@ import polars as pl
 import pyarrow.compute as pc
 
 from odin.utils.logger import ProcessLog
-from odin.utils.locations import DATA_ARCHIVE
-from odin.utils.locations import DATA_ERROR
-from odin.utils.locations import IN_QLIK_PREFIX
-from odin.utils.locations import DATA_SPRINGBOARD
-from odin.utils.locations import CUBIC_QLIK_DATA
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import S3Object
 from odin.utils.aws.s3 import download_object
@@ -65,7 +60,9 @@ def re_get_first(string: str, pattern: re.Pattern) -> str:
     return match.group(0)
 
 
-def find_qlik_load_files(table: str, save_local=bool) -> List[Tuple[str, QlikDFM]]:
+def find_qlik_load_files(
+    table: str, source_prefixes: List[str], ds_prefix: str, save_local: bool
+) -> List[Tuple[str, QlikDFM]]:
     """
     Get sorted List of LOAD***.csv.gz from from bucket locations
 
@@ -75,19 +72,16 @@ def find_qlik_load_files(table: str, save_local=bool) -> List[Tuple[str, QlikDFM
 
     :return: list of load file tuples sorted from oldest to newest
     """
-    prefixes = (
-        os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, table),
-        os.path.join(DATA_ERROR, IN_QLIK_PREFIX, table),
-    )
     paths: List[Tuple[str, QlikDFM]] = []
     log = ProcessLog("find_qlik_load_files", table=table)
     try:
-        for prefix in prefixes:
+        for prefix in source_prefixes:
+            prefix = os.path.join(prefix, table)
             in_func = None
             # If running locally, find last file processed to use as filter for S3 objects
             if save_local:
                 try:
-                    ds = ds_from_path(os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DATA, table))
+                    ds = ds_from_path(os.path.join(ds_prefix, table))
                     filter = pc.starts_with(
                         pc.field("header__from_csv"), f"s3://{prefix}"
                     ) & pc.match_substring(pc.field("header__from_csv"), "LOAD")
@@ -118,7 +112,9 @@ def find_qlik_load_files(table: str, save_local=bool) -> List[Tuple[str, QlikDFM
     return sorted(paths, key=lambda tup: tup[1]["fileInfo"]["startWriteTimestamp"])
 
 
-def find_qlik_cdc_files(table: str, save_local: bool, max_cdc_files: int) -> List[S3Object]:
+def find_qlik_cdc_files(
+    table: str, source_prefixes: List[str], ds_prefix: str, save_local: bool, max_cdc_files: int
+) -> List[S3Object]:
     """
     Get cdc .csv.gz from from bucket locations with no sorting.
 
@@ -128,16 +124,13 @@ def find_qlik_cdc_files(table: str, save_local: bool, max_cdc_files: int) -> Lis
     :return: list of CDC .csv.gz files
     """
     cdc_table = f"{table}__ct/"
-    prefixes = (
-        os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, cdc_table),
-        os.path.join(DATA_ERROR, IN_QLIK_PREFIX, cdc_table),
-    )
     paths = []
-    for prefix in prefixes:
+    for prefix in source_prefixes:
+        prefix = os.path.join(prefix, cdc_table)
         in_func = None
         if save_local:
             try:
-                ds = ds_from_path(os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DATA, table))
+                ds = ds_from_path(os.path.join(ds_prefix, table))
                 filter = pc.starts_with(pc.field("header__from_csv"), f"s3://{prefix}")
                 _, min_path = ds_column_min_max(ds, "header__from_csv", ds_filter=filter)
             except Exception:

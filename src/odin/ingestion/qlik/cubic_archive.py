@@ -87,6 +87,8 @@ class ArchiveCubicQlikTable(OdinJob):
         self.save_local = config.get("save_local", True)
         self.export_folder = os.path.join(config["source"], self.table)
         self.archive_processed = config["archive_processed"]
+        self.source_prefixes = config["source_prefixes"]
+        self.ds_prefix = config["ds_prefix"]
         self.start_kwargs = {"table": self.table, "save_local": self.save_local}
 
     def sync_tmp_paths(self, tmp_paths: List[str]) -> None:
@@ -197,7 +199,11 @@ class ArchiveCubicQlikTable(OdinJob):
         added to the same snapshot partition.
         """
         snapshot_group: List[Tuple[str, QlikDFM]] = []
-        for path, dfm in find_qlik_load_files(self.table):
+        for path, dfm in find_qlik_load_files(
+            self.source_prefixes,
+            self.ds_prefix,
+            self.save_local,
+        ):
             if path.endswith("00001.csv.gz"):
                 self.process_snapshot_group(snapshot_group)
                 snapshot_group.clear()
@@ -332,7 +338,13 @@ class ArchiveCubicQlikTable(OdinJob):
 
             next_run_secs = NEXT_RUN_DEFAULT
             max_cdc_files = 10_000
-            cdc_files = find_qlik_cdc_files(self.table, self.save_local, max_cdc_files)
+            cdc_files = find_qlik_cdc_files(
+                self.table,
+                self.source_prefixes,
+                self.ds_prefix,
+                self.save_local,
+                max_cdc_files,
+            )
             if len(cdc_files) == 0:
                 next_run_secs = NEXT_RUN_LONG
             elif len(cdc_files) / max_cdc_files > 0.5:
