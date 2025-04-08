@@ -372,7 +372,13 @@ def schedule_cubic_archive_qlik(schedule: sched.scheduler, config) -> None:
         # This will move any qlik files, not associated with the most recent snapshot, to the
         # "Ignore" odin partition
         try:
-            clean_old_snapshots(table)
+            clean_old_snapshots(
+                table,
+                config["source_prefixes"],
+                config["ds_prefix"],
+                config["archive_ignored"],
+                config["archive_error"],
+            )
         except Exception as _:
             # skip table processing if error occurs
             continue

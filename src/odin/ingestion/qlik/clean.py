@@ -16,16 +16,11 @@ from odin.ingestion.qlik.utils import SNAPSHOT_FMT
 from odin.ingestion.qlik.dfm import dfm_snapshot_dt
 from odin.ingestion.qlik.dfm import QlikDFM
 from odin.ingestion.qlik.dfm import dfm_from_s3
-from odin.utils.locations import DATA_ARCHIVE
-from odin.utils.locations import DATA_ERROR
-from odin.utils.locations import DATA_SPRINGBOARD
-from odin.utils.locations import IN_QLIK_PREFIX
-from odin.utils.locations import CUBIC_QLIK_ERROR
-from odin.utils.locations import CUBIC_QLIK_IGNORED
-from odin.utils.locations import CUBIC_QLIK_DATA
 
 
-def clean_find_qlik_load_files(table: str) -> List[Tuple[str, QlikDFM]]:
+def clean_find_qlik_load_files(
+    table: str, source_prefixes: List[str], archive_error: str
+) -> List[Tuple[str, QlikDFM]]:
     """
     Get sorted List of LOAD***.csv.gz from from bucket locations
 
@@ -35,15 +30,12 @@ def clean_find_qlik_load_files(table: str) -> List[Tuple[str, QlikDFM]]:
 
     :return: sorted list of LOAD**.csv.gz files
     """
-    prefixes = (
-        os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, table),
-        os.path.join(DATA_ERROR, IN_QLIK_PREFIX, table),
-    )
     paths: List[Tuple[str, QlikDFM]] = []
     error_paths: List[str] = []
     log = ProcessLog("clean_find_qlik_load_files", table=table)
     try:
-        for prefix in prefixes:
+        for prefix in source_prefixes:
+            prefix = os.path.join(prefix, table)
             for obj in list_objects(f"{prefix}/", in_filter="LOAD"):
                 if not obj.path.endswith("csv.gz"):
                     continue
@@ -58,12 +50,14 @@ def clean_find_qlik_load_files(table: str) -> List[Tuple[str, QlikDFM]]:
     finally:
         if error_paths:
             error_paths += [p.replace(".csv.gz", ".dfm") for p in error_paths]
-            rename_objects(error_paths, os.path.join(DATA_ARCHIVE, CUBIC_QLIK_ERROR))
+            rename_objects(error_paths, archive_error)
 
     return sorted(paths, key=lambda tup: tup[1]["fileInfo"]["startWriteTimestamp"])
 
 
-def clean_old_snapshots(table: str) -> None:
+def clean_old_snapshots(
+    table: str, source_prefixes: List[str], ds_prefix: str, archive_ignored: str, archive_error: str
+) -> None:
     """
     Move old snapshot and cdc files to ignore in S3.
 
@@ -81,7 +75,7 @@ def clean_old_snapshots(table: str) -> None:
     # check for existing snapshots
     log = ProcessLog("clean_old_snapshots", table=table)
 
-    snaps = list_partitions(os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DATA, table))
+    snaps = list_partitions(os.path.join(ds_prefix, table))
     if snaps:
         min_good_dt = datetime.strptime(re_get_first(snaps[0], RE_SNAPSHOT_TS), SNAPSHOT_FMT)
     else:
@@ -96,7 +90,7 @@ def clean_old_snapshots(table: str) -> None:
         # ]
         groups = []
         current_group: List[Tuple[str, datetime]] = []
-        for path, dfm in clean_find_qlik_load_files(table):
+        for path, dfm in clean_find_qlik_load_files(table, source_prefixes, archive_error):
             snapshot_dt = dfm_snapshot_dt(dfm)
             if path.endswith("00001.csv.gz") and current_group:
                 groups.append(current_group)
@@ -117,20 +111,17 @@ def clean_old_snapshots(table: str) -> None:
                     move_snap_paths.append(csv_path)
                     move_snap_paths.append(str(csv_path).replace(".csv.gz", ".dfm"))
         if move_snap_paths:
-            rename_objects(move_snap_paths, os.path.join(DATA_ARCHIVE, CUBIC_QLIK_IGNORED))
+            rename_objects(move_snap_paths, archive_ignored)
 
     log.add_metadata(min_good_dt=min_good_dt)
 
     # Move cdc files
-    prefixes = (
-        os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, table),
-        os.path.join(DATA_ERROR, IN_QLIK_PREFIX, table),
-    )
     objects_moved = 0
     while True:
         found_objects: List[S3Object] = []
         move_cdc_paths: List[str] = []
-        for prefix in prefixes:
+        for prefix in source_prefixes:
+            prefix = os.path.join(prefix, table)
             found_objects += list_objects(f"{prefix}__ct/", max_objects=100_000)
 
         for obj in found_objects:
@@ -140,6 +131,6 @@ def clean_old_snapshots(table: str) -> None:
         if len(move_cdc_paths) == 0:
             break
         objects_moved += len(move_cdc_paths)
-        rename_objects(move_cdc_paths, os.path.join(DATA_ARCHIVE, CUBIC_QLIK_IGNORED))
+        rename_objects(move_cdc_paths, archive_ignored)
 
     log.complete(objects_moved=objects_moved)
