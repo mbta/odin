@@ -12,35 +12,24 @@ from odin.utils.runtime import sigterm_check
 def test_validate_env_vars(caplog, monkeypatch) -> None:
     """Test validate_env_vars util."""
     # Passes if no requirements
-    validate_env_vars(required=[])
+    validate_env_vars()
     caplog.clear()
 
-    monkeypatch.setenv("PRIVATE", "hide_me")
-    monkeypatch.setenv("REQUIRED", "see_me")
     monkeypatch.setenv("IN_AWS", "true")
 
-    validate_env_vars(required=["REQUIRED"], private=["PRIVATE"], aws=["IN_AWS"])
+    # doesn't validate env var if not in AWS
+    validate_env_vars(aws=["IN_AWS"])
     assert len(caplog.messages) == 2
-    assert "hide_me" not in caplog.messages[-1]
     assert "IN_AWS" not in caplog.messages[-1]
-    assert "see_me" in caplog.messages[-1]
     caplog.clear()
 
-    with pytest.raises(RuntimeError):
-        validate_env_vars(required=["REQUIRED"], private=["NOT_FOUND"])
-    caplog.clear()
-
+    # does validate env var if in AWS
     with patch("odin.utils.runtime.running_in_aws") as in_aws:
         in_aws.return_value = True
-        validate_env_vars(required=[], aws=["IN_AWS"])
+        validate_env_vars(aws=["IN_AWS"])
         assert len(caplog.messages) == 2
         assert "IN_AWS=true" in caplog.messages[-1]
         caplog.clear()
-
-        validate_env_vars(required=[], private=["IN_AWS"], aws=["IN_AWS"])
-        assert len(caplog.messages) == 2
-        assert "IN_AWS=" in caplog.messages[-1]
-        assert "IN_AWS=true" not in caplog.messages[-1]
 
 
 @patch("odin.utils.runtime.os.cpu_count")
