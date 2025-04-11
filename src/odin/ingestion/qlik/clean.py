@@ -58,7 +58,7 @@ def clean_find_qlik_load_files(table: str) -> List[Tuple[str, QlikDFM]]:
     finally:
         if error_paths:
             error_paths += [p.replace(".csv.gz", ".dfm") for p in error_paths]
-            rename_objects(error_paths, os.path.join(DATA_ARCHIVE, CUBIC_QLIK_ERROR))
+            rename_objects(error_paths, DATA_ARCHIVE, prepend_prefix=CUBIC_QLIK_ERROR)
 
     return sorted(paths, key=lambda tup: tup[1]["fileInfo"]["startWriteTimestamp"])
 
@@ -117,7 +117,7 @@ def clean_old_snapshots(table: str) -> None:
                     move_snap_paths.append(csv_path)
                     move_snap_paths.append(str(csv_path).replace(".csv.gz", ".dfm"))
         if move_snap_paths:
-            rename_objects(move_snap_paths, os.path.join(DATA_ARCHIVE, CUBIC_QLIK_IGNORED))
+            rename_objects(move_snap_paths, DATA_ARCHIVE, prepend_prefix=CUBIC_QLIK_IGNORED)
 
     log.add_metadata(min_good_dt=min_good_dt)
 
@@ -140,6 +140,6 @@ def clean_old_snapshots(table: str) -> None:
         if len(move_cdc_paths) == 0:
             break
         objects_moved += len(move_cdc_paths)
-        rename_objects(move_cdc_paths, os.path.join(DATA_ARCHIVE, CUBIC_QLIK_IGNORED))
+        rename_objects(move_cdc_paths, DATA_ARCHIVE, prepend_prefix=CUBIC_QLIK_IGNORED)
 
     log.complete(objects_moved=objects_moved)
