@@ -76,6 +76,10 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler) -> None:
     This function runs each OdinJob as it's own process so resource usage can be fully cleared
     between job runs.
 
+    Running the job in a `Process` also allows the scheduler to be unaffected by jobs that are
+    killed by the machine kernel because of something like an OOM error. The exitcode of each
+    process is checked and all non 0 codes are logged as job failures.
+
     :param job: Job to be run and re-scheduled
     :param schedule: main application scheduler
     """
