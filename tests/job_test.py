@@ -1,6 +1,7 @@
 import pytest
 import sched
 import time
+from multiprocessing import get_context
 
 from odin.job import OdinJob
 
@@ -17,8 +18,10 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler) -> None:
     :param job: Job to be run and re-scheduled
     :param schedule: main application scheduler
     """
-    run_delay_secs = job.start()
-    schedule.enter(run_delay_secs, 1, job_proc_schedule, (job, schedule))
+    manager = get_context("spawn").Manager()
+    return_val = manager.Value("i", 0)
+    job.start(return_val)
+    schedule.enter(return_val.value, 1, job_proc_schedule, (job, schedule))
 
 
 def test_odin_job(caplog, monkeypatch) -> None:
@@ -62,9 +65,9 @@ def test_odin_job(caplog, monkeypatch) -> None:
     assert "added=this" in caplog.messages[-1]
     assert scheduler.empty() is False
     # Job re-scheduled for 12 hours after failure
-    assert "run_delay_mins=720.00" in caplog.messages[-1]
-    assert scheduler.queue[0][0] > t_start + (60 * 60 * 12)
-    assert scheduler.queue[0][0] < time.monotonic() + (60 * 60 * 12)
+    assert "run_delay_mins=1440.00" in caplog.messages[-1]
+    assert scheduler.queue[0][0] > t_start + (60 * 60 * 24)
+    assert scheduler.queue[0][0] < time.monotonic() + (60 * 60 * 24)
 
     scheduler.cancel(scheduler.queue[0])
     assert scheduler.empty() is True

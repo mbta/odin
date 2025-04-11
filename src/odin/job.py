@@ -1,6 +1,7 @@
 from abc import ABC
 from abc import abstractmethod
 from multiprocessing import get_context
+from multiprocessing.sharedctypes import Synchronized
 from typing import Dict
 import tempfile
 import sched
@@ -11,7 +12,7 @@ from odin.utils.logger import MdValues
 from odin.utils.runtime import sigterm_check
 
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
-NEXT_RUN_FAILED = 60 * 60 * 12  # 12 hours
+NEXT_RUN_FAILED = 60 * 60 * 24  # 24 hours
 
 
 class OdinJob(ABC):
@@ -34,7 +35,7 @@ class OdinJob(ABC):
         :return: seconds to delay until next run of job
         """
 
-    def start(self) -> int:
+    def start(self, return_val: "Synchronized[int]") -> None:
         """Start Odin job with logging."""
         sigterm_check()
         self.reset_tmpdir()
@@ -65,8 +66,7 @@ class OdinJob(ABC):
 
         finally:
             self.reset_tmpdir()
-
-        return run_delay_secs
+            return_val.value = run_delay_secs
 
 
 def job_proc_schedule(job: OdinJob, schedule: sched.scheduler) -> None:
@@ -76,9 +76,26 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler) -> None:
     This function runs each OdinJob as it's own process so resource usage can be fully cleared
     between job runs.
 
+    Running the job in a `Process` also allows the scheduler to be unaffected by jobs that are
+    killed by the machine kernel because of something like an OOM error. The exitcode of each
+    process is checked and all non 0 codes are logged as job failures.
+
     :param job: Job to be run and re-scheduled
     :param schedule: main application scheduler
     """
-    with get_context("spawn").Pool(1) as pool:
-        run_delay_secs = pool.apply(job.start)
-    schedule.enter(run_delay_secs, 1, job_proc_schedule, (job, schedule))
+    return_manager = get_context("spawn").Manager()
+    proc_return_val = return_manager.Value("i", NEXT_RUN_FAILED)
+    proc = get_context("spawn").Process(target=job.start, args=(proc_return_val,))
+    proc.start()
+    proc.join()
+    if proc.exitcode != 0:
+        fail_log = ProcessLog(
+            "odin_job_died",
+            job_type=job.__class__.__name__,
+            job_exit_code=proc.exitcode,
+            **job.start_kwargs,
+        )
+        fail_log.failed(SystemError("OdinJob killed by ECS."))
+        proc_return_val.value = NEXT_RUN_FAILED
+
+    schedule.enter(proc_return_val.value, 1, job_proc_schedule, (job, schedule))
