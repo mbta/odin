@@ -51,7 +51,7 @@ Copy `config.toml.template` to `config.toml`, then uncomment the jobs you want t
 
 For local development, it's recommended to use `docker` to run  a containerized version of the application.
 
-It's also possible to run the run the application with `python -c 'from odin.run import start; start()'`.
+It's also possible to run the run the application with `start-odin`.
 
 Take care, it is possible for a local version of the application to modify files in s3, if you have permissions and the application is configured that way.
 
