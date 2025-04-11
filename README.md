@@ -23,6 +23,11 @@ Follow [instructions](https://direnv.net/) for hooking `direnv` into your shell.
 
 `direnv` manages the loading/unloading of environmental variables, as well as the creation & activation of a local python virtual environment for development. Using `direnv`, whenever a shell moves into the project directory, appropriate environmental variables will be loaded automagically and the python virtual environment will be created/activated.
 
+Copy [.env.template](.env.template) to [.env](.env) to bootstrap the expected project environmental variables.
+```sh
+cp .env.template .env
+```
+
 After `direnv` is properly hooked, allow in project:
 ```sh
 direnv allow

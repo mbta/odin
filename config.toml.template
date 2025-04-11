@@ -1,20 +1,7 @@
 # Uncomment a job and its arguments to start it.
 
 # [cubic_archive_qlik]
-# save_local = true
-# source = "mbta-ctd-dataplatform-dev-springboard/odin/data/cubic_qlik/"
-# archive_processed = "mbta-ctd-dataplatform-dev-archive/odin/archive/cubic_qlik/processed/"
-# # for qlik/utils.py and qlik/clean.py
-# source_prefixes = [
-#   "mbta-ctd-dataplatform-dev-archive/cubic/ods_qlik/",
-#   "mbta-ctd-dataplatform-dev-error/cubic/ods_qlik/"
-# ]
-# ds_prefix = "mbta-ctd-dataplatform-dev-springboard/odin/data/cubic_qlik/"
-# # for qlik/clean.py
-# archive_ignored = "mbta-ctd-dataplatform-dev-archive/odin/archive/cubic_qlik/ignored/"
-# archive_error = "mbta-ctd-dataplatform-dev-archive/odin/error/cubic_qlik/"
+# # job configuration controlled by environment variables
 
 # [cubic_ods_fact]
-# source = "mbta-ctd-dataplatform-dev-springboard/odin/data/cubic_qlik"
-# export = "mbta-ctd-dataplatform-dev-springboard/odin/data/cubic_ods"
-# archive_processed = "mbta-ctd-dataplatform-dev-archive/odin/archive/cubic_qlik/processed/"
+# # job configuration controlled by environment variables

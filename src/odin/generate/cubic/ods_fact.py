@@ -14,6 +14,11 @@ from odin.job import job_proc_schedule
 from odin.utils.logger import ProcessLog
 from odin.utils.logger import free_disk_bytes
 from odin.utils.runtime import sigterm_check
+from odin.utils.locations import DATA_SPRINGBOARD
+from odin.utils.locations import CUBIC_ODS_FACT_DATA
+from odin.utils.locations import CUBIC_QLIK_DATA
+from odin.utils.locations import DATA_ARCHIVE
+from odin.utils.locations import CUBIC_QLIK_PROCESSED
 from odin.utils.parquet import fast_last_mod_ds_max
 from odin.utils.parquet import ds_metadata_min_max
 from odin.utils.parquet import ds_from_path
@@ -127,7 +132,7 @@ def cdc_to_fact(
     return (insert_df, update_df.cast(orig_cast), delete_df)
 
 
-def dfm_from_cdc_records(cdc_df: pl.DataFrame, archive_processed: str) -> QlikDFM:
+def dfm_from_cdc_records(cdc_df: pl.DataFrame) -> QlikDFM:
     """
     Produce Qlik DFM record from CDC Dataframe.
 
@@ -140,19 +145,18 @@ def dfm_from_cdc_records(cdc_df: pl.DataFrame, archive_processed: str) -> QlikDF
     """
     dfm_path = str(cdc_df.get_column("header__from_csv").max())
     dfm_path = dfm_path.replace("s3://", "").split("/", 1)[-1]
-    dfm_path = os.path.join(archive_processed, dfm_path)
+    dfm_path = os.path.join(DATA_ARCHIVE, CUBIC_QLIK_PROCESSED, dfm_path)
     return dfm_from_s3(dfm_path)
 
 
 class CubicODSFact(OdinJob):
     """Create/Update Cubic ODS Fact tables"""
 
-    def __init__(self, table: str, config) -> None:
+    def __init__(self, table: str) -> None:
         """Create CubicODSFact instance."""
         self.table = table
-        self.s3_source = os.path.join(config["source"], table)
-        self.s3_export = os.path.join(config["export"], table)
-        self.archive_processed = config["archive_processed"]
+        self.s3_source = os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DATA, table)
+        self.s3_export = os.path.join(DATA_SPRINGBOARD, CUBIC_ODS_FACT_DATA, table)
         self.start_kwargs = {"table": table}
         self.history_drop_columns = [
             "header__year",
@@ -305,7 +309,7 @@ class CubicODSFact(OdinJob):
         if cdc_df.height == 0:
             return NEXT_RUN_LONG
 
-        dfm = dfm_from_cdc_records(cdc_df, self.archive_processed)
+        dfm = dfm_from_cdc_records(cdc_df)
         keys = [
             col["name"].lower() for col in dfm["dataInfo"]["columns"] if col["primaryKeyPos"] > 0
         ]
@@ -446,12 +450,12 @@ class CubicODSFact(OdinJob):
         return next_run_secs
 
 
-def schedule_cubic_ods_fact_gen(schedule: sched.scheduler, config) -> None:
+def schedule_cubic_ods_fact_gen(schedule: sched.scheduler) -> None:
     """
     Schedule All Jobs for generate cubic ODS fact tables process.
 
     :param schedule: application scheduler
     """
     for table in CUBIC_ODS_TABLES:
-        job = CubicODSFact(table, config)
+        job = CubicODSFact(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))

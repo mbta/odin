@@ -39,7 +39,18 @@ def start():
     signal.signal(signal.SIGTERM, handle_sigterm)
     config = load_config()
     ProcessLog("load_config", config=config)
+    if "cubic_archive_qlik" in config or "cubic_ods_fact" in config:
+        required_env_vars = [
+            "DATA_ARCHIVE",
+            "DATA_ERROR",
+            "DATA_INCOMING",
+            "DATA_SPRINGBOARD",
+        ]
+    else:
+        required_env_vars = []
+
     validate_env_vars(
+        required=required_env_vars,
         aws=[
             "ECS_CLUSTER",
             "ECS_TASK_GROUP",
@@ -53,9 +64,9 @@ def start():
     # Schedule ODIN Jobs
     schedule_sigterm_check(schedule)
     if "cubic_archive_qlik" in config:
-        schedule_cubic_archive_qlik(schedule, config["cubic_archive_qlik"])
+        schedule_cubic_archive_qlik(schedule)
     if "cubic_ods_fact" in config:
-        schedule_cubic_ods_fact_gen(schedule, config["cubic_ods_fact"])
+        schedule_cubic_ods_fact_gen(schedule)
 
     schedule.run()
     log.complete()

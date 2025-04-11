@@ -25,6 +25,7 @@ from odin.utils.aws.s3 import list_partitions
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import stream_object
 from odin.utils.aws.s3 import rename_objects
+from odin.utils.aws.ecs import running_in_aws
 from odin.ingestion.qlik.utils import SNAPSHOT_FMT
 from odin.ingestion.qlik.utils import RE_CDC_TS
 from odin.ingestion.qlik.utils import RecentSnapshotError
@@ -37,6 +38,10 @@ from odin.ingestion.qlik.dfm import QlikDFM
 from odin.ingestion.qlik.dfm import dfm_snapshot_dt
 from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES
 from odin.ingestion.qlik.clean import clean_old_snapshots
+from odin.utils.locations import CUBIC_QLIK_DATA
+from odin.utils.locations import DATA_SPRINGBOARD
+from odin.utils.locations import DATA_ARCHIVE
+from odin.utils.locations import CUBIC_QLIK_PROCESSED
 from odin.utils.parquet import pq_dataset_writer
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_unique_values
@@ -81,14 +86,15 @@ def thread_save_csv(args: Tuple[str, str]) -> Tuple[int, Optional[str]]:
 class ArchiveCubicQlikTable(OdinJob):
     """Combine Qlik files into single parquet file."""
 
-    def __init__(self, table: str, config) -> None:
+    def __init__(self, table: str) -> None:
         """Create QlikSingleTable instance."""
         self.table = table
-        self.save_local = config["save_local"]
-        self.export_folder = os.path.join(config["source"], self.table)
-        self.archive_processed = config["archive_processed"]
-        self.source_prefixes = config["source_prefixes"]
-        self.ds_prefix = config["ds_prefix"]
+
+        self.save_local = True
+        if running_in_aws():
+            self.save_local = False
+
+        self.export_folder = os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DATA, self.table)
         self.start_kwargs = {"table": self.table, "save_local": self.save_local}
 
     def sync_tmp_paths(self, tmp_paths: List[str]) -> None:
@@ -199,11 +205,7 @@ class ArchiveCubicQlikTable(OdinJob):
         added to the same snapshot partition.
         """
         snapshot_group: List[Tuple[str, QlikDFM]] = []
-        for path, dfm in find_qlik_load_files(
-            self.source_prefixes,
-            self.ds_prefix,
-            self.save_local,
-        ):
+        for path, dfm in find_qlik_load_files(self.table):
             if path.endswith("00001.csv.gz"):
                 self.process_snapshot_group(snapshot_group)
                 snapshot_group.clear()
@@ -309,7 +311,7 @@ class ArchiveCubicQlikTable(OdinJob):
             return
         dfm_archive = [s.replace(".csv.gz", ".dfm") for s in self.archive_objects]
         to_archive = self.archive_objects + dfm_archive
-        rename_objects(to_archive, self.archive_processed)
+        rename_objects(to_archive, os.path.join(DATA_ARCHIVE, CUBIC_QLIK_PROCESSED))
 
     def run(self) -> int:
         """
@@ -338,13 +340,7 @@ class ArchiveCubicQlikTable(OdinJob):
 
             next_run_secs = NEXT_RUN_DEFAULT
             max_cdc_files = 10_000
-            cdc_files = find_qlik_cdc_files(
-                self.table,
-                self.source_prefixes,
-                self.ds_prefix,
-                self.save_local,
-                max_cdc_files,
-            )
+            cdc_files = find_qlik_cdc_files(self.table, self.save_local, max_cdc_files)
             if len(cdc_files) == 0:
                 next_run_secs = NEXT_RUN_LONG
             elif len(cdc_files) / max_cdc_files > 0.5:
@@ -361,7 +357,7 @@ class ArchiveCubicQlikTable(OdinJob):
         return next_run_secs
 
 
-def schedule_cubic_archive_qlik(schedule: sched.scheduler, config) -> None:
+def schedule_cubic_archive_qlik(schedule: sched.scheduler) -> None:
     """
     Schedule All Jobs for Cubic Qlik Archive process.
 
@@ -372,15 +368,9 @@ def schedule_cubic_archive_qlik(schedule: sched.scheduler, config) -> None:
         # This will move any qlik files, not associated with the most recent snapshot, to the
         # "Ignore" odin partition
         try:
-            clean_old_snapshots(
-                table,
-                config["source_prefixes"],
-                config["ds_prefix"],
-                config["archive_ignored"],
-                config["archive_error"],
-            )
+            clean_old_snapshots(table)
         except Exception as _:
             # skip table processing if error occurs
             continue
-        job = ArchiveCubicQlikTable(table, config)
+        job = ArchiveCubicQlikTable(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))
