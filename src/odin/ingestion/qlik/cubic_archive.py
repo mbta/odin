@@ -205,7 +205,7 @@ class ArchiveCubicQlikTable(OdinJob):
         added to the same snapshot partition.
         """
         snapshot_group: List[Tuple[str, QlikDFM]] = []
-        for path, dfm in find_qlik_load_files(self.table):
+        for path, dfm in find_qlik_load_files(self.table, self.save_local):
             if path.endswith("00001.csv.gz"):
                 self.process_snapshot_group(snapshot_group)
                 snapshot_group.clear()

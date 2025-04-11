@@ -65,7 +65,7 @@ def re_get_first(string: str, pattern: re.Pattern) -> str:
     return match.group(0)
 
 
-def find_qlik_load_files(table: str, save_local=bool) -> List[Tuple[str, QlikDFM]]:
+def find_qlik_load_files(table: str, save_local: bool) -> List[Tuple[str, QlikDFM]]:
     """
     Get sorted List of LOAD***.csv.gz from from bucket locations
 
