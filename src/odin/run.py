@@ -13,6 +13,7 @@ from odin.utils.logger import LOGGER_NAME
 from odin.utils.logger import LOG_FORMAT
 from odin.utils.logger import DATE_FORMAT
 from odin.utils.logger import log_max_mem_usage
+from odin.migrate.process import start_migrations
 
 # Job Schedule functions
 from odin.utils.runtime import schedule_sigterm_check
@@ -47,6 +48,7 @@ def start():
             "ECS_TASK_GROUP",
         ],
     )
+    start_migrations()
 
     schedule = sched.scheduler(time.monotonic, time.sleep)
 
