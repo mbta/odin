@@ -43,7 +43,12 @@ def upload_migration_file(status_path: str, stem: str) -> None:
 
 
 def run_migrations(modules_path: str, task_name: str) -> None:
-    """Run migration."""
+    """
+    Run task migrations.
+
+    :param modules_path: Path to local folder containing task migration files.
+    :param task_name: Task name of ECS instance running migration.
+    """
     status_path = os.path.join(DATA_ARCHIVE, ODIN_MIGRATIONS, task_name)
     odin_root = find_spec("odin").submodule_search_locations[0]  # type: ignore[index, union-attr]
     format_check = re.compile(r"^\d{4}\.py$")
@@ -64,7 +69,7 @@ def run_migrations(modules_path: str, task_name: str) -> None:
             continue
 
         import_path = migration_file.replace(odin_root, "odin").replace("/", ".").replace(".py", "")
-        log = ProcessLog("run_migration", migration=migration_stem)
+        log = ProcessLog("run_migration", task_name=task_name, migration=migration_stem)
         try:
             migrate_module = __import__(import_path, fromlist=[""])
             migrate_module.migration()
@@ -76,7 +81,32 @@ def run_migrations(modules_path: str, task_name: str) -> None:
 
 
 def start_migrations():
-    """Start migration."""
+    """
+    Start Simple Migration Process.
+
+    This process allows ODIN to run one-time migrations based on S3 "status_files" being used as a
+    checkpoint to determine which migrations have been run and/or need to be run.
+
+    To create/run a new migration, create a new incremented python file in the folder of the
+    ECS task/environment you want to run a migration for.
+
+    For migration on odin dev environment (task_name=odin-dev):
+        -> odin > migrate > migrations > odin-dev > 000X.py
+
+    Note:
+        Any files in the migration folder not following the migration file format will
+        be skipped/ignored.
+
+    Inside of the 000X.py file, create a `migration()` function and accepts and returns nothing.
+    This is the function that will be called during the migration process.
+
+    If any exception is thrown during the migration process, the migration will be considered
+    to be "failed" and the ECS will enter an infinte wait state untill the failure can be resolved.
+
+    If the migration complets successfully, a file will uploaded to S3 with the migration number
+    `000X`. Future migration attempts will skip this migration as all migrations are run in
+    incremental order.
+    """
     task_name = os.getenv("ECS_TASK_GROUP")
     if task_name is None:
         # Only run in AWS
