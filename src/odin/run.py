@@ -13,6 +13,7 @@ from odin.migrate.process import start_migrations
 from odin.utils.runtime import schedule_sigterm_check
 from odin.ingestion.qlik.cubic_archive import schedule_cubic_archive_qlik
 from odin.generate.cubic.ods_fact import schedule_cubic_ods_fact_gen
+from odin.spare.spare_job import schedule_spare_jobs
 
 
 def start():
@@ -61,6 +62,8 @@ def start():
         schedule_cubic_archive_qlik(schedule)
     if "cubic_ods_fact" in config:
         schedule_cubic_ods_fact_gen(schedule)
+    if "spare" in config:
+        schedule_spare_jobs(schedule, config["spare"])
 
     schedule.run()
 
