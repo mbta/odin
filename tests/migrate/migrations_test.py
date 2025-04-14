@@ -8,28 +8,29 @@ from odin.migrate.process import start_migrations
 from odin.migrate.process import get_last_run_migration
 
 
-def test_get_last_run_migration():
+@patch("odin.migrate.process.list_objects")
+def test_get_last_run_migration(ls: MagicMock):
     """Test get_last_migration helper function"""
+    # no existing migration status
     status_path = "aws_s3_bucket/odin/migrations/_odin-test"
-    with patch("odin.migrate.process.list_objects") as mock:
-        mock.return_value = []
-        assert get_last_run_migration(status_path) is None
+    ls.return_value = []
+    assert get_last_run_migration(status_path) is None
 
-    with patch("odin.migrate.process.list_objects") as mock:
-        return_value = [
-            S3Object(path="obj1", last_modified=datetime.now(), size_bytes=0),
-            S3Object(path="obj2", last_modified=datetime.now(), size_bytes=0),
-        ]
-        mock.return_value = return_value
-        with pytest.raises(AssertionError):
-            get_last_run_migration(status_path)
+    # more than one object in status_path (bad)
+    return_value = [
+        S3Object(path="obj1", last_modified=datetime.now(), size_bytes=0),
+        S3Object(path="obj2", last_modified=datetime.now(), size_bytes=0),
+    ]
+    ls.return_value = return_value
+    with pytest.raises(AssertionError):
+        get_last_run_migration(status_path)
 
-    with patch("odin.migrate.process.list_objects") as mock:
-        return_value = [
-            S3Object(path=f"{status_path}/0004", last_modified=datetime.now(), size_bytes=0),
-        ]
-        mock.return_value = return_value
-        assert get_last_run_migration(status_path) == "0004"
+    # normal return
+    return_value = [
+        S3Object(path=f"{status_path}/0004", last_modified=datetime.now(), size_bytes=0),
+    ]
+    ls.return_value = return_value
+    assert get_last_run_migration(status_path) == "0004"
 
 
 def test_migrate_not_in_aws(caplog):
