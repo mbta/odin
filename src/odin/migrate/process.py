@@ -24,8 +24,7 @@ def get_last_run_migration(status_path: str) -> str | None:
         return None
     if len(status_objs) > 1:
         raise AssertionError("More than one ODIN migration status file found.")
-    status_obj = status_objs[0].path
-    return status_obj.split("/")[-1]
+    return status_objs[0].path.split("/")[-1]
 
 
 def upload_migration_file(status_path: str, stem: str) -> None:

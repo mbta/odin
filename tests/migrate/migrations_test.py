@@ -1,3 +1,4 @@
+import os
 import pytest
 from datetime import datetime
 from unittest.mock import MagicMock
@@ -6,6 +7,7 @@ from unittest.mock import patch
 from odin.utils.aws.s3 import S3Object
 from odin.migrate.process import start_migrations
 from odin.migrate.process import get_last_run_migration
+from odin.utils.locations import ODIN_MIGRATIONS
 
 
 @patch("odin.migrate.process.list_objects")
@@ -64,6 +66,7 @@ def test_migration_failure(ls: MagicMock, infinite: MagicMock, caplog, monkeypat
     assert "AssertionError" in caplog.messages[-1]
 
 
+@patch("odin.migrate.process.DATA_ARCHIVE", "bucket")
 @patch("odin.migrate.process.upload_migration_file")
 @patch("odin.migrate.process.get_last_run_migration")
 def test_migration_process(last_run: MagicMock, upload: MagicMock, caplog, monkeypatch):
@@ -72,8 +75,9 @@ def test_migration_process(last_run: MagicMock, upload: MagicMock, caplog, monke
 
     last_run.return_value = "0001"
     start_migrations()
-    last_run.assert_called_once()
-    upload.assert_called_once()
+    status_path = os.path.join("bucket", ODIN_MIGRATIONS, "_odin-test")
+    last_run.assert_called_once_with(status_path)
+    upload.assert_called_once_with(status_path, "0002")
     assert len(caplog.messages) == 6
     assert "ran_migration_0002" in caplog.messages[-3]
     caplog.clear()
