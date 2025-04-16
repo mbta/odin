@@ -44,6 +44,8 @@ def start():
             "DATA_ERROR",
             "DATA_INCOMING",
             "DATA_SPRINGBOARD",
+        ],
+        private=[
             "AFC_API_CLIENT_ID",
             "AFC_API_CLIENT_SECRET",
         ],
