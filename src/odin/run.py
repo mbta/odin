@@ -39,7 +39,6 @@ def start():
         required=[
             "DATA_ARCHIVE",
             "DATA_ERROR",
-            "DATA_INCOMING",
             "DATA_SPRINGBOARD",
         ],
         aws=[
