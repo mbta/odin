@@ -289,15 +289,19 @@ class CubicODSFact(OdinJob):
         - D (Delete records)
         - U (After Update records)
         - B (Before Update records)
-        - L (Initial snapshot load reocrds (same as Insert but from LOAD.. files))
+        - Null (Initial snapshot load reocrds (same as Insert but from LOAD.. files))
 
         "B" Records are ignored for this process as they do not contain any relevant information.
         """
         fact_ds = ds_from_path(f"s3://{self.s3_export}/")
         _, max_fact_seq = ds_metadata_min_max(fact_ds, "header__change_seq")
-        cdc_filter = (pc.field("header__change_seq") > max_fact_seq) & (
-            pc.field("header__change_oper") != "B"
+        cdc_filter = (
+            (pc.field("header__change_oper") == "I")
+            | (pc.field("header__change_oper") == "D")
+            | (pc.field("header__change_oper") == "U")
         )
+        if max_fact_seq is not None:
+            cdc_filter = cdc_filter & (pc.field("header__change_seq") > max_fact_seq)
 
         cdc_df = ds_limit_k_sorted(
             self.history_ds.filter(cdc_filter),
@@ -326,9 +330,11 @@ class CubicODSFact(OdinJob):
             if cdc_df.height == 0 or num_load_records > max_load_records:
                 break
             max_fact_seq = cdc_df.get_column("header__change_seq").max()
-            cdc_filter = (pc.field("header__change_seq") > max_fact_seq) & (
-                pc.field("header__change_oper") != "B"
-            )
+            cdc_filter = (
+                (pc.field("header__change_oper") == "I")
+                | (pc.field("header__change_oper") == "D")
+                | (pc.field("header__change_oper") == "U")
+            ) & (pc.field("header__change_seq") > max_fact_seq)
             cdc_df = ds_limit_k_sorted(
                 self.history_ds.filter(cdc_filter), "header__change_seq", batch_size=self.batch_size
             )
