@@ -172,7 +172,6 @@ def snapshot_to_parquet(obj_path: str, dfm: QlikDFM, write_folder: str) -> str:
     log = ProcessLog("snapshot_to_parquet", obj_path=obj_path, write_folder=write_folder)
     try:
         dfm_dt = datetime.fromisoformat(dfm["fileInfo"]["startWriteTimestamp"])
-        change_seq = dfm_dt.strftime("%Y%m%d%H%M%S").ljust(35, "0")
         schema = dfm_to_polars_schema(dfm)
         write_file = os.path.join(write_folder, f"{len(os.listdir(write_folder))}.parquet")
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -185,7 +184,7 @@ def snapshot_to_parquet(obj_path: str, dfm: QlikDFM, write_folder: str) -> str:
             ).with_columns(
                 pl.lit(dfm_dt.strftime("%Y")).cast(pl.Int32()).alias("header__year"),
                 pl.lit(dfm_dt.strftime("%m")).cast(pl.Int32()).alias("header__month"),
-                pl.lit(change_seq, dtype=pl.Decimal(35, 0)).alias("header__change_seq"),
+                pl.lit(None, dtype=pl.String()).alias("header__change_seq"),
                 pl.lit("L").alias("header__change_oper"),
                 pl.lit(dfm_dt).alias("header__timestamp"),
                 pl.lit(obj_path).alias("header__from_csv"),
