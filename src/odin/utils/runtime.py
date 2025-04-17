@@ -1,6 +1,7 @@
 import os
 import sched
 import sys
+import time
 from typing import List
 from typing import Optional
 from typing import Any
@@ -87,3 +88,29 @@ def schedule_sigterm_check(schedule: sched.scheduler) -> None:
     sig_check_delay_secs = 30
     sigterm_check()
     schedule.enter(sig_check_delay_secs, 1, schedule_sigterm_check, (schedule,))
+
+
+def infinite_wait(reason: str) -> None:
+    """
+    Put ECS into infinte wait if no processing should occur because of possible tainted state.
+
+    When running on ECS, propagating an exception up the call stack and killing
+    the processes will result in the process being restarted, to keep the task
+    count at one. This method should be called instead when we want to pause
+    the process for intervention before restarting.
+    """
+    # amount of time to sleep between logging statements
+    sleep_time = 30
+    count = 0
+
+    while True:
+        sigterm_check()
+
+        # log every 5 minutes
+        if count == 10:
+            ProcessLog(infinite_wait, reason=reason)
+            count = 0
+
+        # sleep
+        time.sleep(sleep_time)
+        count += 1
