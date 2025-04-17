@@ -41,6 +41,19 @@ Run the [config_venv.sh](config_venv.sh) script after a repository clone, or aft
 ./config_venv.sh
 ```
 
-## Containers
+## Job Configuration
 
-`docker` is required to run containerized version of application for local development.
+Which jobs to run, and their configuration, is controlled by a file `config.toml`. (It can also be passed in as an environment variable `ODIN_CONFIG`).
+
+Copy `config.toml.template` to `config.toml`, then uncomment the jobs you want to be started when the application starts.
+
+## Running the application.
+
+For local development, it's recommended to use `docker` to run  a containerized version of the application.
+
+It's also possible to run the run the application with `start-odin`.
+
+Take care, it is possible for a local version of the application to modify files in s3, if you have permissions and the application is configured that way.
+
+- Run tests with `pytest tests`
+- Run the formatter with `ruff format .`
