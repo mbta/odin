@@ -41,9 +41,9 @@ def upload_migration_file(status_path: str, stem: str) -> None:
         upload_file(file_path, os.path.join(status_path, stem))
 
 
-def run_migrations(modules_path: str, task_name: str) -> None:
+def run_task_migration(modules_path: str, task_name: str) -> None:
     """
-    Run task migrations.
+    Run migrations for `task_name`.
 
     :param modules_path: Path to local folder containing task migration files.
     :param task_name: Task name of ECS instance running migration.
@@ -115,7 +115,7 @@ def start_migrations():
     try:
         here = os.path.dirname(os.path.abspath(__file__))
         modules_path = os.path.join(here, "migrations", task_name)
-        run_migrations(modules_path, task_name)
+        run_task_migration(modules_path, task_name)
         log.complete()
     except FileNotFoundError as fnfe:
         # migration folder does not exist for task
