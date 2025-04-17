@@ -100,9 +100,9 @@ def start_migrations():
     This is the function that will be called during the migration process.
 
     If any exception is thrown during the migration process, the migration will be considered
-    to be "failed" and the ECS will enter an infinte wait state untill the failure can be resolved.
+    to be "failed" and the ECS will enter an infinite wait state until the failure can be resolved.
 
-    If the migration complets successfully, a file will uploaded to S3 with the migration number
+    If the migration completes successfully, a file will uploaded to S3 with the migration number
     `000X`. Future migration attempts will skip this migration as all migrations are run in
     incremental order.
     """
