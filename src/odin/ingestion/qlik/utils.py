@@ -129,10 +129,11 @@ def find_qlik_cdc_files(table: str, save_local: bool, max_cdc_files: int) -> Lis
     """
     cdc_table = f"{table}__ct/"
     prefixes = (
-        os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, cdc_table),
+        os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, cdc_table, "snapshot"),
+        os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, cdc_table, "timestamp"),
         os.path.join(DATA_ERROR, IN_QLIK_PREFIX, cdc_table),
     )
-    paths = []
+    paths: list[S3Object] = []
     for prefix in prefixes:
         in_func = None
         if save_local:
@@ -154,6 +155,10 @@ def find_qlik_cdc_files(table: str, save_local: bool, max_cdc_files: int) -> Lis
             prefix, in_filter=".csv.gz", max_objects=max_cdc_files, in_func=in_func
         )
 
+    # sort results from each prefix by timestamp filename, and limit length to max_cdc_files
+    # this should ensure all objects from different prefixes are returned in correct order
+    paths = sorted(paths, key=lambda o: os.path.basename(o.path))[:max_cdc_files]
+
     return paths
 
 
@@ -172,7 +177,6 @@ def snapshot_to_parquet(obj_path: str, dfm: QlikDFM, write_folder: str) -> str:
     log = ProcessLog("snapshot_to_parquet", obj_path=obj_path, write_folder=write_folder)
     try:
         dfm_dt = datetime.fromisoformat(dfm["fileInfo"]["startWriteTimestamp"])
-        change_seq = dfm_dt.strftime("%Y%m%d%H%M%S").ljust(35, "0")
         schema = dfm_to_polars_schema(dfm)
         write_file = os.path.join(write_folder, f"{len(os.listdir(write_folder))}.parquet")
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -185,7 +189,7 @@ def snapshot_to_parquet(obj_path: str, dfm: QlikDFM, write_folder: str) -> str:
             ).with_columns(
                 pl.lit(dfm_dt.strftime("%Y")).cast(pl.Int32()).alias("header__year"),
                 pl.lit(dfm_dt.strftime("%m")).cast(pl.Int32()).alias("header__month"),
-                pl.lit(change_seq, dtype=pl.Decimal(35, 0)).alias("header__change_seq"),
+                pl.lit(None, dtype=pl.String()).alias("header__change_seq"),
                 pl.lit("L").alias("header__change_oper"),
                 pl.lit(dfm_dt).alias("header__timestamp"),
                 pl.lit(obj_path).alias("header__from_csv"),

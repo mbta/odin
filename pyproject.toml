@@ -39,6 +39,9 @@ log_level = 20
 [tool.mypy]
 ignore_missing_imports = true
 python_version = 3.13
+exclude = [
+    "src/odin/migrate/migrations/",
+]
 
 [tool.ruff]
 line-length = 100

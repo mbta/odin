@@ -120,7 +120,7 @@ def dfm_type_to_polars(field: DFMdataInfocolumns) -> pl.DataType:
     qlik_type = field["type"]
 
     if field["name"] == "header__change_seq":
-        return pl.Decimal(35, 0)
+        return pl.String()
 
     exact_type_matches = {
         "REAL4": pl.Float32(),
@@ -155,6 +155,7 @@ def dfm_to_polars_schema(
     Create polars schema based from .dfm dataInfo.columns field.
 
     :param data_info: DFM dataInfo for table
+    :param prefix: Extra schema definitions to be added to the front of the polars schema.
 
     :return: polars schema of DFM
     """
