@@ -64,6 +64,7 @@ def start():
 
     schedule.run()
 
+
 def load_config():
     """Load from env var `ODIN_CONFIG`, fallback to file `config.toml`. Raise if neither exist."""
     config_string = os.getenv("ODIN_CONFIG")
