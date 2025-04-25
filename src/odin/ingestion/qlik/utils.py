@@ -129,10 +129,11 @@ def find_qlik_cdc_files(table: str, save_local: bool, max_cdc_files: int) -> Lis
     """
     cdc_table = f"{table}__ct/"
     prefixes = (
-        os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, cdc_table),
+        os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, cdc_table, "snapshot"),
+        os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, cdc_table, "timestamp"),
         os.path.join(DATA_ERROR, IN_QLIK_PREFIX, cdc_table),
     )
-    paths = []
+    paths: list[S3Object] = []
     for prefix in prefixes:
         in_func = None
         if save_local:
@@ -153,6 +154,10 @@ def find_qlik_cdc_files(table: str, save_local: bool, max_cdc_files: int) -> Lis
         paths += list_objects(
             prefix, in_filter=".csv.gz", max_objects=max_cdc_files, in_func=in_func
         )
+
+    # sort results from each prefix by timestamp filename, and limit length to max_cdc_files
+    # this should ensure all objects from different prefixes are returned in correct order
+    paths = sorted(paths, key=lambda o: os.path.basename(o.path))[:max_cdc_files]
 
     return paths
 
