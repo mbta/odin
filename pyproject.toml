@@ -28,7 +28,7 @@ optional-dependencies.dev = [
 
 [project.scripts]
 start-odin = "odin.run:start"
-start-log-odin = "odin.run:start_log_file"
+start-log-odin = "odin.utils.run_log_to_file:start_log_file"
 
 [tool.pip-tools]
 generate-hashes = true
@@ -71,4 +71,5 @@ ignore = [
     "D212", # conflicts with (D213) `multi-line-summary-second-line` 
     "D400", # First line should end with a period
     "D415", # First line should end with a period, question mark, or exclamation point
+    "D413", # conflicts with (D412)
 ]
