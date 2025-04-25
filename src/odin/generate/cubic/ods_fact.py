@@ -289,7 +289,7 @@ class CubicODSFact(OdinJob):
         - D (Delete records)
         - U (After Update records)
         - B (Before Update records)
-        - Null (Initial snapshot load reocrds (same as Insert but from LOAD.. files))
+        - Null (Initial snapshot load records (same as Insert but from LOAD.. files))
 
         "B" Records are ignored for this process as they do not contain any relevant information.
         """
