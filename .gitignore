@@ -1,6 +1,7 @@
 *.egg-info
 *.ipynb
 *.env
+config.toml
 
 __pycache__
 .venv
