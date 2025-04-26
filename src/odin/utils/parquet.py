@@ -197,6 +197,8 @@ def ds_metadata_min_max(ds: pd.UnionDataset, column: str) -> Tuple[Any, Any]:
     This is a very fast and efficient way to get min/max from large dataset with accurate
     metadata statistics.
 
+    Will return (None,None) if column is all NULL values.
+
     :param ds: pyarrow.Dataset to scan
     :param column: column to query
 
@@ -227,8 +229,10 @@ def ds_metadata_min_max(ds: pd.UnionDataset, column: str) -> Tuple[Any, Any]:
                         if col["statistics"]["max"] is not None:  # type: ignore[index]
                             column_maxs.append(col["statistics"]["max"])  # type: ignore[index]
                         break
-        assert len(column_mins) > 0
-        assert len(column_maxs) > 0
+        if len(column_mins) == 0:
+            column_mins.append(None)
+        if len(column_maxs) == 0:
+            column_maxs.append(None)
         col_min = min(column_mins)
         col_max = max(column_maxs)
         log.complete()
