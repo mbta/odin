@@ -30,14 +30,18 @@ def migration() -> None:
         table_prefix = os.path.join(prefix, f"{table}/")
         # Iterate through each "snapshot" partition to maintain naming on object rename
         # (snapshot=..., timestamp=....)
-        for snap_part in list_partitions(table_prefix):
-            snap_prefix = os.path.join(table_prefix, snap_part)
-            replace_prefix = os.path.join(IN_QLIK_PREFIX, table, snap_part)
-            part_objects = [obj.path for obj in list_objects(snap_prefix)]
-            while len(part_objects) > 0:
-                # Move objects back to Archive for ingestion
-                rename_objects(part_objects, DATA_ARCHIVE, replace_prefix=replace_prefix)
+        snap_parts = list_partitions(table_prefix)
+        while len(snap_parts) > 0:
+            for snap_part in snap_parts:
+                snap_prefix = os.path.join(table_prefix, snap_part)
+                replace_prefix = os.path.join(IN_QLIK_PREFIX, table, snap_part)
                 part_objects = [obj.path for obj in list_objects(snap_prefix)]
+                while len(part_objects) > 0:
+                    # Move objects back to Archive for ingestion
+                    rename_objects(part_objects, DATA_ARCHIVE, replace_prefix=replace_prefix)
+                    part_objects = [obj.path for obj in list_objects(snap_prefix)]
+
+            snap_parts = list_partitions(table_prefix)
 
         if table.endswith("__ct"):
             continue

@@ -41,6 +41,12 @@ NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
 
+class NoQlikHistoryError(Exception):
+    """No Qlik history files available to process."""
+
+    pass
+
+
 def pl_pipe_update(left: pl.DataFrame, right: pl.DataFrame, keys: List[str]) -> pl.DataFrame:
     """
     DataFrame UPDATE operation that will join on NULL values.
@@ -168,7 +174,10 @@ class CubicODSFact(OdinJob):
 
     def snapshot_check(self) -> None:
         """Check if new or ongoing snapshot"""
-        self.history_snapshot = list_partitions(self.s3_source)[-1].replace("snapshot=", "")
+        history_snapshots = list_partitions(self.s3_source)
+        if len(history_snapshots) == 0:
+            raise NoQlikHistoryError("No history snapshots available.")
+        self.history_snapshot = history_snapshots[-1].replace("snapshot=", "")
         self.snapshot_source = f"{self.s3_source}/snapshot={self.history_snapshot}/"
         self.history_ds = ds_from_path(f"s3://{self.snapshot_source}")
 
@@ -452,6 +461,8 @@ class CubicODSFact(OdinJob):
         except pa.ArrowInvalid:
             self.start_kwargs["other_odin_running"] = "True"
             return NEXT_RUN_IMMEDIATE
+        except NoQlikHistoryError:
+            self.start_kwargs["no_qlik_history_available"] = "True"
 
         return next_run_secs
 
