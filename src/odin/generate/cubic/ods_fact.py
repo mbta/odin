@@ -24,7 +24,7 @@ from odin.utils.parquet import ds_metadata_min_max
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_unique_values
 from odin.utils.parquet import pq_dataset_writer
-from odin.utils.parquet import ds_limit_k_sorted
+from odin.utils.parquet import ds_metadata_limit_k_sorted
 from odin.utils.parquet import ds_batched_join
 from odin.utils.parquet import polars_decimal_as_string
 from odin.utils.aws.s3 import list_partitions
@@ -309,13 +309,11 @@ class CubicODSFact(OdinJob):
             | (pc.field("header__change_oper") == "D")
             | (pc.field("header__change_oper") == "U")
         )
-        if max_fact_seq is not None:
-            cdc_filter = cdc_filter & (pc.field("header__change_seq") > max_fact_seq)
-
-        cdc_df = ds_limit_k_sorted(
-            self.history_ds.filter(cdc_filter),
+        cdc_df = ds_metadata_limit_k_sorted(
+            ds=self.history_ds,
             sort_column="header__change_seq",
-            batch_size=self.batch_size,
+            min_sort_value=max_fact_seq,
+            ds_filter=cdc_filter,
         )
         max_load_records = max(10_000, cdc_df.height)
 
@@ -339,13 +337,11 @@ class CubicODSFact(OdinJob):
             if cdc_df.height == 0 or num_load_records > max_load_records:
                 break
             max_fact_seq = cdc_df.get_column("header__change_seq").max()
-            cdc_filter = (
-                (pc.field("header__change_oper") == "I")
-                | (pc.field("header__change_oper") == "D")
-                | (pc.field("header__change_oper") == "U")
-            ) & (pc.field("header__change_seq") > max_fact_seq)
-            cdc_df = ds_limit_k_sorted(
-                self.history_ds.filter(cdc_filter), "header__change_seq", batch_size=self.batch_size
+            cdc_df = ds_metadata_limit_k_sorted(
+                ds=self.history_ds,
+                sort_column="header__change_seq",
+                min_sort_value=max_fact_seq,
+                ds_filter=cdc_filter,
             )
             insert_df, update_df, delete_df = cdc_to_fact(
                 cdc_df, insert_df, update_df, delete_df, keys
