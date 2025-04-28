@@ -466,9 +466,8 @@ def ds_metadata_limit_k_sorted(
                 # add parition columns to row group table, if they exist
                 # ParquetFile does not include parition columns when reading row groups
                 # all partition columns added as strings, but cast back to dataset types later
-                file_partitions = pq_path_partitions(file)
-                for part_col, part_val in file_partitions:
-                    if part_col not in pq_file.schema_arrow.names:
+                for part_col, part_val in pq_path_partitions(file):
+                    if part_col in ds.schema.names and part_col not in pq_file.schema_arrow.names:
                         rg_table = rg_table.append_column(
                             part_col,
                             pa.array([part_val] * rg_table.num_rows, pa.string()),
@@ -490,11 +489,10 @@ def ds_metadata_limit_k_sorted(
                 # if max_nbytes reached in dataset, begin filtering by max sort_column value
                 if bytes_read > max_nbytes:
                     if max_result_rows == 0:
-                        max_result_rows = result_table.num_rows
+                        max_result_rows = int(result_table.num_rows * (max_nbytes / bytes_read))
                     result_table = result_table.slice(length=max_result_rows)
                 result_max = pc.max(result_table.column(sort_column)).as_py()
             pq_file.close()
-            del pq_file
     return_df = pl.from_arrow(result_table)
     if isinstance(return_df, pl.Series):
         raise TypeError("Always dataframe.")
