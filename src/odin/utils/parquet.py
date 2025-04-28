@@ -392,6 +392,7 @@ def ds_metadata_limit_k_sorted(
     ds_filter: pc.Expression | None = None,
     ds_filter_columns: List[str] | None = None,
     max_nbytes: int = 256 * 1024 * 1024,
+    max_rows: int = 0,
 ) -> pl.DataFrame:
     """
     Produce limited number of sorted (ascending) results from large parquet dataset.
@@ -400,7 +401,7 @@ def ds_metadata_limit_k_sorted(
     the reading of entire row groups. Performance is best if parquet files are loosely sorted by
     sort_column across dataset row groups.
 
-    Any records with a NULL value in 'sort_column' or 'ds_filter_columns' will be ignored.
+    Any records with a NULL value in 'sort_column' will be ignored.
 
     :param ds: Dataset to scan, can not be filtered.
     :param sort_column: Column to sort results on.
@@ -410,6 +411,7 @@ def ds_metadata_limit_k_sorted(
                               'ds_filter' Expression.
                               In the future, maybe, these columns can be extracted from 'ds_filter'
     :param max_nbytes: Max bytes (reported by RecordBatch.nbytes) to keep in results.
+    :param max_rows: (Optional) Maximum number of rows to keep in results.
 
     :return: polars Dataframe of sorted results
     """
@@ -420,7 +422,6 @@ def ds_metadata_limit_k_sorted(
         min_sort_value=min_sort_value,
     )
     bytes_read = 0
-    max_result_rows = 0
     if ds_filter_columns is None:
         ds_filter_columns = []
     scan_cols = list(set([sort_column] + ds_filter_columns))
@@ -486,11 +487,11 @@ def ds_metadata_limit_k_sorted(
                     [result_table, rg_table],
                     promote_options="default",
                 ).sort_by([(sort_column, "ascending")])
-                # if max_nbytes reached in dataset, begin filtering by max sort_column value
-                if bytes_read > max_nbytes:
-                    if max_result_rows == 0:
-                        max_result_rows = int(result_table.num_rows * (max_nbytes / bytes_read))
-                    result_table = result_table.slice(length=max_result_rows)
+                # limit result_table to max_nbytes or max_row_count
+                if bytes_read > max_nbytes or max_rows > 0:
+                    if max_rows == 0:
+                        max_rows = int(result_table.num_rows * (max_nbytes / bytes_read))
+                    result_table = result_table.slice(length=max_rows)
                 result_max = pc.max(result_table.column(sort_column)).as_py()
             pq_file.close()
     return_df = pl.from_arrow(result_table)

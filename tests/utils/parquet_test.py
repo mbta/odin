@@ -216,6 +216,9 @@ def test_ds_metadata_limit_k_sorted(pq_files) -> None:
     df = ds_metadata_limit_k_sorted(ds, "col7")
     assert df.shape == (PQ_NUM_ROWS, 8)
 
+    df = ds_metadata_limit_k_sorted(ds, "col7", max_rows=200)
+    assert df.shape == (200, 8)
+
     df = ds_metadata_limit_k_sorted(ds, "col1")
     assert df.shape == (PQ_NUM_ROWS * 3, 8)
     assert df.get_column("col1")[0] == 0
