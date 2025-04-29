@@ -314,6 +314,7 @@ class CubicODSFact(OdinJob):
             sort_column="header__change_seq",
             min_sort_value=max_fact_seq,
             ds_filter=cdc_filter,
+            ds_filter_columns=["header__change_oper"],
         )
         max_load_records = max(10_000, cdc_df.height)
 
@@ -342,6 +343,7 @@ class CubicODSFact(OdinJob):
                 sort_column="header__change_seq",
                 min_sort_value=max_fact_seq,
                 ds_filter=cdc_filter,
+                ds_filter_columns=["header__change_oper"],
             )
             insert_df, update_df, delete_df = cdc_to_fact(
                 cdc_df, insert_df, update_df, delete_df, keys
