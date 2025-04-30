@@ -333,7 +333,7 @@ class CubicODSFact(OdinJob):
         # many CDC records often impact the same FACT row.
         # After cdc_to_fact colapses CDC records to FACT format, pull more CDC records until
         # expected number of FACT records are available for merging
-        for cdc_iter in range(10):
+        for _ in range(10):
             num_load_records = insert_df.height + delete_df.height + update_df.height
             if cdc_df.height == 0 or num_load_records > max_load_records:
                 break
@@ -348,6 +348,15 @@ class CubicODSFact(OdinJob):
             insert_df, update_df, delete_df = cdc_to_fact(
                 cdc_df, insert_df, update_df, delete_df, keys
             )
+        # Determine if next run should be immediate
+        ds_available_count = ds_metadata_limit_k_sorted(
+            ds=self.history_ds,
+            sort_column="header__change_seq",
+            min_sort_value=cdc_df.get_column("header__change_seq").max(),
+            ds_filter=cdc_filter,
+            ds_filter_columns=["header__change_oper"],
+            max_rows=max_load_records,
+        ).height
 
         if insert_df.height > 0:
             _, max_odin_index = ds_metadata_min_max(fact_ds, "odin_index")
@@ -415,7 +424,7 @@ class CubicODSFact(OdinJob):
             move_path = new_path.replace(f"{self.tmpdir}/", "")
             upload_file(new_path, move_path)
 
-        if cdc_iter > 1:
+        if ds_available_count > int(0.9 * max_load_records):
             return NEXT_RUN_IMMEDIATE
         return NEXT_RUN_DEFAULT
 
