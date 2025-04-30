@@ -3,6 +3,7 @@ import gzip
 import sched
 import urllib3
 from io import BytesIO
+from operator import itemgetter
 from typing import List
 from typing import Dict
 from typing import Literal
@@ -12,6 +13,7 @@ from typing import Optional
 from odin.job import OdinJob
 from odin.job import job_proc_schedule
 from odin.utils.runtime import sigterm_check
+from odin.utils.runtime import disk_free_pct
 from odin.utils.logger import ProcessLog
 from odin.utils.locations import AFC_DATA
 from odin.utils.locations import DATA_SPRINGBOARD
@@ -28,6 +30,7 @@ NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 
 API_ROOT = "https://dwhexperianceapi-production.ir-e1.cloudhub.io/api/v1/datawarehouse"
 
+# Table returned by `tableinfos` endpoint as of April 30, 2025
 API_TABLES = [
     "v_card",
     "v_deviceclass",
@@ -37,6 +40,7 @@ API_TABLES = [
     "v_media",
     "v_medium_types",
     "v_person",
+    "v_product_templates",
     "v_routes",
     "v_sales_txns",
     "v_shiftevent",
@@ -83,6 +87,10 @@ class ArchiveAFCAPI(OdinJob):
         self.table = table
         self.start_kwargs = {"table": self.table}
         self.export_folder = os.path.join(DATA_SPRINGBOARD, AFC_DATA, self.table)
+        self.headers = {
+            "client_id": os.getenv("AFC_API_CLIENT_ID", ""),
+            "client_secret": os.getenv("AFC_API_CLIENT_SECRET", ""),
+        }
 
     def make_request(
         self, url: str, fields: Optional[Dict[str, str]] = None
@@ -97,11 +105,7 @@ class ArchiveAFCAPI(OdinJob):
 
         :return: API Response
         """
-        headers = {
-            "client_id": os.getenv("AFC_API_CLIENT_ID", ""),
-            "client_secret": os.getenv("AFC_API_CLIENT_SECRET", ""),
-        }
-        r = self.req_pool.request("GET", url=url, headers=headers, fields=fields)
+        r = self.req_pool.request("GET", url=url, fields=fields)
         if r.status != 200:
             raise urllib3.exceptions.HTTPError(f"API ERROR: {url=} {r.status=} {r.json()}")
         return r
@@ -115,8 +119,8 @@ class ArchiveAFCAPI(OdinJob):
         over how many records can/will be in one SID.
         """
         # set self.schema
-        url = f"{API_ROOT}/tableinfos"
-        r = self.make_request(url)
+        tableinfos_url = f"{API_ROOT}/tableinfos"
+        r = self.make_request(tableinfos_url)
         schema_list: List[Dict[str, ApiSchema]] = r.json()
         for schema in schema_list:
             if self.table in schema:
@@ -133,7 +137,16 @@ class ArchiveAFCAPI(OdinJob):
                 ds_from_path(f"s3://{self.export_folder}"), "sid"
             )
 
-    def download_csv(self) -> None:
+        # set self.job_ids (if possible)
+        count_url = f"{API_ROOT}/count"
+        try:
+            r = self.make_request(count_url, fields={"table_name": self.table})
+            self.job_ids = r.json()
+            assert isinstance(self.job_ids, list)
+        except Exception:
+            self.job_ids = None
+
+    def download_csv(self, sid_from: int | str | None, sid_to: int | str | None = None) -> None:
         """
         Download csv.gz table file for AFC API.
 
@@ -145,60 +158,82 @@ class ArchiveAFCAPI(OdinJob):
 
         Using "sidFrom" API parameter is inclusive of the SID submitted for the param.
         """
-        log = ProcessLog("afc_api_download_csv")
-        self.dl_path = os.path.join(self.tmpdir, f"{self.table}.csv")
+        log = ProcessLog("afc_api_download_csv", sid_from=sid_from, sid_to=sid_to)
+        csv_path = os.path.join(self.tmpdir, f"{self.table}.csv")
+        if sid_from is not None:
+            csv_path = os.path.join(self.tmpdir, f"{sid_from}.csv")
         url = f"{API_ROOT}/stagetable"
         fields = {
             "table_name": self.table,
             "responseType": "application/csv",
             "compression": "gzip",
         }
-        if self.last_sid is not None:
-            fields["sidFrom"] = self.last_sid
-            log.add_metadata(last_sid=self.last_sid)
+        if sid_from is not None:
+            fields["sidFrom"] = str(sid_from)
+        if sid_to is not None:
+            fields["sidTo"] = str(sid_to)
 
         r = self.make_request(url, fields)
         with gzip.open(BytesIO(r.data)) as gdata:
-            with open(self.dl_path, mode="wb") as writer:
+            with open(csv_path, mode="wb") as writer:
                 writer.write(gdata.read())
         log.complete()
+
+    def load_sids(self) -> None:
+        """Load API data based on sid values."""
+        if self.job_ids is None:
+            self.download_csv(self.last_sid)
+        else:
+            for job in sorted(self.job_ids, key=itemgetter("jobId")):
+                sid = str(job["jobId"])
+                if self.last_sid is not None and sid <= str(self.last_sid):
+                    continue
+                self.download_csv(sid, sid)
+                # stop if disk is getting too full
+                if disk_free_pct() < 60:
+                    break
 
     def sync_parquet(self) -> None:
         """Convert csv to parquet and sync with S3 files."""
         log = ProcessLog("afc_api_sync_parquet")
-        self.pq_path = os.path.join(self.tmpdir, f"{self.table}.parquet")
-        lf = pl.scan_csv(
-            self.dl_path,
-            schema=self.schema,
-            has_header=True,
-        )
+        sync_paths = []
+        for temp_file in os.listdir(self.tmpdir):
+            if not temp_file.endswith(".csv"):
+                continue
+            csv_path = os.path.join(self.tmpdir, temp_file)
+            pq_path = csv_path.replace(".csv", ".parquet")
+            lf = pl.scan_csv(
+                csv_path,
+                schema=self.schema,
+                has_header=True,
+            )
+            if self.last_sid is not None:
+                lf = lf.filter(pl.col("sid") != self.last_sid)
+            lf.sink_parquet(
+                pq_path,
+                compression="zstd",
+                compression_level=3,
+                row_group_size=int(1024 * 1024 / (8 * self.schema.len())),
+            )
+            os.remove(csv_path)
+            pq_row_count = ds_from_path(pq_path).count_rows()
+            if pq_row_count > 0:
+                sync_paths.append(pq_path)
+                log.add_metadata(pq_path=pq_path, pq_row_count=pq_row_count)
 
-        if self.last_sid is not None:
-            lf = lf.filter(pl.col("sid") != self.last_sid)
-
-        lf.sink_parquet(
-            self.pq_path,
-            compression="zstd",
-            compression_level=3,
-            row_group_size=int(1024 * 1024 / (8 * self.schema.len())),
-        )
-
-        parquet_row_count = ds_from_path(self.pq_path).count_rows()
-        log.add_metadata(parquet_row_count=parquet_row_count)
-        if parquet_row_count == 0:
+        if len(sync_paths) == 0:
             return
 
         found_objs = list_objects(f"s3://{self.export_folder}", in_filter=".parquet")
-        sync_paths = []
         if found_objs:
             sync_file = found_objs[-1].path.replace("s3://", "")
-            destination = os.path.join(self.tmpdir, sync_file.replace("/table_", "/temp_"))
-            download_object(found_objs[-1].path, destination)
-            sync_paths.append(destination)
+            s3_pq_file = os.path.join(self.tmpdir, sync_file.replace("/table_", "/temp_"))
+            download_object(found_objs[-1].path, s3_pq_file)
+            sync_paths.insert(0, s3_pq_file)
 
         # Create new merged parquet file(s)
         new_paths = pq_dataset_writer(
-            source=ds_from_path([self.pq_path] + sync_paths),
+            source=ds_from_path(sync_paths),
             export_folder=os.path.join(self.tmpdir, self.export_folder),
             export_file_prefix="table",
         )
@@ -218,14 +253,17 @@ class ArchiveAFCAPI(OdinJob):
             1. setup Job by:
                 - pulling table schema from API Endpoint
                 - grab the largest SID already loaded from parquet files
-            2. Download all available SID's as csv.gz glob.
+                - attempt to grab SID's available from /count endpoint
+            2a. Download all available SID's as csv.gz glob.
                 - No true pagination available for this process.
                 - Use of "sidFrom" param is inclusive of SID submitted.
-            3. Convert csv file to parquet and merge with S3 parquet files.
+            2b. Loop through all available SID's returned from /count endpoint.
+                - Download each SID as a csv.gz file.
+            3. Convert csv file(s) to parquet and merge with S3 parquet files.
         """
-        self.req_pool = urllib3.PoolManager()
+        self.req_pool = urllib3.PoolManager(headers=self.headers)
         self.setup_job()
-        self.download_csv()
+        self.load_sids()
         self.sync_parquet()
         return NEXT_RUN_DEFAULT
 
