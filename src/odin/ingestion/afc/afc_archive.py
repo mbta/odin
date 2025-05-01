@@ -153,10 +153,12 @@ class ArchiveAFCAPI(OdinJob):
         No pagination is available at this endpoint. This is not a great design. There's supposed to
         be an API endpoint to query SID's available, but it is not functional.
 
-        This currently just downloads whatever is available and there's no control over how
-        large the file received will be.
+        If sid_from and/or sid_to are available, pagination will be attempted.
 
-        Using "sidFrom" API parameter is inclusive of the SID submitted for the param.
+        Using sidFrom and/or sidTo results in a response that is inclusive of both parameters.
+
+        :param sid_from: used as sidFrom request parameter, if available
+        :param sid_to: used as sidTo request parameter, if available
         """
         log = ProcessLog("afc_api_download_csv", sid_from=sid_from, sid_to=sid_to)
         csv_path = os.path.join(self.tmpdir, f"{self.table}.csv")
@@ -180,18 +182,40 @@ class ArchiveAFCAPI(OdinJob):
         log.complete()
 
     def load_sids(self) -> None:
-        """Load API data based on sid values."""
+        """
+        Load API data based on sid values.
+
+        Sid pagination will be attempted if range of sid values is available. These values need to
+        to be pulled from `count` endpoint, however as of May 1, 2025 `count` endpoint is not
+        functional with the use of `sidFrom` parameter.
+
+        If pagination is possible, API data will be saved in batches, targeting file size of
+        approximately 10mb.
+        """
         if self.job_ids is None:
             self.download_csv(self.last_sid)
         else:
+            batch_count = 0
+            target_rows = 10 * 1024 * 1024 / (8 * self.schema.len())
+            start_sid = ""
+            end_sid = ""
             for job in sorted(self.job_ids, key=itemgetter("jobId")):
-                sid = str(job["jobId"])
-                if self.last_sid is not None and sid <= str(self.last_sid):
+                job_sid = str(job["jobId"])
+                if self.last_sid is not None and job_sid <= str(self.last_sid):
                     continue
-                self.download_csv(sid, sid)
+                if start_sid == "":
+                    start_sid = job_sid
+                end_sid = job_sid
+                batch_count += int(job["dataCount"])
+                if batch_count > target_rows:
+                    self.download_csv(start_sid, end_sid)
+                    batch_count = 0
+                    start_sid = ""
                 # stop if disk is getting too full
                 if disk_free_pct() < 60:
                     break
+            if batch_count > 0:
+                self.download_csv(start_sid, end_sid)
 
     def sync_parquet(self) -> None:
         """Convert csv to parquet and sync with S3 files."""
