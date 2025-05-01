@@ -125,3 +125,20 @@ def infinite_wait(reason: str) -> None:
         # sleep
         time.sleep(sleep_time)
         count += 1
+
+
+def delete_folder_contens(folder: str) -> None:
+    """
+    Delete contents of entire folder.
+
+    :param folder: folder that will have contents deleted, folder will remain (empty)
+    """
+    for entry in os.listdir(folder):
+        path = os.path.join(folder, entry)
+        try:
+            if os.path.isfile(path) or os.path.islink(path):
+                os.unlink(path)
+            elif os.path.isdir(path):
+                shutil.rmtree(path)
+        except Exception as _:
+            pass
