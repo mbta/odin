@@ -107,7 +107,7 @@ class ArchiveAFCAPI(OdinJob):
         """
         r = self.req_pool.request("GET", url=url, fields=fields)
         if r.status != 200:
-            raise urllib3.exceptions.HTTPError(f"API ERROR: {url=} {r.status=} {r.json()}")
+            raise urllib3.exceptions.HTTPError(f"API ERROR: {url=} {r.status=} {r.data.decode()}")
         return r
 
     def setup_job(self) -> None:
@@ -196,7 +196,7 @@ class ArchiveAFCAPI(OdinJob):
             self.download_csv(self.last_sid)
         else:
             batch_count = 0
-            target_rows = 10 * 1024 * 1024 / (8 * self.schema.len())
+            target_rows = 20 * 1024 * 1024 / (12 * self.schema.len())
             start_sid = ""
             end_sid = ""
             for job in sorted(self.job_ids, key=itemgetter("jobId")):
