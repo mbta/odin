@@ -55,7 +55,7 @@ import json
 import polars as pl
 import os
 import sched
-from typing import Any, Dict, List, NotRequired, TypeAlias, TypedDict
+from typing import Any, Dict, List, NotRequired, Tuple, TypeAlias, TypedDict
 
 from odin.job import OdinJob
 from odin.job import job_proc_schedule
@@ -237,7 +237,7 @@ def datetime_from_delta_path_ms(path: str) -> int:
 
 def merge_new_data(
     prev_df: pl.DataFrame, new_df: pl.DataFrame, columns: Columns, datetime_ms: int
-) -> (pl.DataFrame, bool):
+) -> Tuple[pl.DataFrame, bool]:
     """
     Append any new or changed data to the file.
 
@@ -289,7 +289,7 @@ def merge_new_data(
         return (pl.concat([prev_df, soft_deletes, new_rows], how="vertical"), True)
 
 
-def add_to_left(df: pl.DataFrame, cols: tuple[str, Any, pl.DataType]) -> pl.DataFrame:
+def add_to_left(df: pl.DataFrame, cols: List[tuple[str, Any, pl.DataType]]) -> pl.DataFrame:
     """
     Add constant columns to the left of a dataframe
 
