@@ -349,14 +349,16 @@ class CubicODSFact(OdinJob):
                 cdc_df, insert_df, update_df, delete_df, keys
             )
         # Determine if next run should be immediate
-        ds_available_count = ds_metadata_limit_k_sorted(
-            ds=self.history_ds,
-            sort_column="header__change_seq",
-            min_sort_value=cdc_df.get_column("header__change_seq").max(),
-            ds_filter=cdc_filter,
-            ds_filter_columns=["header__change_oper"],
-            max_rows=max_load_records,
-        ).height
+        ds_available_count = 0
+        if cdc_df.height > 0:
+            ds_available_count = ds_metadata_limit_k_sorted(
+                ds=self.history_ds,
+                sort_column="header__change_seq",
+                min_sort_value=cdc_df.get_column("header__change_seq").max(),
+                ds_filter=cdc_filter,
+                ds_filter_columns=["header__change_oper"],
+                max_rows=max_load_records,
+            ).height
 
         if insert_df.height > 0:
             _, max_odin_index = ds_metadata_min_max(fact_ds, "odin_index")
