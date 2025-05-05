@@ -38,7 +38,6 @@ generate-hashes = true
 log_level = 20
 
 [tool.mypy]
-explicit_package_bases = true
 ignore_missing_imports = true
 python_version = 3.13
 exclude = [

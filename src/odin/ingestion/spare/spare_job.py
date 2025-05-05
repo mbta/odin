@@ -57,7 +57,7 @@ import os
 import sched
 from typing import Any, Dict, List, NotRequired, Tuple, TypeAlias, TypedDict
 
-import odin.ingestion.spare.s3 as spare_s3
+import odin.ingestion.spare.spare_s3 as spare_s3
 from odin.job import OdinJob
 from odin.job import job_proc_schedule
 import odin.utils.aws.s3 as s3
