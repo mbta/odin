@@ -8,7 +8,7 @@ import os
 import pytest
 from unittest.mock import patch
 
-import odin.spare.s3 as spare_s3
+import odin.ingestion.spare.s3 as spare_s3
 
 
 @pytest.fixture

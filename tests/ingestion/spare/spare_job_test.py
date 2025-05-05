@@ -11,7 +11,7 @@ from polars.testing import assert_frame_equal
 import pytest
 from unittest.mock import patch
 
-import odin.spare.spare_job as spare_job
+import odin.ingestion.spare.spare_job as spare_job
 
 
 @pytest.fixture

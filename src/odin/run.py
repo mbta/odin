@@ -12,8 +12,8 @@ from odin.migrate.process import start_migrations
 # Job Schedule functions
 from odin.utils.runtime import schedule_sigterm_check
 from odin.ingestion.qlik.cubic_archive import schedule_cubic_archive_qlik
+from odin.ingestion.spare.spare_job import schedule_spare_jobs
 from odin.generate.cubic.ods_fact import schedule_cubic_ods_fact_gen
-from odin.spare.spare_job import schedule_spare_jobs
 
 
 def start():
