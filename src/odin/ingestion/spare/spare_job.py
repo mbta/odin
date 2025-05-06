@@ -290,16 +290,6 @@ def merge_new_data(
         return pl.concat([prev_df, soft_deletes, new_rows], how="vertical")
 
 
-def add_to_left(df: pl.DataFrame, cols: List[tuple[str, Any, pl.DataType]]) -> pl.DataFrame:
-    """
-    Add constant columns to the left of a dataframe
-
-    Each column is a tuple: (name, value, type)
-    """
-    new_cols = [pl.repeat(value, len(df), dtype=dtype).alias(name) for (name, value, dtype) in cols]
-    return pl.concat([pl.select(*new_cols), df], how="horizontal")
-
-
 def run(
     config: Config,
     api_endpoint: ApiEndpoint,
@@ -340,12 +330,11 @@ def run(
         # add metadata
         datetime_ms = datetime_from_delta_path_ms(path)
         rows_input = len(input_df)
-        input_df = add_to_left(
-            input_df,
-            [
-                ("ROW_TIMESTAMP", datetime_ms, pl.Datetime("ms")),
-                ("ROW_DELETED", False, pl.Boolean()),
-            ],
+        # add new metadata columns as constants to the left
+        input_df = input_df.select(
+            pl.lit(datetime_ms, pl.Datetime("ms")).alias("ROW_TIMESTAMP"),
+            pl.lit(False, pl.Boolean()).alias("ROW_DELETED"),
+            pl.all(),
         )
         rows_before_merge = len(df)
         df = merge_new_data(df, input_df, columns, datetime_ms)
