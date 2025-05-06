@@ -29,6 +29,12 @@ import polars as pl
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 
 API_ROOT = "https://dwhexperianceapi-production.ir-e1.cloudhub.io/api/v1/datawarehouse"
+# This API_ROOT bypasses a load balancer, allowing for long running requests.
+# This is required because the API currently does not have a complete pagination solution.
+# This api endpoint is also using a self-signed cert, so SSL verifcation is not posssible.
+API_ROOT = (
+    "https://mule-worker-dwhexperianceapi-production.ir-e1.cloudhub.io:8082/api/v1/datawarehouse"
+)
 
 # Table returned by `tableinfos` endpoint as of April 30, 2025
 API_TABLES = [
@@ -285,7 +291,8 @@ class ArchiveAFCAPI(OdinJob):
                 - Download each SID as a csv.gz file.
             3. Convert csv file(s) to parquet and merge with S3 parquet files.
         """
-        self.req_pool = urllib3.PoolManager(headers=self.headers)
+        # TODO: Removed cert_reqs parameter when not using self-signed endpoint.
+        self.req_pool = urllib3.PoolManager(headers=self.headers, cert_reqs="CERT_NONE")
         self.setup_job()
         self.load_sids()
         self.sync_parquet()
