@@ -14,6 +14,7 @@ from odin.utils.runtime import schedule_sigterm_check
 from odin.ingestion.qlik.cubic_archive import schedule_cubic_archive_qlik
 from odin.ingestion.spare.spare_job import schedule_spare_jobs
 from odin.generate.cubic.ods_fact import schedule_cubic_ods_fact_gen
+from odin.ingestion.afc.afc_archive import schedule_afc_archive
 
 
 def start():
@@ -45,6 +46,10 @@ def start():
 
     validate_env_vars(
         required=required_env_vars,
+        private=[
+            "AFC_API_CLIENT_ID",
+            "AFC_API_CLIENT_SECRET",
+        ],
         aws=[
             "ECS_CLUSTER",
             "ECS_TASK_GROUP",
@@ -62,6 +67,8 @@ def start():
         schedule_cubic_archive_qlik(schedule)
     if "cubic_ods_fact" in config:
         schedule_cubic_ods_fact_gen(schedule)
+    if "afc_archive" in config:
+        schedule_afc_archive(schedule)
     if "spare" in config:
         schedule_spare_jobs(schedule, config["spare"])
 

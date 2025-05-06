@@ -16,6 +16,7 @@ dependencies = [
     "polars",
     "psutil",
     "pyarrow",
+    "urllib3",
 ]
 optional-dependencies.dev = [
     "ipykernel",

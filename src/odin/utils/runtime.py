@@ -1,5 +1,6 @@
 import os
 import sched
+import shutil
 import sys
 import time
 from typing import List
@@ -63,6 +64,16 @@ def thread_cpus() -> int:
         return 8
     else:
         return os_cpu_count * 2
+
+
+def disk_free_pct() -> float:
+    """
+    Get current % of free disk space for root partition.
+
+    :return: % of free disk space as float 0.0 to 100.0
+    """
+    total_disk_bytes, _, free_disk_bytes = shutil.disk_usage("/")
+    return free_disk_bytes / total_disk_bytes * 100
 
 
 def handle_sigterm(_: int, __: Any) -> None:

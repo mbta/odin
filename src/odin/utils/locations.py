@@ -21,3 +21,6 @@ CUBIC_QLIK_IGNORED = f"{ODIN_ARCHIVE}/cubic_qlik/ignored"
 
 # CUBIC ODS FACT
 CUBIC_ODS_FACT_DATA = f"{ODIN_DATA}/cubic_ods"
+
+# AFC
+AFC_DATA = f"{ODIN_DATA}/afc/api"
