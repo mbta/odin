@@ -127,12 +127,13 @@ def infinite_wait(reason: str) -> None:
         count += 1
 
 
-def delete_folder_contens(folder: str) -> None:
+def delete_folder_items(folder: str) -> None:
     """
     Delete contents of entire folder.
 
-    :param folder: folder that will have contents deleted, folder will remain (empty)
+    :param folder: folder that will have items deleted, folder will remain (empty)
     """
+    log = ProcessLog("delete_folder_items", folder=folder)
     for entry in os.listdir(folder):
         path = os.path.join(folder, entry)
         try:
@@ -142,3 +143,5 @@ def delete_folder_contens(folder: str) -> None:
                 shutil.rmtree(path)
         except Exception as _:
             pass
+
+    log.complete()

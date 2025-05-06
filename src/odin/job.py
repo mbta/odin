@@ -10,7 +10,7 @@ import sched
 from odin.utils.logger import ProcessLog
 from odin.utils.logger import MdValues
 from odin.utils.runtime import sigterm_check
-from odin.utils.runtime import delete_folder_contens
+from odin.utils.runtime import delete_folder_items
 from odin.utils.aws.ecs import running_in_aws
 
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
@@ -102,6 +102,6 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler) -> None:
 
     # always clear temp directory in AWS (in case of process getting killed)
     if running_in_aws():
-        delete_folder_contens(tempfile.gettempdir())
+        delete_folder_items(tempfile.gettempdir())
 
     schedule.enter(proc_return_val.value, 1, job_proc_schedule, (job, schedule))
