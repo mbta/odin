@@ -390,7 +390,7 @@ class SpareJob(OdinJob):
     def run(self) -> int:
         """Entrypoint to run the job."""
         run(self.config, self.api_endpoint, self.tmpdir)
-        next_run_secs = 1 * 60  # 1min
+        next_run_secs = 6 * 60 * 60  # 3hr
         return next_run_secs
 
 
