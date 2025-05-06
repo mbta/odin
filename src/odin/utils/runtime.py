@@ -1,5 +1,6 @@
 import os
 import sched
+import shutil
 import sys
 import time
 from typing import List
@@ -65,6 +66,16 @@ def thread_cpus() -> int:
         return os_cpu_count * 2
 
 
+def disk_free_pct() -> float:
+    """
+    Get current % of free disk space for root partition.
+
+    :return: % of free disk space as float 0.0 to 100.0
+    """
+    total_disk_bytes, _, free_disk_bytes = shutil.disk_usage("/")
+    return free_disk_bytes / total_disk_bytes * 100
+
+
 def handle_sigterm(_: int, __: Any) -> None:
     """Set ENV var when SIGTERM recieved."""
     log = ProcessLog("sigterm_received")
@@ -114,3 +125,20 @@ def infinite_wait(reason: str) -> None:
         # sleep
         time.sleep(sleep_time)
         count += 1
+
+
+def delete_folder_contens(folder: str) -> None:
+    """
+    Delete contents of entire folder.
+
+    :param folder: folder that will have contents deleted, folder will remain (empty)
+    """
+    for entry in os.listdir(folder):
+        path = os.path.join(folder, entry)
+        try:
+            if os.path.isfile(path) or os.path.islink(path):
+                os.unlink(path)
+            elif os.path.isdir(path):
+                shutil.rmtree(path)
+        except Exception as _:
+            pass
