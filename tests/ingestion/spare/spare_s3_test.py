@@ -13,6 +13,7 @@ import odin.ingestion.spare.spare_s3 as spare_s3
 
 @pytest.fixture
 def s3_stub():
+    """Mock S3 client for mocking aws calls. Patches s3.get_client()."""
     s3_client = boto3.client("s3")
     with Stubber(s3_client) as stubber:
         with patch("odin.utils.aws.s3.get_client", return_value=s3_client):
@@ -24,6 +25,7 @@ def s3_stub():
 
 
 def test_open_file_s3_gz(s3_stub):
+    """open_file() for a gzip file in s3"""
     body = b"body"
     gz_bytes = gzip.compress(body)
     s3_stub.add_response(
@@ -41,6 +43,7 @@ def test_open_file_s3_gz(s3_stub):
 
 
 def test_open_file_s3_uncompressed(s3_stub):
+    """open_file() for an uncompressed file in s3"""
     body = b"body"
     s3_stub.add_response(
         "get_object",
@@ -57,6 +60,7 @@ def test_open_file_s3_uncompressed(s3_stub):
 
 
 def test_open_file_local_gz(tmpdir):
+    """open_file() for an gzipped local file"""
     body = b"body"
     gz_bytes = gzip.compress(body)
     tmpdir.join("foo.gz").write_binary(gz_bytes)
@@ -66,6 +70,7 @@ def test_open_file_local_gz(tmpdir):
 
 
 def test_open_file_local_uncompressed(tmpdir):
+    """open_file() for an uncompressed local file"""
     tmpdir.join("file.txt").write("body")
     with spare_s3.open_file(tmpdir.join("file.txt").strpath) as f:
         result = f.read()
@@ -76,6 +81,7 @@ def test_open_file_local_uncompressed(tmpdir):
 
 
 def test_list_objects_s3(s3_stub):
+    """list_objects() for s3"""
     s3_stub.add_response(
         "list_objects_v2",
         expected_params={
@@ -105,6 +111,7 @@ def test_list_objects_s3(s3_stub):
 
 
 def test_list_objects_local(tmpdir):
+    """list_objects() for a local directory"""
     tmpdir.mkdir("empty_sub")
     tmpdir.join("foo.json").write("[]")
     tmpdir.mkdir("sub").join("bar.json").write("[]")
@@ -116,6 +123,7 @@ def test_list_objects_local(tmpdir):
 
 
 def test_rename_object_s3(s3_stub):
+    """rename_object() in s3 (copy and delete)"""
     s3_stub.add_response(
         "copy_object",
         expected_params={
@@ -137,6 +145,7 @@ def test_rename_object_s3(s3_stub):
 
 
 def test_rename_object_local(tmpdir):
+    """rename_object() for a local file (os mv)"""
     # use nested path so it tests creating the directory
     tmpdir.mkdir("from")
     tmpdir.join("from/file1").write("contents")
@@ -149,6 +158,6 @@ def test_rename_object_local(tmpdir):
 
 
 def test_rename_object_mixed():
-    """Raises if given bad input"""
+    """rename_object() raises if given bad input"""
     with pytest.raises(Exception):
         spare_s3.rename_object("s3://bucket/path", "local/path")

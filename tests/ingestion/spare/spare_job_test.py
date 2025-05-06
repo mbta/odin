@@ -16,6 +16,7 @@ import odin.ingestion.spare.spare_job as spare_job
 
 @pytest.fixture
 def s3_stub():
+    """Mock S3 client for mocking aws calls. Patches s3.get_client()."""
     s3_client = boto3.client("s3")
     with Stubber(s3_client) as stubber:
         with patch("odin.utils.aws.s3.get_client", return_value=s3_client):
@@ -34,6 +35,7 @@ api_endpoint: spare_job.ApiEndpoint = {
 
 
 def write_gzipped_json(data, path):
+    """Make a gzip file with test data."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
         f.write(gzip.compress(json.dumps(data).encode()))
@@ -57,6 +59,7 @@ one_row_df = pl.DataFrame(
 
 
 def test_load_parquet_s3_exists(s3_stub, tmpdir):
+    """load_parquet() can return data from s3."""
     localpath = os.path.join(tmpdir, "test.parquet")
     one_row_df.write_parquet(localpath)
     with open(localpath, "rb") as f:
@@ -79,6 +82,7 @@ def test_load_parquet_s3_exists(s3_stub, tmpdir):
 
 
 def test_load_parquet_s3_not_exists(s3_stub):
+    """load_parquet() from s3 makes new table if object doesn't exist."""
     s3_stub.add_client_error(
         "head_object",
         expected_params={
@@ -92,6 +96,7 @@ def test_load_parquet_s3_not_exists(s3_stub):
 
 
 def test_load_parquet_local_exists(tmpdir):
+    """load_parquet() can return data from a local file."""
     path = os.path.join(tmpdir, "test.parquet")
     one_row_df.write_parquet(path)
     df = spare_job.load_parquet(path, api_endpoint["columns"])
@@ -99,6 +104,7 @@ def test_load_parquet_local_exists(tmpdir):
 
 
 def test_load_parquet_local_not_exists(tmpdir):
+    """load_parquet() makes new table if local file doesn't exist."""
     path = os.path.join(tmpdir, "test.parquet")
     df = spare_job.load_parquet(path, api_endpoint["columns"])
     assert_frame_equal(df, empty_df)
@@ -108,6 +114,7 @@ def test_load_parquet_local_not_exists(tmpdir):
 
 
 def test_datetime_from_delta_path_ms():
+    """datetime_from_delta_path_ms() gets timestamp from filename."""
     assert (
         spare_job.datetime_from_delta_path_ms(
             "2025/04/24/2025-04-24T18:55:49Z_https_example.com_path.gz"
