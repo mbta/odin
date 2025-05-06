@@ -113,7 +113,9 @@ class ArchiveAFCAPI(OdinJob):
         """
         r = self.req_pool.request("GET", url=url, fields=fields)
         if r.status != 200:
-            raise urllib3.exceptions.HTTPError(f"API ERROR: {url=} {r.status=} {r.data.decode()}")
+            raise urllib3.exceptions.HTTPError(
+                f"API ERROR: {url=} status={r.status} {r.data.decode()}"
+            )
         return r
 
     def setup_job(self) -> None:
@@ -291,8 +293,14 @@ class ArchiveAFCAPI(OdinJob):
                 - Download each SID as a csv.gz file.
             3. Convert csv file(s) to parquet and merge with S3 parquet files.
         """
+        self.start_kwargs = {"table": self.table}
         # TODO: Removed cert_reqs parameter when not using self-signed endpoint.
-        self.req_pool = urllib3.PoolManager(headers=self.headers, cert_reqs="CERT_NONE")
+        # Current timetout set to 15 mins, for full PROD deployment should be no more than 5 mins.
+        self.req_pool = urllib3.PoolManager(
+            headers=self.headers,
+            cert_reqs="CERT_NONE",
+            timeout=urllib3.Timeout(total=60 * 15),  # 15 minute total timeout
+        )
         self.setup_job()
         self.load_sids()
         self.sync_parquet()
