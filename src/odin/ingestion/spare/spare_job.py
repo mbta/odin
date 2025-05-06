@@ -57,6 +57,7 @@ import os
 import sched
 from typing import Any, Dict, List, NotRequired, Tuple, TypeAlias, TypedDict
 
+from odin.utils.logger import ProcessLog
 import odin.ingestion.spare.spare_s3 as spare_s3
 from odin.job import OdinJob
 from odin.job import job_proc_schedule
@@ -237,7 +238,7 @@ def datetime_from_delta_path_ms(path: str) -> int:
 
 def merge_new_data(
     prev_df: pl.DataFrame, new_df: pl.DataFrame, columns: Columns, datetime_ms: int
-) -> Tuple[pl.DataFrame, bool]:
+) -> pl.DataFrame:
     """
     Append any new or changed data to the file.
 
@@ -284,9 +285,9 @@ def merge_new_data(
     new_rows = new_df.filter(pl.col("id").is_in(new_and_changed_ids))
 
     if soft_deletes.is_empty() and new_rows.is_empty():
-        return (prev_df, False)
+        return prev_df
     else:
-        return (pl.concat([prev_df, soft_deletes, new_rows], how="vertical"), True)
+        return pl.concat([prev_df, soft_deletes, new_rows], how="vertical")
 
 
 def add_to_left(df: pl.DataFrame, cols: List[tuple[str, Any, pl.DataType]]) -> pl.DataFrame:
@@ -320,17 +321,25 @@ def run(
     paths = filter(lambda path: api_endpoint["api_path"] in path, paths)
     # process new files in chronological order (which is also alphabetical order)
     paths = sorted(paths)
+    ProcessLog(
+        "SpareJob get_inputs",
+        api_name=api_endpoint["name"],
+        source=source,
+        api_path=api_endpoint["api_path"],
+        num_paths=len(paths),
+    )
     if paths == []:
         # no new files to process
         return
 
     df = load_parquet(parquet_path, columns)
-    changes_in_any_file = False
+    rows_before = len(df)
     for path in paths:
         with spare_s3.open_file(os.path.join(source, path)) as f:
             input_df = load_json(f, columns)
         # add metadata
         datetime_ms = datetime_from_delta_path_ms(path)
+        rows_input = len(input_df)
         input_df = add_to_left(
             input_df,
             [
@@ -338,12 +347,38 @@ def run(
                 ("ROW_DELETED", False, pl.Boolean()),
             ],
         )
-        (df, changes_in_this_file) = merge_new_data(df, input_df, columns, datetime_ms)
-        changes_in_any_file = changes_in_any_file or changes_in_this_file
+        rows_before_merge = len(df)
+        df = merge_new_data(df, input_df, columns, datetime_ms)
+        rows_after_merge = len(df)
+        # log: input name, num rows, num rows in prev, num rows after. also api_name
+        ProcessLog(
+            "SpareJob process_input",
+            api_name=api_endpoint["name"],
+            obj_path=path,
+            rows_input=rows_input,
+            rows_before_merge=rows_before_merge,
+            rows_after_merge=rows_after_merge,
+        )
 
-    if changes_in_any_file:
+    rows_after = len(df)
+    should_write_parquet = rows_after > rows_before
+    ProcessLog(
+        "SpareJob write_parquet",
+        api_name=api_endpoint["name"],
+        write_parquet=should_write_parquet,
+        rows_before=rows_before,
+        rows_after=rows_after,
+        parquet_path=parquet_path,
+    )
+    if should_write_parquet:
         write_parquet(df, parquet_path, tmpdir)
 
+    ProcessLog(
+        "SpareJob archive",
+        api_name=api_endpoint["name"],
+        archive=config.get("archive"),
+        num_paths=len(paths),
+    )
     if "archive" in config:
         for path in paths:
             spare_s3.rename_object(
