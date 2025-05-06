@@ -10,8 +10,6 @@ import sched
 from odin.utils.logger import ProcessLog
 from odin.utils.logger import MdValues
 from odin.utils.runtime import sigterm_check
-from odin.utils.runtime import delete_folder_contens
-from odin.utils.aws.ecs import running_in_aws
 
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 NEXT_RUN_FAILED = 60 * 60 * 24  # 24 hours
@@ -99,9 +97,5 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler) -> None:
         )
         fail_log.failed(SystemError("OdinJob killed by ECS."))
         proc_return_val.value = NEXT_RUN_FAILED
-
-    # always clear temp directory in AWS (in case of process getting killed)
-    if running_in_aws():
-        delete_folder_contens(tempfile.gettempdir())
 
     schedule.enter(proc_return_val.value, 1, job_proc_schedule, (job, schedule))
