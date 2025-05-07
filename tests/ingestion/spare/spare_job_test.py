@@ -1,6 +1,6 @@
 import boto3
 from botocore.response import StreamingBody
-from botocore.stub import ANY, Stubber
+from botocore.stub import Stubber
 import datetime
 import gzip
 import io
@@ -60,10 +60,6 @@ one_row_df = pl.DataFrame(
 
 def test_load_parquet_s3_exists(s3_stub, tmpdir):
     """load_parquet() can return data from s3."""
-    localpath = os.path.join(tmpdir, "test.parquet")
-    one_row_df.write_parquet(localpath)
-    with open(localpath, "rb") as f:
-        bytes = f.read()
     s3_stub.add_response(
         "head_object",
         expected_params={
@@ -72,12 +68,8 @@ def test_load_parquet_s3_exists(s3_stub, tmpdir):
         },
         service_response={},
     )
-    s3_stub.add_response(
-        "get_object",
-        expected_params={"Bucket": "bucket", "Key": "test.parquet"},
-        service_response={"Body": StreamingBody(io.BytesIO(bytes), len(bytes))},
-    )
-    df = spare_job.load_parquet("s3://bucket/test.parquet", api_endpoint["columns"])
+    with patch("polars.read_parquet", return_value=one_row_df):
+        df = spare_job.load_parquet("s3://bucket/test.parquet", api_endpoint["columns"])
     assert_frame_equal(df, one_row_df)
 
 
@@ -159,7 +151,7 @@ def test_run_s3_makes_new_output(s3_stub, tmpdir):
             ],
         },
     )
-    # checks if output exists (it doesn't, so no get_object call for it)
+    # checks if output exists (it doesn't, so there's no subsequent read call)
     s3_stub.add_client_error(
         "head_object",
         expected_params={
@@ -177,17 +169,7 @@ def test_run_s3_makes_new_output(s3_stub, tmpdir):
         },
         service_response={"Body": StreamingBody(io.BytesIO(compressed), len(compressed))},
     )
-    # write output
-    s3_stub.add_response(
-        "put_object",
-        expected_params={
-            "Bucket": "target",
-            "Key": "testname.parquet",
-            "Body": ANY,
-            "ChecksumAlgorithm": ANY,
-        },
-        service_response={},
-    )
+    # no s3 call for writing output because that's covered by the polars.write_parquet mock below
     # archive input (step 1, copy)
     s3_stub.add_response(
         "copy_object",
@@ -208,30 +190,35 @@ def test_run_s3_makes_new_output(s3_stub, tmpdir):
         service_response={},
     )
 
-    spare_job.run(
-        {
-            "source": "s3://source/",
-            "target": "s3://target/",
-            "archive": "s3://archive/",
-        },
-        api_endpoint,
-        tmpdir,
-    )
+    # mock polars.write_parquet so it doesn't actually write to s3
+    with patch.object(pl.DataFrame, "write_parquet") as polars_write_parquet:
+        # that mock can't get the dataframe written by df.write_parquet()
+        # (because the mock only allows seeing the method args, not the instance/self).
+        # so spy on spare_job.write_parquet to get the df from the arg to that function call
+        with patch(
+            "odin.ingestion.spare.spare_job.write_parquet", wraps=spare_job.write_parquet
+        ) as spare_job_write_parquet:
+            spare_job.run(
+                {
+                    "source": "s3://source/",
+                    "target": "s3://target/",
+                    "archive": "s3://archive/",
+                },
+                api_endpoint,
+            )
+            polars_write_parquet.assert_called_once_with("s3://target/testname.parquet")
+            written_df = spare_job_write_parquet.call_args[0][0]
 
-    assert_frame_equal(
-        spare_job.load_parquet(
-            os.path.join(tmpdir, "target/testname.parquet"), api_endpoint["columns"]
-        ),
-        pl.DataFrame(
-            {
-                "ROW_TIMESTAMP": [1745582400000],
-                "ROW_DELETED": [False],
-                "id": ["id"],
-                "value": [10],
-            },
-            spare_job.METADATA_COLUMNS | api_endpoint["columns"],
-        ),
+    expected_df = pl.DataFrame(
+        {
+            "ROW_TIMESTAMP": [1745582400000],
+            "ROW_DELETED": [False],
+            "id": ["id"],
+            "value": [10],
+        },
+        spare_job.METADATA_COLUMNS | api_endpoint["columns"],
     )
+    assert_frame_equal(written_df, expected_df)
 
 
 def test_run_appends(tmpdir):
@@ -260,7 +247,6 @@ def test_run_appends(tmpdir):
             "target": tmpdir.strpath,
         },
         api_endpoint,
-        tmpdir,
     )
 
     assert_frame_equal(
@@ -316,7 +302,6 @@ def test_run_merges(tmpdir):
             "target": tmpdir.strpath,
         },
         api_endpoint,
-        tmpdir,
     )
 
     expected_df = pl.DataFrame(
@@ -344,7 +329,6 @@ def test_run_merges(tmpdir):
             "target": tmpdir.strpath,
         },
         api_endpoint,
-        tmpdir,
     )
     assert_frame_equal(
         spare_job.load_parquet(os.path.join(tmpdir, "testname.parquet"), api_endpoint["columns"]),
@@ -366,7 +350,6 @@ def test_run_no_changes(tmpdir):
             "target": tmpdir.strpath,
         },
         api_endpoint,
-        tmpdir,
     )
 
     path = os.path.join(tmpdir, "testname.parquet")
@@ -384,7 +367,6 @@ def test_run_no_changes(tmpdir):
             "archive": os.path.join(tmpdir, "archive"),
         },
         api_endpoint,
-        tmpdir,
     )
 
     # check that the file wasn't rewritten

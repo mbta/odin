@@ -55,7 +55,7 @@ import json
 import polars as pl
 import os
 import sched
-from typing import Any, Dict, List, NotRequired, Tuple, TypeAlias, TypedDict
+from typing import Dict, List, NotRequired, TypeAlias, TypedDict
 
 from odin.utils.logger import ProcessLog
 import odin.ingestion.spare.spare_s3 as spare_s3
@@ -175,8 +175,7 @@ def load_parquet(parquet_path: str, columns: Columns) -> pl.DataFrame:
     # TODO save the file timestamp to catch conflicts
     if parquet_path.startswith("s3://"):
         if s3.object_exists(parquet_path):
-            s3_stream = s3.stream_object(parquet_path)
-            return pl.read_parquet(s3_stream)
+            return pl.read_parquet(parquet_path)
         else:
             return pl.DataFrame([], columns)
     else:
@@ -187,7 +186,7 @@ def load_parquet(parquet_path: str, columns: Columns) -> pl.DataFrame:
             return pl.DataFrame([], columns)
 
 
-def write_parquet(df: pl.DataFrame, parquet_path: str, tmpdir: str) -> None:
+def write_parquet(df: pl.DataFrame, parquet_path: str) -> None:
     """
     Write a dataframe to a parquet file.
 
@@ -208,11 +207,7 @@ def write_parquet(df: pl.DataFrame, parquet_path: str, tmpdir: str) -> None:
     For local files, use os.path.getmtime.
     """
     if parquet_path.startswith("s3://"):
-        # df.write_parquet() can't write to s3 directly, so write to local file, then upload it
-        tmp_path = os.path.join(tmpdir, parquet_path[5:])
-        os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
-        df.write_parquet(tmp_path)
-        s3.upload_file(tmp_path, parquet_path)
+        df.write_parquet(parquet_path)
     else:
         os.makedirs(os.path.dirname(parquet_path), exist_ok=True)
         df.write_parquet(parquet_path)
@@ -293,7 +288,6 @@ def merge_new_data(
 def run(
     config: Config,
     api_endpoint: ApiEndpoint,
-    tmpdir: str,
 ) -> None:
     """
     Run the job once.
@@ -360,7 +354,7 @@ def run(
         parquet_path=parquet_path,
     )
     if should_write_parquet:
-        write_parquet(df, parquet_path, tmpdir)
+        write_parquet(df, parquet_path)
 
     ProcessLog(
         "SpareJob archive",
@@ -389,7 +383,7 @@ class SpareJob(OdinJob):
 
     def run(self) -> int:
         """Entrypoint to run the job."""
-        run(self.config, self.api_endpoint, self.tmpdir)
+        run(self.config, self.api_endpoint)
         next_run_secs = 6 * 60 * 60  # 3hr
         return next_run_secs
 
