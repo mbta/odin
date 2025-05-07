@@ -4,10 +4,8 @@ import sched
 import urllib3
 from io import BytesIO
 from operator import itemgetter
-from typing import List
-from typing import Dict
+from pathlib import Path
 from typing import Literal
-from typing import Optional
 
 
 from odin.job import OdinJob
@@ -57,7 +55,9 @@ API_TABLES = [
     "v_validation_taps",
 ]
 
-ApiSchema = List[Dict[Literal["column_name", "data_type"], str]]
+ApiSchema = list[dict[Literal["column_name", "data_type"], str]]
+
+ApiCounts = list[dict[Literal["jobId", "dataCount"], int]]
 
 
 def make_pl_schema(schema_list: ApiSchema) -> pl.Schema:
@@ -91,30 +91,36 @@ class ArchiveAFCAPI(OdinJob):
     def __init__(self, table: str) -> None:
         """Create Job instance."""
         self.table = table
-        self.start_kwargs = {"table": self.table}
-        self.export_folder = os.path.join(DATA_SPRINGBOARD, AFC_DATA, self.table)
+        self.start_kwargs = {"table": table}
+        self.export_folder = os.path.join(DATA_SPRINGBOARD, AFC_DATA, table)
         self.headers = {
             "client_id": os.getenv("AFC_API_CLIENT_ID", ""),
             "client_secret": os.getenv("AFC_API_CLIENT_SECRET", ""),
         }
 
     def make_request(
-        self, url: str, fields: Optional[Dict[str, str]] = None
+        self,
+        url: str,
+        method: str = "GET",
+        fields: dict[str, str] | None = None,
+        preload_content: bool = True,
     ) -> urllib3.BaseHTTPResponse:
         """
         Make AFC API Request.
 
         Will raise if 200 status is not returned.
 
-        :param url: full url to be used in GET Request.
-        :param fields: (Optional) params/fields to be included in GET request.
+        :param url: full url to be used in Request.
+        :param method: (Optional) HTTP request method (such as GET, POST, PUT, etc.)
+        :param fields: (Optional) Data to encode and send in request body.
+        :param preload_content: (Optional) If True (default) response body preloaded into memory.
 
         :return: API Response
         """
-        r = self.req_pool.request("GET", url=url, fields=fields)
+        r = self.req_pool.request(method, url=url, fields=fields, preload_content=preload_content)
         if r.status != 200:
             raise urllib3.exceptions.HTTPError(
-                f"API ERROR: {url=} status={r.status} {r.data.decode()}"
+                f"API ERROR: {url=} status={r.status} response_data={r.data.decode()}"
             )
         return r
 
@@ -129,7 +135,7 @@ class ArchiveAFCAPI(OdinJob):
         # set self.schema
         tableinfos_url = f"{API_ROOT}/tableinfos"
         r = self.make_request(tableinfos_url)
-        schema_list: List[Dict[str, ApiSchema]] = r.json()
+        schema_list: list[dict[str, ApiSchema]] = r.json()
         for schema in schema_list:
             if self.table in schema:
                 self.schema = make_pl_schema(schema[self.table])
@@ -149,12 +155,12 @@ class ArchiveAFCAPI(OdinJob):
         count_url = f"{API_ROOT}/count"
         try:
             r = self.make_request(count_url, fields={"table_name": self.table})
-            self.job_ids = r.json()
+            self.job_ids: ApiCounts | None = r.json()
             assert isinstance(self.job_ids, list)
         except Exception:
             self.job_ids = None
 
-    def download_csv(self, sid_from: int | str | None, sid_to: int | str | None = None) -> None:
+    def download_csv(self, sid_from: int | None, sid_to: int | None = None) -> None:
         """
         Download csv.gz table file for AFC API.
 
@@ -169,9 +175,13 @@ class ArchiveAFCAPI(OdinJob):
         :param sid_to: used as sidTo request parameter, if available
         """
         log = ProcessLog("afc_api_download_csv", sid_from=sid_from, sid_to=sid_to)
+
+        # No SID provided, name csv file by table
         csv_path = os.path.join(self.tmpdir, f"{self.table}.csv")
         if sid_from is not None:
+            # SID provided, name csv file by SID
             csv_path = os.path.join(self.tmpdir, f"{sid_from}.csv")
+
         url = f"{API_ROOT}/stagetable"
         fields = {
             "table_name": self.table,
@@ -183,7 +193,7 @@ class ArchiveAFCAPI(OdinJob):
         if sid_to is not None:
             fields["sidTo"] = str(sid_to)
 
-        r = self.make_request(url, fields)
+        r = self.make_request(url, fields=fields, preload_content=False)
         with gzip.open(BytesIO(r.data)) as gdata:
             with open(csv_path, mode="wb") as writer:
                 writer.write(gdata.read())
@@ -205,20 +215,20 @@ class ArchiveAFCAPI(OdinJob):
         else:
             batch_count = 0
             target_rows = 20 * 1024 * 1024 / (12 * self.schema.len())
-            start_sid = ""
-            end_sid = ""
-            for job in sorted(self.job_ids, key=itemgetter("jobId")):
-                job_sid = str(job["jobId"])
-                if self.last_sid is not None and job_sid <= str(self.last_sid):
+            start_sid = None
+            end_sid = None
+            for api_job in sorted(self.job_ids, key=itemgetter("jobId")):
+                job_sid = int(api_job["jobId"])
+                if self.last_sid is not None and job_sid <= int(self.last_sid):
                     continue
-                if start_sid == "":
+                if start_sid is None:
                     start_sid = job_sid
                 end_sid = job_sid
-                batch_count += int(job["dataCount"])
+                batch_count += int(api_job["dataCount"])
                 if batch_count > target_rows:
                     self.download_csv(start_sid, end_sid)
                     batch_count = 0
-                    start_sid = ""
+                    start_sid = None
                 # stop if disk is getting too full
                 if disk_free_pct() < 60:
                     break
@@ -229,16 +239,17 @@ class ArchiveAFCAPI(OdinJob):
         """Convert csv to parquet and sync with S3 files."""
         log = ProcessLog("afc_api_sync_parquet")
         sync_paths = []
-        for temp_file in os.listdir(self.tmpdir):
-            if not temp_file.endswith(".csv"):
+        for csv_file in sorted(Path(self.tmpdir).iterdir(), key=os.path.getmtime):
+            if csv_file.suffix != ".csv":
                 continue
-            csv_path = os.path.join(self.tmpdir, temp_file)
-            pq_path = csv_path.replace(".csv", ".parquet")
+            pq_path = str(csv_file.absolute()).replace(".csv", ".parquet")
             lf = pl.scan_csv(
-                csv_path,
+                csv_file.absolute(),
                 schema=self.schema,
                 has_header=True,
             )
+            # Currently needed because pagination not bullet-proof
+            # TODO: Remove if pagination updated to always make requests with SID
             if self.last_sid is not None:
                 lf = lf.filter(pl.col("sid") != self.last_sid)
             lf.sink_parquet(
@@ -247,7 +258,7 @@ class ArchiveAFCAPI(OdinJob):
                 compression_level=3,
                 row_group_size=int(1024 * 1024 / (8 * self.schema.len())),
             )
-            os.remove(csv_path)
+            csv_file.unlink()
             pq_row_count = ds_from_path(pq_path).count_rows()
             if pq_row_count > 0:
                 sync_paths.append(pq_path)
@@ -295,11 +306,12 @@ class ArchiveAFCAPI(OdinJob):
         """
         self.start_kwargs = {"table": self.table}
         # TODO: Removed cert_reqs parameter when not using self-signed endpoint.
-        # Current timetout set to 15 mins, for full PROD deployment should be no more than 5 mins.
+        # Current timetout set to 10 mins, for full PROD deployment should be no more than 2 mins.
         self.req_pool = urllib3.PoolManager(
             headers=self.headers,
             cert_reqs="CERT_NONE",
-            timeout=urllib3.Timeout(total=60 * 15),  # 15 minute total timeout
+            timeout=urllib3.Timeout(total=60 * 10),  # 10 minute total timeout
+            retries=False,  # No retires, if retry-able failures are documented, can be updated
         )
         self.setup_job()
         self.load_sids()
