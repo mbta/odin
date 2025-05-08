@@ -180,8 +180,7 @@ def load_parquet(parquet_path: str, columns: Columns) -> pl.DataFrame:
             return pl.DataFrame([], columns)
     else:
         try:
-            with open(parquet_path, "r") as f:
-                return pl.read_parquet(f)
+            return pl.read_parquet(parquet_path)
         except FileNotFoundError:
             return pl.DataFrame([], columns)
 
