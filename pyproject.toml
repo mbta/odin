@@ -25,6 +25,7 @@ optional-dependencies.dev = [
     "pytest",
     "ruff",
     "types-psutil",
+    "types-python-dateutil",
 ]
 
 [project.scripts]
