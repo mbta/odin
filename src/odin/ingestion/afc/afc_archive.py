@@ -27,12 +27,6 @@ import polars as pl
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 
 API_ROOT = "https://dwhexperianceapi-production.ir-e1.cloudhub.io/api/v1/datawarehouse"
-# This API_ROOT bypasses a load balancer, allowing for long running requests.
-# This is required because the API currently does not have a complete pagination solution.
-# This api endpoint is also using a self-signed cert, so SSL verifcation is not posssible.
-API_ROOT = (
-    "https://mule-worker-dwhexperianceapi-production.ir-e1.cloudhub.io:8082/api/v1/datawarehouse"
-)
 
 # Table returned by `tableinfos` endpoint as of April 30, 2025
 API_TABLES = [
@@ -81,12 +75,7 @@ def make_pl_schema(schema_list: ApiSchema) -> pl.Schema:
 
 
 class ArchiveAFCAPI(OdinJob):
-    """
-    Combine AFC API files into single parquet file.
-
-    This process should not be deployed to PROD. It has no pagination capability so resource
-    usage of this process is completely un-knowable.
-    """
+    """Combine AFC API files into single parquet file."""
 
     def __init__(self, table: str) -> None:
         """Create Job instance."""
@@ -126,12 +115,15 @@ class ArchiveAFCAPI(OdinJob):
 
     def setup_job(self) -> None:
         """
-        Grab API table schema and largest SID already processed.
+        Gather data required to run ArchiveAFCAPI.
 
-        Use of SID is used as a "pagination" method of API. One SID worth of records is the minimum
-        number of records that can be pulled at one time from the API, however there is no control
-        over how many records can/will be in one SID.
+        1. Pull Table schema from `tableinfos` endpoint.
+        2. Capture largest sid already processed from parquet dataset.
+        3. Pull list of available sid's from `count` endpoint.
+            `count` endpoint should always return some amount of sid's, even when called with only
+            "table_name" parameter.
         """
+        log = ProcessLog("setup_job", table=self.table)
         # set self.schema
         tableinfos_url = f"{API_ROOT}/tableinfos"
         r = self.make_request(tableinfos_url)
@@ -143,56 +135,46 @@ class ArchiveAFCAPI(OdinJob):
         else:
             raise IndexError(f"{self.table} not found in 'tableinfos' API endpoint.")
 
-        # set self.last_sid
-        self.last_sid = None
+        # set self.pq_sid from parquet dataset
+        self.pq_sid: int | None = None
+        self.max_sid: int | None = None
         pq_objects = list_objects(self.export_folder, in_filter=".parquet")
         if pq_objects:
-            _, self.last_sid = ds_metadata_min_max(
-                ds_from_path(f"s3://{self.export_folder}"), "sid"
-            )
+            _, self.pq_sid = ds_metadata_min_max(ds_from_path(f"s3://{self.export_folder}"), "sid")
+        log.add_metadata(pq_sid=self.pq_sid)
 
-        # set self.job_ids (if possible)
+        # pull list of sid's available to process API
         count_url = f"{API_ROOT}/count"
-        try:
-            r = self.make_request(count_url, fields={"table_name": self.table})
-            self.job_ids: ApiCounts | None = r.json()
-            assert isinstance(self.job_ids, list)
-        except Exception:
-            self.job_ids = None
+        count_fields = {"table_name": self.table}
+        if self.pq_sid is not None:
+            count_fields["sidFrom"] = str(self.pq_sid)
+        r = self.make_request(count_url, fields=count_fields)
+        self.job_ids: ApiCounts = r.json()
+        assert isinstance(self.job_ids, list)
 
-    def download_csv(self, sid_from: int | None, sid_to: int | None = None) -> None:
+        log.complete(num_job_ids=len(self.job_ids))
+
+    def download_csv(self, sid_from: int, sid_to: int) -> None:
         """
         Download csv.gz table file for AFC API.
 
-        No pagination is available at this endpoint. This is not a great design. There's supposed to
-        be an API endpoint to query SID's available, but it is not functional.
+        Only download csv.gz table with known sid_from and sid_to range.
 
-        If sid_from and/or sid_to are available, pagination will be attempted.
-
-        Using sidFrom and/or sidTo results in a response that is inclusive of both parameters.
-
-        :param sid_from: used as sidFrom request parameter, if available
-        :param sid_to: used as sidTo request parameter, if available
+        :param sid_from: used as sidFrom request parameter
+        :param sid_to: used as sidTo request parameter
         """
-        log = ProcessLog("afc_api_download_csv", sid_from=sid_from, sid_to=sid_to)
+        log = ProcessLog("afc_api_download_csv", table=self.table, sid_from=sid_from, sid_to=sid_to)
 
-        # No SID provided, name csv file by table
-        csv_path = os.path.join(self.tmpdir, f"{self.table}.csv")
-        if sid_from is not None:
-            # SID provided, name csv file by SID
-            csv_path = os.path.join(self.tmpdir, f"{sid_from}.csv")
+        csv_path = os.path.join(self.tmpdir, f"{sid_from}.csv")
 
         url = f"{API_ROOT}/stagetable"
         fields = {
             "table_name": self.table,
             "responseType": "application/csv",
             "compression": "gzip",
+            "sidFrom": str(sid_from),
+            "sidTo": str(sid_to),
         }
-        if sid_from is not None:
-            fields["sidFrom"] = str(sid_from)
-        if sid_to is not None:
-            fields["sidTo"] = str(sid_to)
-
         r = self.make_request(url, fields=fields, preload_content=False)
         with gzip.open(BytesIO(r.data)) as gdata:
             with open(csv_path, mode="wb") as writer:
@@ -203,37 +185,33 @@ class ArchiveAFCAPI(OdinJob):
         """
         Load API data based on sid values.
 
-        Sid pagination will be attempted if range of sid values is available. These values need to
-        to be pulled from `count` endpoint, however as of May 1, 2025 `count` endpoint is not
-        functional with the use of `sidFrom` parameter.
+        SID pagination will be done with data returned from `count` endpoint.
 
-        If pagination is possible, API data will be saved in batches, targeting file size of
-        approximately 10mb.
+        API data will be saved in batches.
         """
-        if self.job_ids is None:
-            self.download_csv(self.last_sid)
-        else:
-            batch_count = 0
-            target_rows = 20 * 1024 * 1024 / (12 * self.schema.len())
-            start_sid = None
-            end_sid = None
-            for api_job in sorted(self.job_ids, key=itemgetter("jobId")):
-                job_sid = int(api_job["jobId"])
-                if self.last_sid is not None and job_sid <= int(self.last_sid):
-                    continue
-                if start_sid is None:
-                    start_sid = job_sid
-                end_sid = job_sid
-                batch_count += int(api_job["dataCount"])
-                if batch_count > target_rows:
-                    self.download_csv(start_sid, end_sid)
-                    batch_count = 0
-                    start_sid = None
-                # stop if disk is getting too full
-                if disk_free_pct() < 60:
-                    break
-            if batch_count > 0:
+        batch_count = 0
+        # assume 12 bytes per column to ballbark 20mb per csv request
+        target_rows = 20 * 1024 * 1024 / (12 * self.schema.len())
+        start_sid = -1
+        end_sid = -1
+        for api_job in sorted(self.job_ids, key=itemgetter("jobId")):
+            job_sid = int(api_job["jobId"])
+            if self.pq_sid is not None and job_sid <= int(self.pq_sid):
+                continue
+            if start_sid < 0:
+                start_sid = job_sid
+            end_sid = job_sid
+            self.max_sid = job_sid
+            batch_count += int(api_job["dataCount"])
+            if batch_count > target_rows:
                 self.download_csv(start_sid, end_sid)
+                batch_count = 0
+                start_sid = -1
+            # stop if disk is getting too full
+            if disk_free_pct() < 60:
+                break
+        if batch_count > 0:
+            self.download_csv(start_sid, end_sid)
 
     def sync_parquet(self) -> None:
         """Convert csv to parquet and sync with S3 files."""
@@ -248,10 +226,6 @@ class ArchiveAFCAPI(OdinJob):
                 schema=self.schema,
                 has_header=True,
             )
-            # Currently needed because pagination not bullet-proof
-            # TODO: Remove if pagination updated to always make requests with SID
-            if self.last_sid is not None:
-                lf = lf.filter(pl.col("sid") != self.last_sid)
             lf.sink_parquet(
                 pq_path,
                 compression="zstd",
@@ -288,35 +262,56 @@ class ArchiveAFCAPI(OdinJob):
             upload_file(new_path, move_path)
         log.complete()
 
+    def re_run_check(self) -> int:
+        """
+        Determine when job should be ru-run.
+
+        If `count` returning more than 1 job, based on self.max_sid, indicates more jobs available.
+        """
+        log = ProcessLog("re_run_check", table=self.table, max_sid=self.max_sid)
+        return_duration = NEXT_RUN_DEFAULT
+        if self.max_sid is not None:
+            r = self.make_request(
+                url=f"{API_ROOT}/count",
+                fields={"table_name": self.table, "sidFrom": str(self.max_sid)},
+            )
+            if len(r.json()) > 1:
+                return_duration = 60 * 5
+        log.complete(return_duration=return_duration)
+        return return_duration
+
     def run(self) -> int:
         """
         Archive S&B AFC Data from API.
 
         Process:
-            1. setup Job by:
+            1. setup job by:
                 - pulling table schema from API Endpoint
-                - grab the largest SID already loaded from parquet files
-                - attempt to grab SID's available from /count endpoint
-            2a. Download all available SID's as csv.gz glob.
-                - No true pagination available for this process.
-                - Use of "sidFrom" param is inclusive of SID submitted.
-            2b. Loop through all available SID's returned from /count endpoint.
-                - Download each SID as a csv.gz file.
+                - grab the largest SID already processed, from parquet files
+                - grab SID's available from /count endpoint
+            2. Loop through all available SID's returned from /count endpoint.
+                - Download SID ranges in batches as csv.gz files.
             3. Convert csv file(s) to parquet and merge with S3 parquet files.
+            4. Determine next_runs_secs duration.
+
+        May 12, 2025 - API has been updated to always return results from "count" endpoint.
+
+        TODO: S&B indicated API has two table "types" one type has incrementing SID's for new data,
+        which this process is currently desined for, the other does full table replacements for
+        each new SID (not implemented). Waiting on S&B to provide information on which table
+        is which.
         """
         self.start_kwargs = {"table": self.table}
-        # TODO: Removed cert_reqs parameter when not using self-signed endpoint.
         # Current timetout set to 10 mins, for full PROD deployment should be no more than 2 mins.
         self.req_pool = urllib3.PoolManager(
             headers=self.headers,
-            cert_reqs="CERT_NONE",
             timeout=urllib3.Timeout(total=60 * 10),  # 10 minute total timeout
             retries=False,  # No retires, if retry-able failures are documented, can be updated
         )
         self.setup_job()
         self.load_sids()
         self.sync_parquet()
-        return NEXT_RUN_DEFAULT
+        return self.re_run_check()
 
 
 def schedule_afc_archive(schedule: sched.scheduler) -> None:
