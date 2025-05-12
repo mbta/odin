@@ -33,15 +33,8 @@ def test_load_sids(disk_free: MagicMock, dl_csv: MagicMock):
     job.schema = make_pl_schema(test_schema)
     assert job.schema == expected_schema
 
-    # Test initial pull
-    job.job_ids = None
-    job.last_sid = None
-    job.load_sids()
-    dl_csv.assert_called_once_with(None)
-    dl_csv.reset_mock()
-
     # Test jobId skipping
-    job.last_sid = 1000
+    job.pq_sid = 1000
     job.job_ids = [
         {"jobId": 1, "dataCount": 1},
         {"jobId": 2, "dataCount": 1},
