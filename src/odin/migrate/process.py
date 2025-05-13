@@ -9,6 +9,7 @@ from odin.utils.locations import DATA_ARCHIVE
 from odin.utils.locations import ODIN_MIGRATIONS
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import upload_file
+from odin.utils.aws.s3 import delete_objects
 
 
 def get_last_run_migration(status_path: str) -> str | None:
@@ -31,12 +32,16 @@ def upload_migration_file(status_path: str, stem: str) -> None:
     """
     Upload migration file to S3.
 
+    Delete existing migration file and upload new migration file.
+
     :param status_path: S3 path of migration status file
     :param stem: 4 numbers of migration stem. (0001)
     """
+    delete_objects([obj.path for obj in list_objects(status_path)])
     with tempfile.TemporaryDirectory() as tmpdir:
         file_path = os.path.join(tmpdir, stem)
         with open(file_path, "w") as f:
+            # write something so file is not 0 bytes in size
             f.write(stem)
         upload_file(file_path, os.path.join(status_path, stem))
 
