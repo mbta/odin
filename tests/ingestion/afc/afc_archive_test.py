@@ -84,6 +84,24 @@ def test_load_sids(disk_free: MagicMock, dl_csv: MagicMock):
     )
     dl_csv.reset_mock()
 
+    # Confirm job sorting
+    job.job_ids = [
+        {"jobId": 1002, "dataCount": 200},
+        {"jobId": 1001, "dataCount": 500},
+        {"jobId": 1004, "dataCount": 500},
+        {"jobId": 1003, "dataCount": 300},
+    ]
+    job.load_sids()
+    dl_csv.assert_called_once_with(
+        [
+            {"jobId": 1001, "dataCount": 500},
+            {"jobId": 1002, "dataCount": 200},
+            {"jobId": 1003, "dataCount": 300},
+            {"jobId": 1004, "dataCount": 500},
+        ]
+    )
+    dl_csv.reset_mock()
+
     # Test disk_free_pct hit
     disk_free.return_value = 50
     job.load_sids()

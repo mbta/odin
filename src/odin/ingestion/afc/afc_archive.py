@@ -216,8 +216,8 @@ class ArchiveAFCAPI(OdinJob):
 
         :param download_jobs: list of API jobId's (sid's) to download
         """
-        sid_from = min(j["jobId"] for j in download_jobs)
-        sid_to = max(j["jobId"] for j in download_jobs)
+        sid_from = download_jobs[0]["jobId"]
+        sid_to = download_jobs[-1]["jobId"]
         num_rows = sum(j["dataCount"] for j in download_jobs)
         log = ProcessLog(
             "afc_api_download_csv",
@@ -255,14 +255,17 @@ class ArchiveAFCAPI(OdinJob):
         # assume 12 bytes per column to ballbark 20mb per csv request
         target_rows = 20 * 1024 * 1024 / (12 * self.schema.len())
         download_jobs: ApiCounts = []
+        download_rows = 0
         for api_job in sorted(self.job_ids, key=itemgetter("jobId")):
             if self.pq_sid is not None and int(api_job["jobId"]) <= int(self.pq_sid):
                 continue
             download_jobs.append(api_job)
+            download_rows += int(api_job["dataCount"])
             self.max_sid = int(api_job["jobId"])
-            if sum(j["dataCount"] for j in download_jobs) > target_rows:
+            if download_rows > target_rows:
                 self.download_csv(download_jobs)
                 download_jobs = []
+                download_rows = 0
             # stop if disk is getting too full
             if disk_free_pct() < 60:
                 break
