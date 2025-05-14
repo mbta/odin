@@ -49,7 +49,7 @@ def test_load_sids(disk_free: MagicMock, dl_csv: MagicMock):
         {"jobId": 1001, "dataCount": 1},
     ]
     job.load_sids()
-    dl_csv.assert_called_once_with(1001, 1001)
+    dl_csv.assert_called_once_with([{"jobId": 1001, "dataCount": 1}])
     dl_csv.reset_mock()
 
     # Test target_rows hit
@@ -60,7 +60,12 @@ def test_load_sids(disk_free: MagicMock, dl_csv: MagicMock):
         {"jobId": 1002, "dataCount": 500},
     ]
     job.load_sids()
-    dl_csv.assert_has_calls([call(1001, 1001), call(1002, 1002)])
+    dl_csv.assert_has_calls(
+        [
+            call([{"jobId": 1001, "dataCount": 1_000_000}]),
+            call([{"jobId": 1002, "dataCount": 500}]),
+        ]
+    )
     dl_csv.reset_mock()
 
     # Test combine jobIds
@@ -71,11 +76,34 @@ def test_load_sids(disk_free: MagicMock, dl_csv: MagicMock):
         {"jobId": 1002, "dataCount": 500},
     ]
     job.load_sids()
-    dl_csv.assert_called_once_with(1001, 1002)
+    dl_csv.assert_called_once_with(
+        [
+            {"jobId": 1001, "dataCount": 500},
+            {"jobId": 1002, "dataCount": 500},
+        ]
+    )
+    dl_csv.reset_mock()
+
+    # Confirm job sorting
+    job.job_ids = [
+        {"jobId": 1002, "dataCount": 200},
+        {"jobId": 1001, "dataCount": 500},
+        {"jobId": 1004, "dataCount": 500},
+        {"jobId": 1003, "dataCount": 300},
+    ]
+    job.load_sids()
+    dl_csv.assert_called_once_with(
+        [
+            {"jobId": 1001, "dataCount": 500},
+            {"jobId": 1002, "dataCount": 200},
+            {"jobId": 1003, "dataCount": 300},
+            {"jobId": 1004, "dataCount": 500},
+        ]
+    )
     dl_csv.reset_mock()
 
     # Test disk_free_pct hit
     disk_free.return_value = 50
     job.load_sids()
-    dl_csv.assert_called_once_with(1001, 1001)
+    dl_csv.assert_called_once_with([{"jobId": 1001, "dataCount": 500}])
     dl_csv.reset_mock()
