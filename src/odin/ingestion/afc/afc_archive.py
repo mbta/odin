@@ -143,7 +143,7 @@ class ArchiveAFCAPI(OdinJob):
             _, self.pq_sid = ds_metadata_min_max(ds_from_path(f"s3://{self.export_folder}"), "sid")
         log.add_metadata(pq_sid=self.pq_sid)
 
-        # pull list of sid's available to process API
+        # pull list of sid's available to process from API
         count_url = f"{API_ROOT}/count"
         count_fields = {"table_name": self.table}
         if self.pq_sid is not None:
@@ -154,16 +154,78 @@ class ArchiveAFCAPI(OdinJob):
 
         log.complete(num_job_ids=len(self.job_ids))
 
-    def download_csv(self, sid_from: int, sid_to: int) -> None:
+    def verify_downloads(self, csv_path: str, download_jobs: ApiCounts) -> None:
+        """
+        Run checks on downloaded csv files to ensure they are in alignment with `count` endpoint.
+
+        API Endpoints are not working as expected, this verification step will confirm that `count`
+        and `stagetable` endpoints are in alignment with what they should be returning.
+
+        :param csv_path: path to downloaded csv file
+        :param download_jobs: job list from `count` endpoint
+        """
+        # create comparison dataframe with following columns:
+        #   jobId -> sid values to compare
+        #   csvCount -> record count found in csv file
+        #   dataCount -> record cound from `count` endpoint
+        log = ProcessLog("verify_downloads", csv_path=csv_path)
+        compare_df = (
+            pl.scan_csv(
+                source=csv_path,
+                schema=self.schema,
+                has_header=True,
+            )
+            .group_by("sid")
+            .len(name="csvCount")
+            .rename({"sid": "jobId"})
+            .join(pl.LazyFrame(download_jobs), on="jobId", coalesce=True, how="full")
+            .sort("jobId")
+            .collect()
+        )
+
+        missing_api = compare_df.filter(pl.col("dataCount").is_null())
+        missing_api_str = missing_api.get_column("jobId").str.join(",")[0]
+        assert missing_api.height == 0, (
+            f"SID(s) from `stagetable` not in `count` endpoint:({missing_api_str})"
+        )
+
+        missing_csv = compare_df.filter(pl.col("csvCount").is_null())
+        missing_csv_str = missing_csv.get_column("jobId").str.join(", ")[0]
+        assert missing_csv.height == 0, (
+            f"SID(s) from `count` not in `stagetable` endpoint:({missing_csv_str})"
+        )
+
+        count_diff = compare_df.filter(
+            pl.col("csvCount").is_not_null(),
+            pl.col("dataCount").is_not_null(),
+            pl.col("csvCount") != pl.col("dataCount"),
+        )
+        count_diff_str = count_diff.select(
+            pl.format("sid:{}_{}!={}", "jobId", "dataCount", "csvCount").str.join(", ")
+        ).item(0, 0)
+        assert count_diff.height == 0, (
+            f"record counts from `count` and `stagetable endpoints not equal:({count_diff_str})"
+        )
+        log.complete()
+
+    def download_csv(self, download_jobs: ApiCounts) -> None:
         """
         Download csv.gz table file for AFC API.
 
         Only download csv.gz table with known sid_from and sid_to range.
 
-        :param sid_from: used as sidFrom request parameter
-        :param sid_to: used as sidTo request parameter
+        :param download_jobs: list of API jobId's (sid's) to download
         """
-        log = ProcessLog("afc_api_download_csv", table=self.table, sid_from=sid_from, sid_to=sid_to)
+        sid_from = min(j["jobId"] for j in download_jobs)
+        sid_to = max(j["jobId"] for j in download_jobs)
+        num_rows = sum(j["dataCount"] for j in download_jobs)
+        log = ProcessLog(
+            "afc_api_download_csv",
+            table=self.table,
+            sid_from=sid_from,
+            sid_to=sid_to,
+            num_rows=num_rows,
+        )
 
         csv_path = os.path.join(self.tmpdir, f"{sid_from}.csv")
 
@@ -180,6 +242,7 @@ class ArchiveAFCAPI(OdinJob):
             with open(csv_path, mode="wb") as writer:
                 writer.write(gdata.read())
         log.complete()
+        self.verify_downloads(csv_path, download_jobs)
 
     def load_sids(self) -> None:
         """
@@ -187,31 +250,24 @@ class ArchiveAFCAPI(OdinJob):
 
         SID pagination will be done with data returned from `count` endpoint.
 
-        API data will be saved in batches.
+        API data will be downloaded in batches to limit API reponse time.
         """
-        batch_count = 0
         # assume 12 bytes per column to ballbark 20mb per csv request
         target_rows = 20 * 1024 * 1024 / (12 * self.schema.len())
-        start_sid = -1
-        end_sid = -1
+        download_jobs: ApiCounts = []
         for api_job in sorted(self.job_ids, key=itemgetter("jobId")):
-            job_sid = int(api_job["jobId"])
-            if self.pq_sid is not None and job_sid <= int(self.pq_sid):
+            if self.pq_sid is not None and int(api_job["jobId"]) <= int(self.pq_sid):
                 continue
-            if start_sid < 0:
-                start_sid = job_sid
-            end_sid = job_sid
-            self.max_sid = job_sid
-            batch_count += int(api_job["dataCount"])
-            if batch_count > target_rows:
-                self.download_csv(start_sid, end_sid)
-                batch_count = 0
-                start_sid = -1
+            download_jobs.append(api_job)
+            self.max_sid = int(api_job["jobId"])
+            if sum(j["dataCount"] for j in download_jobs) > target_rows:
+                self.download_csv(download_jobs)
+                download_jobs = []
             # stop if disk is getting too full
             if disk_free_pct() < 60:
                 break
-        if batch_count > 0:
-            self.download_csv(start_sid, end_sid)
+        if len(download_jobs) > 0:
+            self.download_csv(download_jobs)
 
     def sync_parquet(self) -> None:
         """Convert csv to parquet and sync with S3 files."""
