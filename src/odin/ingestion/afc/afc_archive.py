@@ -248,9 +248,8 @@ class ArchiveAFCAPI(OdinJob):
 
         # convert to csv.gz to csv, so polars scan_csv can be used
         # csv file should also produce more consistent disk and memory usage profiles
-        with gzip.open(gz_path, mode="rb") as gz_read:
-            with open(csv_path, mode="wb") as csv_write:
-                shutil.copyfileobj(gz_read, csv_write)
+        with gzip.open(gz_path, mode="rb") as gz_read, open(csv_path, mode="wb") as csv_write:
+            shutil.copyfileobj(gz_read, csv_write)
         os.remove(gz_path)
 
         log.complete()
