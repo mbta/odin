@@ -1,8 +1,8 @@
 import os
 import gzip
 import sched
+import shutil
 import urllib3
-from io import BytesIO
 from operator import itemgetter
 from pathlib import Path
 from typing import Literal
@@ -103,6 +103,7 @@ class ArchiveAFCAPI(OdinJob):
         :param method: (Optional) HTTP request method (such as GET, POST, PUT, etc.)
         :param fields: (Optional) Data to encode and send in request body.
         :param preload_content: (Optional) If True (default) response body preloaded into memory.
+                                If False used, call `release_conn()` when done with response
 
         :return: API Response
         """
@@ -214,7 +215,7 @@ class ArchiveAFCAPI(OdinJob):
 
         Only download csv.gz table with known sid_from and sid_to range.
 
-        :param download_jobs: list of API jobId's (sid's) to download
+        :param download_jobs: list of API jobId's (sid's) to download (sorted by jobId - ascending)
         """
         sid_from = download_jobs[0]["jobId"]
         sid_to = download_jobs[-1]["jobId"]
@@ -227,8 +228,6 @@ class ArchiveAFCAPI(OdinJob):
             num_rows=num_rows,
         )
 
-        csv_path = os.path.join(self.tmpdir, f"{sid_from}.csv")
-
         url = f"{API_ROOT}/stagetable"
         fields = {
             "table_name": self.table,
@@ -238,9 +237,21 @@ class ArchiveAFCAPI(OdinJob):
             "sidTo": str(sid_to),
         }
         r = self.make_request(url, fields=fields, preload_content=False)
-        with gzip.open(BytesIO(r.data)) as gdata:
-            with open(csv_path, mode="wb") as writer:
-                writer.write(gdata.read())
+
+        csv_path = os.path.join(self.tmpdir, f"{sid_from}.csv")
+        gz_path = f"{csv_path}.gz"
+
+        # download csv.gz file (as stream)
+        with open(gz_path, mode="wb") as gz_write:
+            shutil.copyfileobj(r, gz_write)
+        r.release_conn()
+
+        # convert to csv.gz to csv, so polars scan_csv can be used
+        # csv file should also produce more consistent disk and memory usage profiles
+        with gzip.open(gz_path, mode="rb") as gz_read, open(csv_path, mode="wb") as csv_write:
+            shutil.copyfileobj(gz_read, csv_write)
+        os.remove(gz_path)
+
         log.complete()
         self.verify_downloads(csv_path, download_jobs)
 
