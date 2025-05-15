@@ -4,10 +4,8 @@ import sched
 import urllib3
 from io import BytesIO
 from operator import itemgetter
-from typing import List
-from typing import Dict
+from pathlib import Path
 from typing import Literal
-from typing import Optional
 
 
 from odin.job import OdinJob
@@ -29,12 +27,6 @@ import polars as pl
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 
 API_ROOT = "https://dwhexperianceapi-production.ir-e1.cloudhub.io/api/v1/datawarehouse"
-# This API_ROOT bypasses a load balancer, allowing for long running requests.
-# This is required because the API currently does not have a complete pagination solution.
-# This api endpoint is also using a self-signed cert, so SSL verifcation is not posssible.
-API_ROOT = (
-    "https://mule-worker-dwhexperianceapi-production.ir-e1.cloudhub.io:8082/api/v1/datawarehouse"
-)
 
 # Table returned by `tableinfos` endpoint as of April 30, 2025
 API_TABLES = [
@@ -57,7 +49,9 @@ API_TABLES = [
     "v_validation_taps",
 ]
 
-ApiSchema = List[Dict[Literal["column_name", "data_type"], str]]
+ApiSchema = list[dict[Literal["column_name", "data_type"], str]]
+
+ApiCounts = list[dict[Literal["jobId", "dataCount"], int]]
 
 
 def make_pl_schema(schema_list: ApiSchema) -> pl.Schema:
@@ -81,53 +75,59 @@ def make_pl_schema(schema_list: ApiSchema) -> pl.Schema:
 
 
 class ArchiveAFCAPI(OdinJob):
-    """
-    Combine AFC API files into single parquet file.
-
-    This process should not be deployed to PROD. It has no pagination capability so resource
-    usage of this process is completely un-knowable.
-    """
+    """Combine AFC API files into single parquet file."""
 
     def __init__(self, table: str) -> None:
         """Create Job instance."""
         self.table = table
-        self.start_kwargs = {"table": self.table}
-        self.export_folder = os.path.join(DATA_SPRINGBOARD, AFC_DATA, self.table)
+        self.start_kwargs = {"table": table}
+        self.export_folder = os.path.join(DATA_SPRINGBOARD, AFC_DATA, table)
         self.headers = {
             "client_id": os.getenv("AFC_API_CLIENT_ID", ""),
             "client_secret": os.getenv("AFC_API_CLIENT_SECRET", ""),
         }
 
     def make_request(
-        self, url: str, fields: Optional[Dict[str, str]] = None
+        self,
+        url: str,
+        method: str = "GET",
+        fields: dict[str, str] | None = None,
+        preload_content: bool = True,
     ) -> urllib3.BaseHTTPResponse:
         """
         Make AFC API Request.
 
         Will raise if 200 status is not returned.
 
-        :param url: full url to be used in GET Request.
-        :param fields: (Optional) params/fields to be included in GET request.
+        :param url: full url to be used in Request.
+        :param method: (Optional) HTTP request method (such as GET, POST, PUT, etc.)
+        :param fields: (Optional) Data to encode and send in request body.
+        :param preload_content: (Optional) If True (default) response body preloaded into memory.
 
         :return: API Response
         """
-        r = self.req_pool.request("GET", url=url, fields=fields)
+        r = self.req_pool.request(method, url=url, fields=fields, preload_content=preload_content)
         if r.status != 200:
-            raise urllib3.exceptions.HTTPError(f"API ERROR: {url=} {r.status=} {r.data.decode()}")
+            raise urllib3.exceptions.HTTPError(
+                f"API ERROR: {url=} status={r.status} response_data={r.data.decode()}"
+            )
         return r
 
     def setup_job(self) -> None:
         """
-        Grab API table schema and largest SID already processed.
+        Gather data required to run ArchiveAFCAPI.
 
-        Use of SID is used as a "pagination" method of API. One SID worth of records is the minimum
-        number of records that can be pulled at one time from the API, however there is no control
-        over how many records can/will be in one SID.
+        1. Pull Table schema from `tableinfos` endpoint.
+        2. Capture largest sid already processed from parquet dataset.
+        3. Pull list of available sid's from `count` endpoint.
+            `count` endpoint should always return some amount of sid's, even when called with only
+            "table_name" parameter.
         """
+        log = ProcessLog("setup_job", table=self.table)
         # set self.schema
         tableinfos_url = f"{API_ROOT}/tableinfos"
         r = self.make_request(tableinfos_url)
-        schema_list: List[Dict[str, ApiSchema]] = r.json()
+        schema_list: list[dict[str, ApiSchema]] = r.json()
         for schema in schema_list:
             if self.table in schema:
                 self.schema = make_pl_schema(schema[self.table])
@@ -135,117 +135,163 @@ class ArchiveAFCAPI(OdinJob):
         else:
             raise IndexError(f"{self.table} not found in 'tableinfos' API endpoint.")
 
-        # set self.last_sid
-        self.last_sid = None
+        # set self.pq_sid from parquet dataset
+        self.pq_sid: int | None = None
+        self.max_sid: int | None = None
         pq_objects = list_objects(self.export_folder, in_filter=".parquet")
         if pq_objects:
-            _, self.last_sid = ds_metadata_min_max(
-                ds_from_path(f"s3://{self.export_folder}"), "sid"
-            )
+            _, self.pq_sid = ds_metadata_min_max(ds_from_path(f"s3://{self.export_folder}"), "sid")
+        log.add_metadata(pq_sid=self.pq_sid)
 
-        # set self.job_ids (if possible)
+        # pull list of sid's available to process from API
         count_url = f"{API_ROOT}/count"
-        try:
-            r = self.make_request(count_url, fields={"table_name": self.table})
-            self.job_ids = r.json()
-            assert isinstance(self.job_ids, list)
-        except Exception:
-            self.job_ids = None
+        count_fields = {"table_name": self.table}
+        if self.pq_sid is not None:
+            count_fields["sidFrom"] = str(self.pq_sid)
+        r = self.make_request(count_url, fields=count_fields)
+        self.job_ids: ApiCounts = r.json()
+        assert isinstance(self.job_ids, list)
 
-    def download_csv(self, sid_from: int | str | None, sid_to: int | str | None = None) -> None:
+        log.complete(num_job_ids=len(self.job_ids))
+
+    def verify_downloads(self, csv_path: str, download_jobs: ApiCounts) -> None:
+        """
+        Run checks on downloaded csv files to ensure they are in alignment with `count` endpoint.
+
+        API Endpoints are not working as expected, this verification step will confirm that `count`
+        and `stagetable` endpoints are in alignment with what they should be returning.
+
+        :param csv_path: path to downloaded csv file
+        :param download_jobs: job list from `count` endpoint
+        """
+        # create comparison dataframe with following columns:
+        #   jobId -> sid values to compare
+        #   csvCount -> record count found in csv file
+        #   dataCount -> record cound from `count` endpoint
+        log = ProcessLog("verify_downloads", csv_path=csv_path)
+        compare_df = (
+            pl.scan_csv(
+                source=csv_path,
+                schema=self.schema,
+                has_header=True,
+            )
+            .group_by("sid")
+            .len(name="csvCount")
+            .rename({"sid": "jobId"})
+            .join(pl.LazyFrame(download_jobs), on="jobId", coalesce=True, how="full")
+            .sort("jobId")
+            .collect()
+        )
+
+        missing_api = compare_df.filter(pl.col("dataCount").is_null())
+        missing_api_str = missing_api.get_column("jobId").str.join(",")[0]
+        assert missing_api.height == 0, (
+            f"SID(s) from `stagetable` not in `count` endpoint:({missing_api_str})"
+        )
+
+        missing_csv = compare_df.filter(pl.col("csvCount").is_null())
+        missing_csv_str = missing_csv.get_column("jobId").str.join(", ")[0]
+        assert missing_csv.height == 0, (
+            f"SID(s) from `count` not in `stagetable` endpoint:({missing_csv_str})"
+        )
+
+        count_diff = compare_df.filter(
+            pl.col("csvCount").is_not_null(),
+            pl.col("dataCount").is_not_null(),
+            pl.col("csvCount") != pl.col("dataCount"),
+        )
+        count_diff_str = count_diff.select(
+            pl.format("sid:{}_{}!={}", "jobId", "dataCount", "csvCount").str.join(", ")
+        ).item(0, 0)
+        assert count_diff.height == 0, (
+            f"record counts from `count` and `stagetable endpoints not equal:({count_diff_str})"
+        )
+        log.complete()
+
+    def download_csv(self, download_jobs: ApiCounts) -> None:
         """
         Download csv.gz table file for AFC API.
 
-        No pagination is available at this endpoint. This is not a great design. There's supposed to
-        be an API endpoint to query SID's available, but it is not functional.
+        Only download csv.gz table with known sid_from and sid_to range.
 
-        If sid_from and/or sid_to are available, pagination will be attempted.
-
-        Using sidFrom and/or sidTo results in a response that is inclusive of both parameters.
-
-        :param sid_from: used as sidFrom request parameter, if available
-        :param sid_to: used as sidTo request parameter, if available
+        :param download_jobs: list of API jobId's (sid's) to download
         """
-        log = ProcessLog("afc_api_download_csv", sid_from=sid_from, sid_to=sid_to)
-        csv_path = os.path.join(self.tmpdir, f"{self.table}.csv")
-        if sid_from is not None:
-            csv_path = os.path.join(self.tmpdir, f"{sid_from}.csv")
+        sid_from = download_jobs[0]["jobId"]
+        sid_to = download_jobs[-1]["jobId"]
+        num_rows = sum(j["dataCount"] for j in download_jobs)
+        log = ProcessLog(
+            "afc_api_download_csv",
+            table=self.table,
+            sid_from=sid_from,
+            sid_to=sid_to,
+            num_rows=num_rows,
+        )
+
+        csv_path = os.path.join(self.tmpdir, f"{sid_from}.csv")
+
         url = f"{API_ROOT}/stagetable"
         fields = {
             "table_name": self.table,
             "responseType": "application/csv",
             "compression": "gzip",
+            "sidFrom": str(sid_from),
+            "sidTo": str(sid_to),
         }
-        if sid_from is not None:
-            fields["sidFrom"] = str(sid_from)
-        if sid_to is not None:
-            fields["sidTo"] = str(sid_to)
-
-        r = self.make_request(url, fields)
+        r = self.make_request(url, fields=fields, preload_content=False)
         with gzip.open(BytesIO(r.data)) as gdata:
             with open(csv_path, mode="wb") as writer:
                 writer.write(gdata.read())
         log.complete()
+        self.verify_downloads(csv_path, download_jobs)
 
     def load_sids(self) -> None:
         """
         Load API data based on sid values.
 
-        Sid pagination will be attempted if range of sid values is available. These values need to
-        to be pulled from `count` endpoint, however as of May 1, 2025 `count` endpoint is not
-        functional with the use of `sidFrom` parameter.
+        SID pagination will be done with data returned from `count` endpoint.
 
-        If pagination is possible, API data will be saved in batches, targeting file size of
-        approximately 10mb.
+        API data will be downloaded in batches to limit API reponse time.
         """
-        if self.job_ids is None:
-            self.download_csv(self.last_sid)
-        else:
-            batch_count = 0
-            target_rows = 20 * 1024 * 1024 / (12 * self.schema.len())
-            start_sid = ""
-            end_sid = ""
-            for job in sorted(self.job_ids, key=itemgetter("jobId")):
-                job_sid = str(job["jobId"])
-                if self.last_sid is not None and job_sid <= str(self.last_sid):
-                    continue
-                if start_sid == "":
-                    start_sid = job_sid
-                end_sid = job_sid
-                batch_count += int(job["dataCount"])
-                if batch_count > target_rows:
-                    self.download_csv(start_sid, end_sid)
-                    batch_count = 0
-                    start_sid = ""
-                # stop if disk is getting too full
-                if disk_free_pct() < 60:
-                    break
-            if batch_count > 0:
-                self.download_csv(start_sid, end_sid)
+        # assume 12 bytes per column to ballbark 20mb per csv request
+        target_rows = 20 * 1024 * 1024 / (12 * self.schema.len())
+        download_jobs: ApiCounts = []
+        download_rows = 0
+        for api_job in sorted(self.job_ids, key=itemgetter("jobId")):
+            if self.pq_sid is not None and int(api_job["jobId"]) <= int(self.pq_sid):
+                continue
+            download_jobs.append(api_job)
+            download_rows += int(api_job["dataCount"])
+            self.max_sid = int(api_job["jobId"])
+            if download_rows > target_rows:
+                self.download_csv(download_jobs)
+                download_jobs = []
+                download_rows = 0
+            # stop if disk is getting too full
+            if disk_free_pct() < 60:
+                break
+        if len(download_jobs) > 0:
+            self.download_csv(download_jobs)
 
     def sync_parquet(self) -> None:
         """Convert csv to parquet and sync with S3 files."""
         log = ProcessLog("afc_api_sync_parquet")
         sync_paths = []
-        for temp_file in os.listdir(self.tmpdir):
-            if not temp_file.endswith(".csv"):
+        for csv_file in sorted(Path(self.tmpdir).iterdir(), key=os.path.getmtime):
+            if csv_file.suffix != ".csv":
                 continue
-            csv_path = os.path.join(self.tmpdir, temp_file)
-            pq_path = csv_path.replace(".csv", ".parquet")
+            pq_path = str(csv_file.absolute()).replace(".csv", ".parquet")
             lf = pl.scan_csv(
-                csv_path,
+                csv_file.absolute(),
                 schema=self.schema,
                 has_header=True,
             )
-            if self.last_sid is not None:
-                lf = lf.filter(pl.col("sid") != self.last_sid)
             lf.sink_parquet(
                 pq_path,
                 compression="zstd",
                 compression_level=3,
                 row_group_size=int(1024 * 1024 / (8 * self.schema.len())),
             )
-            os.remove(csv_path)
+            csv_file.unlink()
             pq_row_count = ds_from_path(pq_path).count_rows()
             if pq_row_count > 0:
                 sync_paths.append(pq_path)
@@ -275,28 +321,56 @@ class ArchiveAFCAPI(OdinJob):
             upload_file(new_path, move_path)
         log.complete()
 
+    def re_run_check(self) -> int:
+        """
+        Determine when job should be ru-run.
+
+        If `count` returning more than 1 job, based on self.max_sid, indicates more jobs available.
+        """
+        log = ProcessLog("re_run_check", table=self.table, max_sid=self.max_sid)
+        return_duration = NEXT_RUN_DEFAULT
+        if self.max_sid is not None:
+            r = self.make_request(
+                url=f"{API_ROOT}/count",
+                fields={"table_name": self.table, "sidFrom": str(self.max_sid)},
+            )
+            if len(r.json()) > 1:
+                return_duration = 60 * 5
+        log.complete(return_duration=return_duration)
+        return return_duration
+
     def run(self) -> int:
         """
         Archive S&B AFC Data from API.
 
         Process:
-            1. setup Job by:
+            1. setup job by:
                 - pulling table schema from API Endpoint
-                - grab the largest SID already loaded from parquet files
-                - attempt to grab SID's available from /count endpoint
-            2a. Download all available SID's as csv.gz glob.
-                - No true pagination available for this process.
-                - Use of "sidFrom" param is inclusive of SID submitted.
-            2b. Loop through all available SID's returned from /count endpoint.
-                - Download each SID as a csv.gz file.
+                - grab the largest SID already processed, from parquet files
+                - grab SID's available from /count endpoint
+            2. Loop through all available SID's returned from /count endpoint.
+                - Download SID ranges in batches as csv.gz files.
             3. Convert csv file(s) to parquet and merge with S3 parquet files.
+            4. Determine next_runs_secs duration.
+
+        May 12, 2025 - API has been updated to always return results from "count" endpoint.
+
+        TODO: S&B indicated API has two table "types" one type has incrementing SID's for new data,
+        which this process is currently desined for, the other does full table replacements for
+        each new SID (not implemented). Waiting on S&B to provide information on which table
+        is which.
         """
-        # TODO: Removed cert_reqs parameter when not using self-signed endpoint.
-        self.req_pool = urllib3.PoolManager(headers=self.headers, cert_reqs="CERT_NONE")
+        self.start_kwargs = {"table": self.table}
+        # Current timetout set to 10 mins, for full PROD deployment should be no more than 2 mins.
+        self.req_pool = urllib3.PoolManager(
+            headers=self.headers,
+            timeout=urllib3.Timeout(total=60 * 10),  # 10 minute total timeout
+            retries=False,  # No retires, if retry-able failures are documented, can be updated
+        )
         self.setup_job()
         self.load_sids()
         self.sync_parquet()
-        return NEXT_RUN_DEFAULT
+        return self.re_run_check()
 
 
 def schedule_afc_archive(schedule: sched.scheduler) -> None:
