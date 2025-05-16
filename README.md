@@ -56,4 +56,6 @@ It's also possible to run the run the application with `start-odin`.
 Take care, it is possible for a local version of the application to modify files in s3, if you have permissions and the application is configured that way.
 
 - Run tests with `pytest tests`
-- Run the formatter with `ruff format .`
+- Run the formatter with `ruff format`
+- Run lints with `ruff check`
+- Run typechecking with `mypy .`
