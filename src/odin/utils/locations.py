@@ -11,6 +11,7 @@ ODIN_DATA = "odin/data"
 ODIN_ARCHIVE = "odin/archive"
 ODIN_ERROR = "odin/error"
 ODIN_MIGRATIONS = "odin/migrations"
+ODIN_DICTIONARY = f"{ODIN_DATA}/dictionary"
 
 # CUBIC QLIK
 IN_QLIK_PREFIX = "cubic/ods_qlik"
