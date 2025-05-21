@@ -31,17 +31,17 @@ READ_PQ = "read_parquet('$s3_path/**/*.parquet')"
 dataset_views = [
     ViewBuilder(
         s3_prefix=os.path.join(DATA_SPRINGBOARD, AFC_DATA),
-        schema="afc",
+        schema="sb",
         template=Template(f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT * FROM {READ_PQ};"),
     ),
     ViewBuilder(
         s3_prefix=os.path.join(DATA_SPRINGBOARD, CUBIC_ODS_FACT_DATA),
-        schema="ods",
+        schema="cubic_ods",
         template=Template(f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT * FROM {READ_PQ};"),
     ),
     ViewBuilder(
         s3_prefix=os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DATA),
-        schema="ods_history",
+        schema="cubic_ods_history",
         template=Template(
             (
                 f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT * FROM {READ_PQ} "
@@ -79,7 +79,7 @@ def create_fares_db(folder: str) -> str:
                     view_log = ProcessLog(schema=view.schema, s3_prefix=view.s3_prefix)
                     view_query = view.template.substitute(
                         schema=view.schema,
-                        table=view_table.replace(".", "_"),
+                        table=view_table.replace(".", "_").lower(),
                         s3_path=f"s3://{os.path.join(view.s3_prefix, view_table)}",
                     )
                     con.execute(view_query)
