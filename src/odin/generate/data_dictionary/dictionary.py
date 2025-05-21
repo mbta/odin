@@ -17,8 +17,9 @@ from odin.utils.locations import ODIN_DICTIONARY
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import list_partitions
 from odin.utils.aws.s3 import upload_file
+from odin.generate.data_dictionary.duck_db import create_fares_db
 
-NEXT_RUN_DEFAULT = 60 * 60 * 12  # 12 hours
+NEXT_RUN_DEFAULT = 60 * 60 * 24  # 24 hours
 ODIN_ROOT = f"s3://{os.path.join(DATA_SPRINGBOARD, ODIN_DATA)}"
 
 
@@ -77,7 +78,7 @@ class DataDictionary(OdinJob):
 
     def run(self) -> int:
         """
-        Create ODIN DataDictionary exports.
+        Create ODIN Data Dictionary exports.
 
         Dictionary format for each dataset entry:
         {
@@ -93,8 +94,8 @@ class DataDictionary(OdinJob):
                 },
             ]
         }
-
         """
+        # Create and upload Data Dictionary json file.
         data_dictionary = [d for d in generate_dictionary(ODIN_ROOT)]
 
         json_tmp = os.path.join(self.tmpdir, "temp.json")
@@ -103,6 +104,13 @@ class DataDictionary(OdinJob):
 
         upload_path = os.path.join(DATA_SPRINGBOARD, ODIN_DICTIONARY, "data_dictionary.json")
         upload_file(json_tmp, upload_path)
+
+        # Create and upload DuckDB access file.
+        db_file = create_fares_db(self.tmpdir)
+        upload_file(
+            db_file, os.path.join(DATA_SPRINGBOARD, ODIN_DICTIONARY, os.path.basename(db_file))
+        )
+
         return NEXT_RUN_DEFAULT
 
 

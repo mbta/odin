@@ -13,6 +13,7 @@ authors = [
 
 dependencies = [
     "boto3",
+    "duckdb",
     "polars",
     "psutil",
     "pyarrow",
