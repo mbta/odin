@@ -290,6 +290,8 @@ def delete_objects(objects: List[str]):
 
     :return: list of objects that failed to delete
     """
+    if len(objects) == 0:
+        return
     logger = ProcessLog("delete_objects", object_count=len(objects))
 
     thread_workers = thread_cpus()

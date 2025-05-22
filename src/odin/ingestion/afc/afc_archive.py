@@ -20,9 +20,11 @@ from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import upload_file
+from odin.utils.aws.s3 import delete_objects
 from odin.utils.parquet import ds_metadata_min_max
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import pq_dataset_writer
+from odin.utils.parquet import ds_unique_values
 
 import polars as pl
 
@@ -325,11 +327,21 @@ class ArchiveAFCAPI(OdinJob):
             return
 
         found_objs = list_objects(f"s3://{self.export_folder}", in_filter=".parquet")
-        if found_objs:
-            sync_file = found_objs[-1].path.replace("s3://", "")
-            s3_pq_file = os.path.join(self.tmpdir, sync_file.replace("/table_", "/temp_"))
-            download_object(found_objs[-1].path, s3_pq_file)
-            sync_paths.insert(0, s3_pq_file)
+        del_objs = []
+        if self.table_type == "transactional":
+            # `transactional` table type is supposed to be incremental (append-only) data model
+            if found_objs:
+                sync_file = found_objs[-1].path.replace("s3://", "")
+                s3_pq_file = os.path.join(self.tmpdir, sync_file.replace("/table_", "/temp_"))
+                download_object(found_objs[-1].path, s3_pq_file)
+                sync_paths.insert(0, s3_pq_file)
+        elif self.table_type == "static":
+            # `static` table type should only ever be comprised of 1 sid/jobId value and
+            # operates as truncate -> reload operation
+            del_objs = [obj.path for obj in found_objs]
+            assert ds_unique_values(ds_from_path(sync_paths), ["sid"]).num_rows == 1
+        else:
+            raise NotImplementedError(f"S&B API table 'type' of ({self.table_type}) not supported.")
 
         # Create new merged parquet file(s)
         new_paths = pq_dataset_writer(
@@ -340,6 +352,7 @@ class ArchiveAFCAPI(OdinJob):
 
         # Check for sigterm before upload (can't be un-done)
         sigterm_check()
+        delete_objects(del_objs)
         for new_path in new_paths:
             move_path = new_path.replace(f"{self.tmpdir}/", "")
             upload_file(new_path, move_path)
