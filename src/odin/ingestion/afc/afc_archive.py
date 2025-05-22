@@ -3,9 +3,11 @@ import gzip
 import sched
 import shutil
 import urllib3
+from collections import ChainMap
 from operator import itemgetter
 from pathlib import Path
 from typing import Literal
+from typing import TypedDict
 
 
 from odin.job import OdinJob
@@ -49,16 +51,25 @@ API_TABLES = [
     "v_validation_taps",
 ]
 
-ApiSchema = list[dict[Literal["column_name", "data_type"], str]]
+APICounts = list[dict[Literal["jobId", "dataCount"], int]]
 
-ApiCounts = list[dict[Literal["jobId", "dataCount"], int]]
+APITableSchema = list[dict[Literal["column_name", "data_type"], str]]
 
 
-def make_pl_schema(schema_list: ApiSchema) -> pl.Schema:
+class APITableInfo(TypedDict):
+    """Schema of dictionary returned from API /tableinfos endpoint for single table."""
+
+    type: Literal["static", "transactional"]
+    frequency: str
+    remarks: str
+    table_infos: APITableSchema
+
+
+def make_pl_schema(schema: APITableInfo) -> pl.Schema:
     """
-    Create polars schema from json API schema list.
+    Create polars schema from APITableInfo dict.
 
-    :param schema_list: list of dictionaires from API /tableinfos endpoint.
+    :param schema: dictionary of table information from API /tableinfos endpoint.
 
     :return: schema_list -> polars schema
     """
@@ -68,10 +79,66 @@ def make_pl_schema(schema_list: ApiSchema) -> pl.Schema:
         # "timestamp with time zone": pl.Datetime(), # Polars can't automatically parse ts from api
     }
     r_schema = {}
-    for schema_d in schema_list:
-        r_schema[schema_d["column_name"]] = converter.get(schema_d["data_type"], pl.String())
+    for col in schema["table_infos"]:
+        r_schema[col["column_name"]] = converter.get(col["data_type"], pl.String())
 
     return pl.Schema(r_schema)
+
+
+def verify_downloads(csv_path: str, csv_schema: pl.Schema, download_jobs: APICounts) -> None:
+    """
+    Run checks on downloaded csv files to ensure they are in alignment with `count` endpoint.
+
+    API Endpoints are not working as expected, this verification step will confirm that `count`
+    and `stagetable` endpoints are in alignment with what they should be returning.
+
+    :param csv_path: path to downloaded csv file
+    :param csv_schema: schema of csv file
+    :param download_jobs: job list from `count` endpoint
+    """
+    # create comparison dataframe with following columns:
+    #   jobId -> sid values to compare
+    #   csvCount -> record count found in csv file
+    #   dataCount -> record cound from `count` endpoint
+    log = ProcessLog("verify_downloads", csv_path=csv_path)
+    compare_df = (
+        pl.scan_csv(
+            source=csv_path,
+            schema=csv_schema,
+            has_header=True,
+        )
+        .group_by("sid")
+        .len(name="csvCount")
+        .rename({"sid": "jobId"})
+        .join(pl.LazyFrame(download_jobs), on="jobId", coalesce=True, how="full")
+        .sort("jobId")
+        .collect()
+    )
+
+    missing_api = compare_df.filter(pl.col("dataCount").is_null())
+    missing_api_str = missing_api.get_column("jobId").str.join(",")[0]
+    assert missing_api.height == 0, (
+        f"SID(s) from `stagetable` not in `count` endpoint:({missing_api_str})"
+    )
+
+    missing_csv = compare_df.filter(pl.col("csvCount").is_null())
+    missing_csv_str = missing_csv.get_column("jobId").str.join(", ")[0]
+    assert missing_csv.height == 0, (
+        f"SID(s) from `count` not in `stagetable` endpoint:({missing_csv_str})"
+    )
+
+    count_diff = compare_df.filter(
+        pl.col("csvCount").is_not_null(),
+        pl.col("dataCount").is_not_null(),
+        pl.col("csvCount") != pl.col("dataCount"),
+    )
+    count_diff_str = count_diff.select(
+        pl.format("sid {}: {}!={}", "jobId", "dataCount", "csvCount").str.join(", ")
+    ).item(0, 0)
+    assert count_diff.height == 0, (
+        f"record counts from `count` and `stagetable` not equal:({count_diff_str})"
+    )
+    log.complete()
 
 
 class ArchiveAFCAPI(OdinJob):
@@ -118,7 +185,7 @@ class ArchiveAFCAPI(OdinJob):
         """
         Gather data required to run ArchiveAFCAPI.
 
-        1. Pull Table schema from `tableinfos` endpoint.
+        1. Pull Table schema and type from `tableinfos` endpoint.
         2. Capture largest sid already processed from parquet dataset.
         3. Pull list of available sid's from `count` endpoint.
             `count` endpoint should always return some amount of sid's, even when called with only
@@ -128,13 +195,13 @@ class ArchiveAFCAPI(OdinJob):
         # set self.schema
         tableinfos_url = f"{API_ROOT}/tableinfos"
         r = self.make_request(tableinfos_url)
-        schema_list: list[dict[str, ApiSchema]] = r.json()
-        for schema in schema_list:
-            if self.table in schema:
-                self.schema = make_pl_schema(schema[self.table])
-                break
-        else:
-            raise IndexError(f"{self.table} not found in 'tableinfos' API endpoint.")
+        schemas_list: list[dict[str, APITableInfo]] = r.json()
+        schemas_dict: dict[str, APITableInfo] = dict(ChainMap(*schemas_list))
+        self.schema = make_pl_schema(schemas_dict[self.table])
+
+        # set self.table_type
+        # this determines of process performs incremental load or full refresh
+        self.table_type = schemas_dict[self.table]["type"]
 
         # set self.pq_sid from parquet dataset
         self.pq_sid: int | None = None
@@ -150,66 +217,12 @@ class ArchiveAFCAPI(OdinJob):
         if self.pq_sid is not None:
             count_fields["sidFrom"] = str(self.pq_sid)
         r = self.make_request(count_url, fields=count_fields)
-        self.job_ids: ApiCounts = r.json()
+        self.job_ids: APICounts = r.json()
         assert isinstance(self.job_ids, list)
 
         log.complete(num_job_ids=len(self.job_ids))
 
-    def verify_downloads(self, csv_path: str, download_jobs: ApiCounts) -> None:
-        """
-        Run checks on downloaded csv files to ensure they are in alignment with `count` endpoint.
-
-        API Endpoints are not working as expected, this verification step will confirm that `count`
-        and `stagetable` endpoints are in alignment with what they should be returning.
-
-        :param csv_path: path to downloaded csv file
-        :param download_jobs: job list from `count` endpoint
-        """
-        # create comparison dataframe with following columns:
-        #   jobId -> sid values to compare
-        #   csvCount -> record count found in csv file
-        #   dataCount -> record cound from `count` endpoint
-        log = ProcessLog("verify_downloads", csv_path=csv_path)
-        compare_df = (
-            pl.scan_csv(
-                source=csv_path,
-                schema=self.schema,
-                has_header=True,
-            )
-            .group_by("sid")
-            .len(name="csvCount")
-            .rename({"sid": "jobId"})
-            .join(pl.LazyFrame(download_jobs), on="jobId", coalesce=True, how="full")
-            .sort("jobId")
-            .collect()
-        )
-
-        missing_api = compare_df.filter(pl.col("dataCount").is_null())
-        missing_api_str = missing_api.get_column("jobId").str.join(",")[0]
-        assert missing_api.height == 0, (
-            f"SID(s) from `stagetable` not in `count` endpoint:({missing_api_str})"
-        )
-
-        missing_csv = compare_df.filter(pl.col("csvCount").is_null())
-        missing_csv_str = missing_csv.get_column("jobId").str.join(", ")[0]
-        assert missing_csv.height == 0, (
-            f"SID(s) from `count` not in `stagetable` endpoint:({missing_csv_str})"
-        )
-
-        count_diff = compare_df.filter(
-            pl.col("csvCount").is_not_null(),
-            pl.col("dataCount").is_not_null(),
-            pl.col("csvCount") != pl.col("dataCount"),
-        )
-        count_diff_str = count_diff.select(
-            pl.format("sid:{}_{}!={}", "jobId", "dataCount", "csvCount").str.join(", ")
-        ).item(0, 0)
-        assert count_diff.height == 0, (
-            f"record counts from `count` and `stagetable endpoints not equal:({count_diff_str})"
-        )
-        log.complete()
-
-    def download_csv(self, download_jobs: ApiCounts) -> None:
+    def download_csv(self, download_jobs: APICounts) -> None:
         """
         Download csv.gz table file for AFC API.
 
@@ -253,7 +266,7 @@ class ArchiveAFCAPI(OdinJob):
         os.remove(gz_path)
 
         log.complete()
-        self.verify_downloads(csv_path, download_jobs)
+        verify_downloads(csv_path, self.schema, download_jobs)
 
     def load_sids(self) -> None:
         """
@@ -265,7 +278,7 @@ class ArchiveAFCAPI(OdinJob):
         """
         # assume 12 bytes per column to ballbark 20mb per csv request
         target_rows = 20 * 1024 * 1024 / (12 * self.schema.len())
-        download_jobs: ApiCounts = []
+        download_jobs: APICounts = []
         download_rows = 0
         for api_job in sorted(self.job_ids, key=itemgetter("jobId")):
             if self.pq_sid is not None and int(api_job["jobId"]) <= int(self.pq_sid):
