@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+from datetime import datetime
 from typing import Generator
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -12,6 +13,7 @@ import pytest
 from odin.ingestion.afc.afc_archive import ArchiveAFCAPI
 from odin.ingestion.afc.afc_archive import make_pl_schema
 from odin.ingestion.afc.afc_archive import verify_downloads
+from odin.utils.aws.s3 import S3Object
 
 
 @patch.object(ArchiveAFCAPI, "download_csv")
@@ -175,3 +177,115 @@ def test_verify_downloads(csv_file):
     assert_re = re.escape("record counts from `count` and `stagetable` not equal:(sid 1: 10!=1)")
     with pytest.raises(AssertionError, match=assert_re):
         verify_downloads(csv_file, csv_schema, download_jobs)
+
+
+@patch("odin.ingestion.afc.afc_archive.list_objects")
+@patch("odin.ingestion.afc.afc_archive.delete_objects")
+@patch("odin.ingestion.afc.afc_archive.upload_file")
+@patch("odin.ingestion.afc.afc_archive.download_object")
+def test_sync_parquet_bad_type(
+    dl_obj: MagicMock, mock_upload: MagicMock, del_obj: MagicMock, ls_obj: MagicMock, tmpdir
+):
+    """Test sync_parquet method of ArchiveAFCAPI for bad table type"""
+    data = [
+        {"sid": 1, "value": "sid_1"},
+        {"sid": 1, "value": "sid_1"},
+        {"sid": 1, "value": "sid_1"},
+    ]
+    pl.DataFrame(data).write_csv(os.path.join(tmpdir, "1.csv"), include_header=True)
+
+    job = ArchiveAFCAPI("test_table")
+    job.tmpdir = tmpdir
+    job.schema = pl.Schema({"sid": pl.Int64(), "value": pl.String()})
+    job.table_type = "not_static"
+    job.export_folder = ""
+    ls_obj.return_value = []
+
+    with pytest.raises(NotImplementedError):
+        job.sync_parquet()
+
+    dl_obj.assert_not_called()
+    mock_upload.assert_not_called()
+    del_obj.assert_not_called()
+
+
+@patch("odin.ingestion.afc.afc_archive.list_objects")
+@patch("odin.ingestion.afc.afc_archive.delete_objects")
+@patch("odin.ingestion.afc.afc_archive.upload_file")
+@patch("odin.ingestion.afc.afc_archive.download_object")
+def test_sync_parquet_static(
+    dl_obj: MagicMock, mock_upload: MagicMock, del_obj: MagicMock, ls_obj: MagicMock, tmpdir
+):
+    """Test sync_parquet method of ArchiveAFCAPI for static table type"""
+    export = "bucket"
+    data = [
+        {"sid": 1, "value": "sid_1"},
+        {"sid": 1, "value": "sid_1"},
+        {"sid": 1, "value": "sid_1"},
+    ]
+    pl.DataFrame(data).write_csv(os.path.join(tmpdir, "1.csv"), include_header=True)
+
+    job = ArchiveAFCAPI("test_table")
+    job.tmpdir = tmpdir
+    job.schema = pl.Schema({"sid": pl.Int64(), "value": pl.String()})
+    job.table_type = "static"
+    job.export_folder = export
+    ls_obj.return_value = [S3Object(path="delete_me", size_bytes=0, last_modified=datetime.now())]
+    export_file = os.path.join(tmpdir, export, "table_001.parquet")
+    job.sync_parquet()
+
+    mock_upload.assert_called_once_with(export_file, f"{export}/table_001.parquet")
+    del_obj.assert_called_once_with(["delete_me"])
+    dl_obj.assert_not_called()
+    os.unlink(export_file)
+
+    data = [
+        {"sid": 1, "value": "sid_1"},
+        {"sid": 1, "value": "sid_1"},
+        {"sid": 1, "value": "sid_1"},
+    ]
+    pl.DataFrame(data).write_csv(os.path.join(tmpdir, "1.csv"), include_header=True)
+    data = [
+        {"sid": 2, "value": "sid_2"},
+        {"sid": 2, "value": "sid_2"},
+    ]
+    pl.DataFrame(data).write_csv(os.path.join(tmpdir, "2.csv"), include_header=True)
+    with pytest.raises(AssertionError):
+        job.sync_parquet()
+
+
+@patch("odin.ingestion.afc.afc_archive.list_objects")
+@patch("odin.ingestion.afc.afc_archive.delete_objects")
+@patch("odin.ingestion.afc.afc_archive.upload_file")
+@patch("odin.ingestion.afc.afc_archive.download_object")
+def test_sync_parquet_transactional(
+    dl_obj: MagicMock, mock_upload: MagicMock, del_obj: MagicMock, ls_obj: MagicMock, tmpdir
+):
+    """Test sync_parquet method of ArchiveAFCAPI for transactional table type"""
+    export = "bucket"
+    data = [
+        {"sid": 1, "value": "sid_1"},
+        {"sid": 1, "value": "sid_1"},
+        {"sid": 1, "value": "sid_1"},
+    ]
+    pl.DataFrame(data).write_csv(os.path.join(tmpdir, "1.csv"), include_header=True)
+
+    data = [
+        {"sid": 0, "value": "sid_0"},
+    ]
+    pl.DataFrame(data).write_parquet(os.path.join(tmpdir, "temp_.parquet"))
+
+    job = ArchiveAFCAPI("test_table")
+    job.tmpdir = tmpdir
+    job.schema = pl.Schema({"sid": pl.Int64(), "value": pl.String()})
+    job.table_type = "transactional"
+    job.export_folder = export
+    ls_obj.return_value = [
+        S3Object(path="temp_.parquet", size_bytes=0, last_modified=datetime.now())
+    ]
+    export_file = os.path.join(tmpdir, export, "table_001.parquet")
+    job.sync_parquet()
+
+    dl_obj.assert_called_once_with("temp_.parquet", f"{tmpdir}/temp_.parquet")
+    mock_upload.assert_called_once_with(export_file, f"{export}/table_001.parquet")
+    del_obj.assert_called_once_with([])
