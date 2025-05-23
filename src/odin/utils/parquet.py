@@ -185,14 +185,22 @@ def ds_from_path(source: Union[str, Sequence[str]]) -> pd.UnionDataset:
     log = ProcessLog("ds_from_path")
     paths = []
     if isinstance(source, str):
-        log.add_metadata(source=source)
-        paths.append(source)
+        # single parquet file
+        if source.endswith(".parquet"):
+            paths.append(source)
+        # S3 partition path
+        elif source.startswith("s3://"):
+            paths = [o.path for o in list_objects(source, in_filter=".parquet")]
+        # local partition path
+        else:
+            for dir, _, files in os.walk(source):
+                paths += [os.path.join(dir, f) for f in files if f.endswith(".parquet")]
     elif isinstance(source, Sequence):
-        log.add_metadata(num_sources=len(source))
-        paths += source
-
-    log.complete()
-    return pd.dataset([pd.dataset(part, partitioning="hive", format="parquet") for part in paths])
+        paths = [f for f in source if f.endswith(".parquet")]
+    log.add_metadata(num_source=len(paths), paths=",".join(paths))
+    ds = pd.dataset([pd.dataset(part, partitioning="hive", format="parquet") for part in paths])
+    log.complete(num_sources=len(paths))
+    return ds
 
 
 def ds_column_min_max(
@@ -467,17 +475,18 @@ def ds_metadata_limit_k_sorted(
                     if part_col in ds.schema.names and part_col not in pq_file.schema_arrow.names:
                         rg_table = rg_table.append_column(
                             part_col,
-                            pa.array([part_val] * rg_table.num_rows, pa.string()),
+                            pa.array(
+                                [part_val] * rg_table.num_rows,
+                                pa.string(),
+                            ).cast(ds.schema.field(part_col).type),
                         )
                 # add dataset columns that may not be in file as all Null
                 for ds_col in ds.schema.names:
                     if ds_col not in rg_table.column_names:
                         rg_table = rg_table.append_column(
                             ds_col,
-                            pa.array([None] * rg_table.num_rows, pa.string()),
+                            pa.array([None] * rg_table.num_rows, ds.schema.field(ds_col).type),
                         )
-                cast_schema = pa.schema([ds.schema.field(col) for col in rg_table.column_names])
-                rg_table = rg_table.cast(cast_schema)
                 bytes_read += rg_table.nbytes
                 result_table = pa.concat_tables(
                     [result_table, rg_table],

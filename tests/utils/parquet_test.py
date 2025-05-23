@@ -31,7 +31,7 @@ def pq_files(tmp_path_factory) -> Generator[list[str]]:
     """Create temporary parquet files for testing."""
     tmp_path = tmp_path_factory.mktemp("pq_files", numbered=False)
     pq_files = []
-    pq_files.append(os.path.join(tmp_path, "file=t1", "t1.parquet"))
+    pq_files.append(os.path.join(tmp_path, "file=t1", "year=2025", "t1.parquet"))
     os.makedirs(os.path.dirname(pq_files[-1]), exist_ok=True)
     (
         pl.DataFrame()
@@ -42,7 +42,7 @@ def pq_files(tmp_path_factory) -> Generator[list[str]]:
         .write_parquet(pq_files[-1], row_group_size=int(PQ_NUM_ROWS / 10))
     )
 
-    pq_files.append(os.path.join(tmp_path, "file=t2", "t2.parquet"))
+    pq_files.append(os.path.join(tmp_path, "file=t2", "year=2024", "t2.parquet"))
     os.makedirs(os.path.dirname(pq_files[-1]), exist_ok=True)
     (
         pl.DataFrame()
@@ -55,7 +55,7 @@ def pq_files(tmp_path_factory) -> Generator[list[str]]:
         .write_parquet(pq_files[-1], row_group_size=int(PQ_NUM_ROWS / 10))
     )
 
-    pq_files.append(os.path.join(tmp_path, "file=t3", "t3.parquet"))
+    pq_files.append(os.path.join(tmp_path, "file=t3", "year=2023", "t3.parquet"))
     os.makedirs(os.path.dirname(pq_files[-1]), exist_ok=True)
     (
         pl.DataFrame()
@@ -107,7 +107,7 @@ def test_ds_from_path(pq_files) -> None:
     ds = ds_from_path(pq_files)
     assert isinstance(ds, pd.UnionDataset)
     assert ds.count_rows() == PQ_NUM_ROWS * len(pq_files)
-    assert len(ds.schema.names) == 8
+    assert len(ds.schema.names) == 9
 
 
 def test_ds_column_min_max(pq_files) -> None:
@@ -183,7 +183,7 @@ def test_pq_path_partitions(pq_files) -> None:
     pq_path = "/test/path/col1=val1/col2=99/partition.parquet"
     assert pq_path_partitions(pq_path) == [("col1", "val1"), ("col2", "99")]
 
-    assert pq_path_partitions(pq_files[0]) == [("file", "t1")]
+    assert pq_path_partitions(pq_files[0]) == [("file", "t1"), ("year", "2025")]
 
 
 def test_row_group_column_stats(pq_files) -> None:
@@ -214,18 +214,18 @@ def test_ds_metadata_limit_k_sorted(pq_files) -> None:
 
     # test column not in all files
     df = ds_metadata_limit_k_sorted(ds, "col7")
-    assert df.shape == (PQ_NUM_ROWS, 8)
+    assert df.shape == (PQ_NUM_ROWS, 9)
 
     df = ds_metadata_limit_k_sorted(ds, "col7", max_rows=200)
-    assert df.shape == (200, 8)
+    assert df.shape == (200, 9)
 
     df = ds_metadata_limit_k_sorted(ds, "col1")
-    assert df.shape == (PQ_NUM_ROWS * 3, 8)
+    assert df.shape == (PQ_NUM_ROWS * 3, 9)
     assert df.get_column("col1")[0] == 0
     assert df.get_column("col1")[-1] == PQ_MAX_INT - 1
 
     df = ds_metadata_limit_k_sorted(ds, "col1", min_sort_value=500)
-    assert df.width == 8
+    assert df.width == 9
     assert df.height < PQ_NUM_ROWS * 3
     assert df.get_column("col1")[0] == 501
     assert df.get_column("col1")[-1] == PQ_MAX_INT - 1
@@ -233,6 +233,6 @@ def test_ds_metadata_limit_k_sorted(pq_files) -> None:
     df = ds_metadata_limit_k_sorted(
         ds, "col1", ds_filter=(pc.field("col7") == "single_value"), ds_filter_columns=["col7"]
     )
-    assert df.shape == (PQ_NUM_ROWS, 8)
+    assert df.shape == (PQ_NUM_ROWS, 9)
     assert df.get_column("col1")[0] == 0
     assert df.get_column("col1")[-1] == PQ_MAX_INT - 1
