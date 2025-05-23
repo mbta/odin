@@ -76,7 +76,9 @@ def create_fares_db(folder: str) -> str:
             con.execute(f"CREATE SCHEMA IF NOT EXISTS {view.schema};")
             for view_table in list_partitions(view.s3_prefix):
                 try:
-                    view_log = ProcessLog(schema=view.schema, s3_prefix=view.s3_prefix)
+                    view_log = ProcessLog(
+                        "create_table_views", schema=view.schema, view_table=view_table
+                    )
                     view_query = view.template.substitute(
                         schema=view.schema,
                         table=view_table.replace(".", "_").lower(),
@@ -89,7 +91,7 @@ def create_fares_db(folder: str) -> str:
         con.execute("CREATE SCHEMA IF NOT EXISTS cubic_reports;")
         for view in cubic_report_views:
             try:
-                view_log = ProcessLog(view_type="cubic_report")
+                view_log = ProcessLog("create_report_views", view_type="cubic_report")
                 con.execute(view)
             except Exception as exception:
                 view_log.failed(exception=exception)
