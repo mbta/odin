@@ -67,7 +67,8 @@ def generate_dictionary(path: str) -> Generator[dict[str, Any]]:
     """Recursively generate DatabaseDictionary objects."""
     path_parts = list_partitions(path)
     if len(path_parts) == 0 or "=" in "".join(path_parts):
-        yield asdict(DatasetDictionary(ds_path=path))
+        if list_objects(path, in_filter=".parquet"):
+            yield asdict(DatasetDictionary(ds_path=path))
     else:
         for part in path_parts:
             yield from generate_dictionary(os.path.join(path, part))
