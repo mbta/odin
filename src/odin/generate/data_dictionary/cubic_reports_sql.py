@@ -19,7 +19,7 @@ AD_HOC_VIEW = """
         ,voidable_until_dtm
         ,dw_transaction_id
         ,source_inserted_dtm
-    FROM ods.edw_abp_tap
+    FROM cubic_ods.edw_abp_tap
     ;
 """
 
@@ -47,9 +47,9 @@ COMP_A_VIEW = """
          + COALESCE(enablement_fee,0)
          + COALESCE(replacement_fee, 0))/100 AS total_fare_revenue
     FROM
-        ods.edw_payment_summary ps
+        cubic_ods.edw_payment_summary ps
     JOIN
-        ods.edw_txn_channel_map tcm
+        cubic_ods.edw_txn_channel_map tcm
         ON
             tcm.txn_source = ps.txn_source
             AND tcm.sales_channel_key = ps.sales_channel_key
@@ -81,9 +81,9 @@ COMP_B_VIEW = """
         ,tcm.sales_channel_display
         ,SUM(COALESCE(payment_value,0))/100 AS total_fare_revenue
     FROM
-        ods.edw_payment_summary ps
+        cubic_ods.edw_payment_summary ps
     JOIN
-        ods.edw_txn_channel_map tcm
+        cubic_ods.edw_txn_channel_map tcm
         ON
             tcm.txn_source = ps.txn_source
             AND tcm.sales_channel_key = ps.sales_channel_key
@@ -116,15 +116,15 @@ COMP_D_VIEW = """
         ,rd.reason_name
         ,SUM(ps.payment_value)/100 as refund_value
     FROM
-        ods.edw_payment_summary ps
+        cubic_ods.edw_payment_summary ps
     JOIN
-        ods.edw_txn_channel_map tcm
+        cubic_ods.edw_txn_channel_map tcm
         ON
             tcm.txn_source = ps.txn_source
             AND tcm.sales_channel_key = ps.sales_channel_key
             AND tcm.payment_type_key = ps.payment_type_key
     LEFT JOIN
-        ods.edw_reason_dimension rd
+        cubic_ods.edw_reason_dimension rd
         ON
             rd.reason_key = ps.reason_key
     WHERE
