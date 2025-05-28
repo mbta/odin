@@ -2,11 +2,13 @@
 
 MBTA application responsible for ingesting and aggregating fares related data. 
 
+odin is designed to create large parquet datasets that are archived in object storage. odin is not meant to be used for real-time data aggregation, but is optimized for "near-time" data archiving operations. "near-time" can be thought of as next day analytics availability or (at a maximum) data with a freshness of several hours.
+
 # Developer Usage
 
 ## Dependencies
 
-[asdf](https://asdf-vm.com/) is used to mange runtime versions using the command line. Once installed, run the following in the root project directory:
+[asdf](https://asdf-vm.com/) is used to mange dependency runtime versions using the command line. Version 0.17.0, or newer, is recommended. Once installed, run the following in the root project directory:
 
 ```sh
 # add project plugins
@@ -28,7 +30,7 @@ Copy [.env.template](.env.template) to [.env](.env) to bootstrap the expected pr
 cp .env.template .env
 ```
 
-After `direnv` is properly hooked, allow in project:
+After `direnv` is properly hooked, allow in project directory with:
 ```sh
 direnv allow
 ```

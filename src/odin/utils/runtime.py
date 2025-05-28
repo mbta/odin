@@ -5,7 +5,6 @@ import sys
 import time
 import tomllib
 from typing import List
-from typing import Optional
 from typing import Any
 
 from odin.utils.logger import ProcessLog
@@ -14,8 +13,8 @@ from odin.utils.aws.ecs import running_in_aws
 
 def validate_env_vars(
     required: List[str],
-    private: Optional[List[str]] = None,
-    aws: Optional[List[str]] = None,
+    private: List[str] | None = None,
+    aws: List[str] | None = None,
 ) -> None:
     """
     Check that exepected environment variables are set before application starts.
@@ -79,9 +78,8 @@ def disk_free_pct() -> float:
 
 def handle_sigterm(_: int, __: Any) -> None:
     """Set ENV var when SIGTERM recieved."""
-    log = ProcessLog("sigterm_received")
     os.environ["GOT_SIGTERM"] = "TRUE"
-    log.complete()
+    ProcessLog("sigterm_received")
 
 
 def sigterm_check() -> None:
@@ -112,20 +110,20 @@ def infinite_wait(reason: str) -> None:
     the process for intervention before restarting.
     """
     # amount of time to sleep between logging statements
-    sleep_time = 30
-    count = 0
+    sleep_time_secs = 30
+    secs_since_log = 0
 
     while True:
         sigterm_check()
 
         # log every 5 minutes
-        if count == 10:
-            ProcessLog(infinite_wait, reason=reason)
-            count = 0
+        if secs_since_log >= 60 * 5:
+            ProcessLog("infinite_wait", reason=reason)
+            secs_since_log = 0
 
         # sleep
-        time.sleep(sleep_time)
-        count += 1
+        time.sleep(sleep_time_secs)
+        secs_since_log += sleep_time_secs
 
 
 def load_config() -> dict[str, Any]:
