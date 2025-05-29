@@ -91,6 +91,7 @@ def cdc_to_fact(
 
     :return: Tuple[new INSERT df, new UPDATE df, new DELETE df]
     """
+    cdc_df = cdc_df.drop("snapshot", strict=False)
     insert_df = pl.concat(
         [insert_df, cdc_df.filter(pl.col("header__change_oper").eq("I"))],
         how="diagonal",
@@ -258,6 +259,7 @@ class CubicODSFact(OdinJob):
         ):
             if batch.num_rows == 0:
                 continue
+            batch = batch.drop_columns("snapshot")
             batch = batch.append_column(
                 "odin_index",
                 pa.array(list(range(odin_index, odin_index + batch.num_rows)), type=pa.int64()),
