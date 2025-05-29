@@ -1,3 +1,7 @@
+# These SQL statements/reports are sourced from the Cubic SAP platform.
+# Query outputs are validated by MBTA finance analysts to confirm that the correct
+# results are being produced.
+
 AD_HOC_VIEW = """
     DROP VIEW IF EXISTS cubic_reports.ad_hoc_processed_taps;
     CREATE VIEW cubic_reports.ad_hoc_processed_taps
