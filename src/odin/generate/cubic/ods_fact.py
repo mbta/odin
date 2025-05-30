@@ -91,7 +91,6 @@ def cdc_to_fact(
 
     :return: Tuple[new INSERT df, new UPDATE df, new DELETE df]
     """
-    cdc_df = cdc_df.drop("snapshot", strict=False)
     insert_df = pl.concat(
         [insert_df, cdc_df.filter(pl.col("header__change_oper").eq("I"))],
         how="diagonal",
@@ -171,6 +170,7 @@ class CubicODSFact(OdinJob):
             "header__change_oper",
             "header__timestamp",
             "header__from_csv",
+            "snapshot",
         ]
 
     def snapshot_check(self) -> None:
@@ -248,18 +248,17 @@ class CubicODSFact(OdinJob):
             odin_columns.append(("odin_year", pa.int32()))
         for col, dtype in odin_columns:
             write_schema = write_schema.append(pa.field(col, dtype))
-        filter = pc.field("header__change_oper") == "L"
+        ds_filter = pc.field("header__change_oper") == "L"
         odin_index = 0
         write_path = os.path.join(self.tmpdir, "t.parquet")
         writer = pq.ParquetWriter(
             write_path, schema=write_schema, compression="zstd", compression_level=3
         )
         for batch in self.history_ds.to_batches(
-            filter=filter, batch_readahead=0, fragment_readahead=0, batch_size=self.batch_size
+            filter=ds_filter, batch_readahead=0, fragment_readahead=0, batch_size=self.batch_size
         ):
             if batch.num_rows == 0:
                 continue
-            batch = batch.drop_columns("snapshot")
             batch = batch.append_column(
                 "odin_index",
                 pa.array(list(range(odin_index, odin_index + batch.num_rows)), type=pa.int64()),
@@ -380,6 +379,7 @@ class CubicODSFact(OdinJob):
 
         drop_indices = pl.Series("odin_index", [], pl.Int64())
         if update_df.height > 0:
+            update_df = update_df.drop(self.history_drop_columns)
             mod_cast, orig_cast = polars_decimal_as_string(update_df.select(keys))
             s3_update_df = ds_batched_join(fact_ds, update_df, keys, self.batch_size)
             if "odin_year" in s3_update_df.columns:
