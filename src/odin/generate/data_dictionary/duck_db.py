@@ -33,7 +33,7 @@ READ_PQ = "read_parquet('$s3_path/**/*.parquet')"
 dataset_views = [
     ViewBuilder(
         s3_prefix=os.path.join(DATA_SPRINGBOARD, AFC_DATA),
-        schema="sb",
+        schema="sb_api",
         template=Template(f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT * FROM {READ_PQ};"),
     ),
     ViewBuilder(

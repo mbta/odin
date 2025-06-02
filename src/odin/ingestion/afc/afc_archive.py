@@ -78,7 +78,6 @@ def make_pl_schema(schema: APITableInfo) -> pl.Schema:
     converter = {
         "bigint": pl.Int64(),
         "integer": pl.Int32(),
-        # "timestamp with time zone": pl.Datetime(), # Polars can't automatically parse ts from api
     }
     r_schema = {}
     for col in schema["table_infos"]:
@@ -87,31 +86,30 @@ def make_pl_schema(schema: APITableInfo) -> pl.Schema:
     return pl.Schema(r_schema)
 
 
-def verify_downloads(csv_path: str, csv_schema: pl.Schema, download_jobs: APICounts) -> None:
+def verify_downloads(path: str, schema: pl.Schema, download_jobs: APICounts) -> None:
     """
-    Run checks on downloaded csv files to ensure they are in alignment with `count` endpoint.
+    Run checks on downloaded files to ensure they are in alignment with `count` endpoint.
 
     API Endpoints are not working as expected, this verification step will confirm that `count`
     and `stagetable` endpoints are in alignment with what they should be returning.
 
-    :param csv_path: path to downloaded csv file
-    :param csv_schema: schema of csv file
+    :param path: path to downloaded json file
+    :param schema: schema of file
     :param download_jobs: job list from `count` endpoint
     """
     # create comparison dataframe with following columns:
-    #   jobId -> sid values to compare
-    #   csvCount -> record count found in csv file
+    #   jobId -> job_id values to compare
+    #   jsonCount -> record count found in json file
     #   dataCount -> record cound from `count` endpoint
-    log = ProcessLog("verify_downloads", csv_path=csv_path)
+    log = ProcessLog("verify_downloads", path=path)
     compare_df = (
-        pl.scan_csv(
-            source=csv_path,
-            schema=csv_schema,
-            has_header=True,
+        pl.scan_ndjson(
+            source=path,
+            schema=schema,
         )
-        .group_by("sid")
-        .len(name="csvCount")
-        .rename({"sid": "jobId"})
+        .group_by("job_id")
+        .len(name="jsonCount")
+        .rename({"job_id": "jobId"})
         .join(pl.LazyFrame(download_jobs), on="jobId", coalesce=True, how="full")
         .sort("jobId")
         .collect()
@@ -120,22 +118,22 @@ def verify_downloads(csv_path: str, csv_schema: pl.Schema, download_jobs: APICou
     missing_api = compare_df.filter(pl.col("dataCount").is_null())
     missing_api_str = missing_api.get_column("jobId").str.join(",")[0]
     assert missing_api.height == 0, (
-        f"SID(s) from `stagetable` not in `count` endpoint:({missing_api_str})"
+        f"job_id(s) from `stagetable` not in `count` endpoint:({missing_api_str})"
     )
 
-    missing_csv = compare_df.filter(pl.col("csvCount").is_null())
-    missing_csv_str = missing_csv.get_column("jobId").str.join(", ")[0]
-    assert missing_csv.height == 0, (
-        f"SID(s) from `count` not in `stagetable` endpoint:({missing_csv_str})"
+    missing_json = compare_df.filter(pl.col("jsonCount").is_null())
+    missing_json_str = missing_json.get_column("jobId").str.join(", ")[0]
+    assert missing_json.height == 0, (
+        f"job_id(s) from `count` not in `stagetable` endpoint:({missing_json_str})"
     )
 
     count_diff = compare_df.filter(
-        pl.col("csvCount").is_not_null(),
+        pl.col("jsonCount").is_not_null(),
         pl.col("dataCount").is_not_null(),
-        pl.col("csvCount") != pl.col("dataCount"),
+        pl.col("jsonCount") != pl.col("dataCount"),
     )
     count_diff_str = count_diff.select(
-        pl.format("sid {}: {}!={}", "jobId", "dataCount", "csvCount").str.join(", ")
+        pl.format("job_id {}: {}!={}", "jobId", "dataCount", "jsonCount").str.join(", ")
     ).item(0, 0)
     assert count_diff.height == 0, (
         f"record counts from `count` and `stagetable` not equal:({count_diff_str})"
@@ -188,10 +186,10 @@ class ArchiveAFCAPI(OdinJob):
         Gather data required to run ArchiveAFCAPI.
 
         1. Pull Table schema and type from `tableinfos` endpoint.
-        2. Capture largest sid already processed from parquet dataset.
-        3. Pull list of available sid's from `count` endpoint.
-            `count` endpoint should always return some amount of sid's, even when called with only
-            "table_name" parameter.
+        2. Capture largest job_id already processed from parquet dataset.
+        3. Pull list of available job_id's from `count` endpoint.
+            `count` endpoint should always return some amount of job_id's, even when called
+            with only "table_name" parameter.
         """
         log = ProcessLog("setup_job", table=self.table)
         # set self.schema
@@ -201,123 +199,132 @@ class ArchiveAFCAPI(OdinJob):
         schemas_dict: dict[str, APITableInfo] = dict(ChainMap(*schemas_list))
         self.schema = make_pl_schema(schemas_dict[self.table])
 
+        # columns to be converted to datetime types
+        # default polars datetime parser can not understand S&B timestamp string format
+        self.ts_cols = [
+            ti["column_name"]
+            for ti in schemas_dict[self.table]["table_infos"]
+            if "timestamp" in ti["data_type"]
+        ]
+
         # set self.table_type
         # this determines of process performs incremental load or full refresh
         self.table_type = schemas_dict[self.table]["type"]
 
-        # set self.pq_sid from parquet dataset
-        self.pq_sid: int | None = None
-        self.max_sid: int | None = None
+        # set self.pq_job_id from parquet dataset
+        self.pq_job_id: int | None = None
+        self.max_job_id: int | None = None
         pq_objects = list_objects(self.export_folder, in_filter=".parquet")
         if pq_objects:
-            _, self.pq_sid = ds_metadata_min_max(ds_from_path(f"s3://{self.export_folder}"), "sid")
-        log.add_metadata(pq_sid=self.pq_sid)
+            _, self.pq_job_id = ds_metadata_min_max(
+                ds_from_path(f"s3://{self.export_folder}"), "job_id"
+            )
+        log.add_metadata(pq_job_id=self.pq_job_id)
 
-        # pull list of sid's available to process from API
+        # pull list of job_id's available to process from API
         count_url = f"{API_ROOT}/count"
         count_fields = {"table_name": self.table}
-        if self.pq_sid is not None:
-            count_fields["sidFrom"] = str(self.pq_sid)
+        if self.pq_job_id is not None:
+            count_fields["jobIdFrom"] = str(self.pq_job_id)
         r = self.make_request(count_url, fields=count_fields)
         self.job_ids: APICounts = r.json()
         assert isinstance(self.job_ids, list)
 
         log.complete(num_job_ids=len(self.job_ids))
 
-    def download_csv(self, download_jobs: APICounts) -> None:
+    def download_json(self, download_jobs: APICounts) -> None:
         """
-        Download csv.gz table file for AFC API.
+        Download json.gz table file for AFC API.
 
-        Only download csv.gz table with known sid_from and sid_to range.
+        Only download json.gz table with known jobIdFrom and jobIdTo range.
 
-        :param download_jobs: list of API jobId's (sid's) to download (sorted by jobId - ascending)
+        :param download_jobs: list of API jobId's to download (sorted by jobId - ascending)
         """
-        sid_from = download_jobs[0]["jobId"]
-        sid_to = download_jobs[-1]["jobId"]
+        job_id_from = download_jobs[0]["jobId"]
+        job_id_to = download_jobs[-1]["jobId"]
         num_rows = sum(j["dataCount"] for j in download_jobs)
         log = ProcessLog(
-            "afc_api_download_csv",
+            "afc_api_download_json",
             table=self.table,
-            sid_from=sid_from,
-            sid_to=sid_to,
+            job_id_from=job_id_from,
+            job_id_to=job_id_to,
             num_rows=num_rows,
         )
 
         url = f"{API_ROOT}/stagetable"
         fields = {
             "table_name": self.table,
-            "responseType": "application/csv",
+            "responseType": "application/json",
             "compression": "gzip",
-            "sidFrom": str(sid_from),
-            "sidTo": str(sid_to),
+            "jobIdFrom": str(job_id_from),
+            "jobIdTo": str(job_id_to),
         }
         r = self.make_request(url, fields=fields, preload_content=False)
 
-        csv_path = os.path.join(self.tmpdir, f"{sid_from}.csv")
-        gz_path = f"{csv_path}.gz"
+        json_path = os.path.join(self.tmpdir, f"{job_id_from}.json")
+        gz_path = f"{json_path}.gz"
 
-        # download csv.gz file (as stream)
+        # download json.gz file (as stream)
         with open(gz_path, mode="wb") as gz_write:
             shutil.copyfileobj(r, gz_write)
         r.release_conn()
 
-        # convert to csv.gz to csv, so polars scan_csv can be used
-        # csv file should also produce more consistent disk and memory usage profiles
-        with gzip.open(gz_path, mode="rb") as gz_read, open(csv_path, mode="wb") as csv_write:
-            shutil.copyfileobj(gz_read, csv_write)
+        # convert to json.gz to json, so polars can be used
+        # json file should also produce more consistent disk and memory usage profiles
+        with gzip.open(gz_path, mode="rb") as gz_read, open(json_path, mode="wb") as json_w:
+            shutil.copyfileobj(gz_read, json_w)
         os.remove(gz_path)
 
         log.complete()
-        verify_downloads(csv_path, self.schema, download_jobs)
+        verify_downloads(json_path, self.schema, download_jobs)
 
-    def load_sids(self) -> None:
+    def load_job_ids(self) -> None:
         """
-        Load API data based on sid values.
+        Load API data based on job_id values.
 
-        SID pagination will be done with data returned from `count` endpoint.
+        JobId pagination will be done with data returned from `count` endpoint.
 
         API data will be downloaded in batches to limit API reponse time.
         """
-        # assume 12 bytes per column to ballbark 20mb per csv request
+        # assume 12 bytes per column to ballbark 20mb per json request
         target_rows = 20 * 1024 * 1024 / (12 * self.schema.len())
         download_jobs: APICounts = []
         download_rows = 0
         for api_job in sorted(self.job_ids, key=itemgetter("jobId")):
-            if self.pq_sid is not None and int(api_job["jobId"]) <= int(self.pq_sid):
+            if self.pq_job_id is not None and int(api_job["jobId"]) <= int(self.pq_job_id):
                 continue
             download_jobs.append(api_job)
             download_rows += int(api_job["dataCount"])
-            self.max_sid = int(api_job["jobId"])
+            self.max_job_id = int(api_job["jobId"])
             if download_rows > target_rows:
-                self.download_csv(download_jobs)
+                self.download_json(download_jobs)
                 download_jobs = []
                 download_rows = 0
             # stop if disk is getting too full
             if disk_free_pct() < 60:
                 break
         if len(download_jobs) > 0:
-            self.download_csv(download_jobs)
+            self.download_json(download_jobs)
 
     def sync_parquet(self) -> None:
-        """Convert csv to parquet and sync with S3 files."""
+        """Convert json to parquet and sync with S3 files."""
         log = ProcessLog("afc_api_sync_parquet")
         sync_paths = []
-        for csv_file in sorted(Path(self.tmpdir).iterdir(), key=os.path.getmtime):
-            if csv_file.suffix != ".csv":
+        for json_file in sorted(Path(self.tmpdir).iterdir(), key=os.path.getmtime):
+            if json_file.suffix != ".json":
                 continue
-            pq_path = str(csv_file.absolute()).replace(".csv", ".parquet")
-            lf = pl.scan_csv(
-                csv_file.absolute(),
+            pq_path = str(json_file.absolute()).replace(".json", ".parquet")
+            lf = pl.scan_ndjson(
+                json_file.absolute(),
                 schema=self.schema,
-                has_header=True,
-            )
+            ).with_columns(pl.col(self.ts_cols).str.head(19).str.to_datetime("%Y-%m-%d %H:%M:%S"))
             lf.sink_parquet(
                 pq_path,
                 compression="zstd",
                 compression_level=3,
                 row_group_size=int(1024 * 1024 / (8 * self.schema.len())),
             )
-            csv_file.unlink()
+            json_file.unlink()
             pq_row_count = ds_from_path(pq_path).count_rows()
             if pq_row_count > 0:
                 sync_paths.append(pq_path)
@@ -336,10 +343,10 @@ class ArchiveAFCAPI(OdinJob):
                 download_object(found_objs[-1].path, s3_pq_file)
                 sync_paths.insert(0, s3_pq_file)
         elif self.table_type == "static":
-            # `static` table type should only ever be comprised of 1 sid/jobId value and
+            # `static` table type should only ever be comprised of 1 jobId value and
             # operates as truncate -> reload operation
             del_objs = [obj.path for obj in found_objs]
-            assert ds_unique_values(ds_from_path(sync_paths), ["sid"]).num_rows == 1
+            assert ds_unique_values(ds_from_path(sync_paths), ["job_id"]).num_rows == 1
         else:
             raise NotImplementedError(f"S&B API table 'type' of ({self.table_type}) not supported.")
 
@@ -362,14 +369,14 @@ class ArchiveAFCAPI(OdinJob):
         """
         Determine when job should be ru-run.
 
-        If `count` returning more than 1 job, based on self.max_sid, indicates more jobs available.
+        If `count` returning more than 1 job, based on self.max_job_id, more jobs available.
         """
-        log = ProcessLog("re_run_check", table=self.table, max_sid=self.max_sid)
+        log = ProcessLog("re_run_check", table=self.table, max_job_id=self.max_job_id)
         return_duration = NEXT_RUN_DEFAULT
-        if self.max_sid is not None:
+        if self.max_job_id is not None:
             r = self.make_request(
                 url=f"{API_ROOT}/count",
-                fields={"table_name": self.table, "sidFrom": str(self.max_sid)},
+                fields={"table_name": self.table, "jobIdFrom": str(self.max_job_id)},
             )
             if len(r.json()) > 1:
                 return_duration = 60 * 5
@@ -383,19 +390,15 @@ class ArchiveAFCAPI(OdinJob):
         Process:
             1. setup job by:
                 - pulling table schema from API Endpoint
-                - grab the largest SID already processed, from parquet files
-                - grab SID's available from /count endpoint
-            2. Loop through all available SID's returned from /count endpoint.
-                - Download SID ranges in batches as csv.gz files.
-            3. Convert csv file(s) to parquet and merge with S3 parquet files.
+                - grab the largest job_id already processed, from parquet files
+                - grab job_id's available from /count endpoint
+            2. Loop through all available job_id's returned from /count endpoint.
+                - Download job_id ranges in batches as json.gz files.
+            3. Convert json file(s) to parquet and merge with S3 parquet files.
             4. Determine next_runs_secs duration.
 
         May 12, 2025 - API has been updated to always return results from "count" endpoint.
-
-        TODO: S&B indicated API has two table "types" one type has incrementing SID's for new data,
-        which this process is currently desined for, the other does full table replacements for
-        each new SID (not implemented). Waiting on S&B to provide information on which table
-        is which.
+        June 2, 2025 - Updated to handle "static" and "transactional" table types.
         """
         self.start_kwargs = {"table": self.table}
         # Current timetout set to 10 mins, for full PROD deployment should be no more than 2 mins.
@@ -405,7 +408,7 @@ class ArchiveAFCAPI(OdinJob):
             retries=False,  # No retires, if retry-able failures are documented, can be updated
         )
         self.setup_job()
-        self.load_sids()
+        self.load_job_ids()
         self.sync_parquet()
         return self.re_run_check()
 

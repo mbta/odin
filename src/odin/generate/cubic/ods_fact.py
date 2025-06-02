@@ -369,7 +369,7 @@ class CubicODSFact(OdinJob):
                     start_odin_index, start_odin_index + insert_df.height, dtype=pl.Int64()
                 ).alias("odin_index"),
                 pl.lit(self.history_snapshot, dtype=pl.String()).alias("odin_snapshot"),
-            ).drop(self.history_drop_columns)
+            ).drop(self.history_drop_columns, strict=False)
             if "edw_inserted_dtm" in insert_df.columns:
                 insert_df = insert_df.with_columns(
                     pl.coalesce(pl.col("edw_inserted_dtm").dt.strftime("%Y"), 0)
@@ -379,7 +379,7 @@ class CubicODSFact(OdinJob):
 
         drop_indices = pl.Series("odin_index", [], pl.Int64())
         if update_df.height > 0:
-            update_df = update_df.drop(self.history_drop_columns)
+            update_df = update_df.drop(self.history_drop_columns, strict=False)
             mod_cast, orig_cast = polars_decimal_as_string(update_df.select(keys))
             s3_update_df = ds_batched_join(fact_ds, update_df, keys, self.batch_size)
             if "odin_year" in s3_update_df.columns:
