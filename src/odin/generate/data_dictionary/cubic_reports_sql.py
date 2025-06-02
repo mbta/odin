@@ -199,7 +199,7 @@ LATE_TAP_ADJUSTMENT = """
         ,-tp.stored_value / 100 AS uncollectible_amount
         ,tp.transaction_dtm
         ,u.transit_account_id
-        ,tm.travel_mode_name,
+        ,tm.travel_mode_name
     FROM
         cubic_ods.edw_sale_transaction s
     JOIN
