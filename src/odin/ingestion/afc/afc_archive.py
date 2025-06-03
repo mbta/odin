@@ -8,6 +8,7 @@ from operator import itemgetter
 from pathlib import Path
 from typing import Literal
 from typing import TypedDict
+from typing import Generator
 
 
 from odin.job import OdinJob
@@ -219,18 +220,28 @@ class ArchiveAFCAPI(OdinJob):
             _, self.pq_job_id = ds_metadata_min_max(
                 ds_from_path(f"s3://{self.export_folder}"), "job_id"
             )
-        log.add_metadata(pq_job_id=self.pq_job_id)
+        log.complete(pq_job_id=self.pq_job_id)
 
-        # pull list of job_id's available to process from API
+    def api_job_ids(self) -> Generator[APICounts]:
+        """
+        Generate job_id's from /count endpoint.
+
+        Will pull job_ids from /count endpoint in batches until no more job_ids are available.
+        """
         count_url = f"{API_ROOT}/count"
-        count_fields = {"table_name": self.table}
-        if self.pq_job_id is not None:
-            count_fields["jobIdFrom"] = str(self.pq_job_id)
-        r = self.make_request(count_url, fields=count_fields)
-        self.job_ids: APICounts = r.json()
-        assert isinstance(self.job_ids, list)
-
-        log.complete(num_job_ids=len(self.job_ids))
+        req_fields = {"table_name": self.table, "limit": str(10_000)}
+        job_id_from = self.pq_job_id
+        while True:
+            if job_id_from is not None:
+                req_fields["jobIdFrom"] = str(job_id_from)
+            r = self.make_request(count_url, fields=req_fields)
+            api_counts: APICounts = r.json()
+            api_counts = sorted(api_counts, key=itemgetter("jobId"))
+            if api_counts[-1]["jobId"] != job_id_from:
+                yield api_counts
+            else:
+                break
+            job_id_from = api_counts[-1]["jobId"]
 
     def download_json(self, download_jobs: APICounts) -> None:
         """
@@ -286,25 +297,26 @@ class ArchiveAFCAPI(OdinJob):
 
         API data will be downloaded in batches to limit API reponse time.
         """
-        # assume 12 bytes per column to ballbark 20mb per json request
-        target_rows = 20 * 1024 * 1024 / (12 * self.schema.len())
+        # assume 12 bytes per column to ballbark 50mb per request
+        target_rows = int(50 * 1024 * 1024 / (12 * self.schema.len()))
         download_jobs: APICounts = []
         download_rows = 0
-        for api_job in sorted(self.job_ids, key=itemgetter("jobId")):
-            if self.pq_job_id is not None and int(api_job["jobId"]) <= int(self.pq_job_id):
-                continue
-            download_jobs.append(api_job)
-            download_rows += int(api_job["dataCount"])
-            self.max_job_id = int(api_job["jobId"])
-            if download_rows > target_rows:
+        for job_ids in self.api_job_ids():
+            for api_job in job_ids:
+                if self.pq_job_id is not None and int(api_job["jobId"]) <= int(self.pq_job_id):
+                    continue
+                download_jobs.append(api_job)
+                download_rows += int(api_job["dataCount"])
+                self.max_job_id = int(api_job["jobId"])
+                if download_rows > target_rows:
+                    self.download_json(download_jobs)
+                    download_jobs = []
+                    download_rows = 0
+                # stop if disk is getting too full
+                if disk_free_pct() < 60:
+                    break
+            if len(download_jobs) > 0:
                 self.download_json(download_jobs)
-                download_jobs = []
-                download_rows = 0
-            # stop if disk is getting too full
-            if disk_free_pct() < 60:
-                break
-        if len(download_jobs) > 0:
-            self.download_json(download_jobs)
 
     def sync_parquet(self) -> None:
         """Convert json to parquet and sync with S3 files."""

@@ -16,9 +16,10 @@ from odin.ingestion.afc.afc_archive import verify_downloads
 from odin.utils.aws.s3 import S3Object
 
 
+@patch.object(ArchiveAFCAPI, "api_job_ids")
 @patch.object(ArchiveAFCAPI, "download_json")
 @patch("odin.ingestion.afc.afc_archive.disk_free_pct")
-def test_load_job_ids(disk_free: MagicMock, dl_csv: MagicMock):
+def test_load_job_ids(disk_free: MagicMock, dl_csv: MagicMock, api_jobs: MagicMock):
     """Test load_job_ids method of ArchiveAFCAPI"""
     disk_free.return_value = 99
     job = ArchiveAFCAPI("test_table")
@@ -46,30 +47,38 @@ def test_load_job_ids(disk_free: MagicMock, dl_csv: MagicMock):
 
     # Test jobId skipping
     job.pq_job_id = 1000
-    job.job_ids = [
-        {"jobId": 1, "dataCount": 1},
-        {"jobId": 2, "dataCount": 1},
-        {"jobId": 3, "dataCount": 1},
-        {"jobId": 4, "dataCount": 1},
-        {"jobId": 5, "dataCount": 1},
-        {"jobId": 6, "dataCount": 1},
-        {"jobId": 7, "dataCount": 1},
-        {"jobId": 8, "dataCount": 1},
-        {"jobId": 9, "dataCount": 1},
-        {"jobId": 1000, "dataCount": 1},
-        {"jobId": 1001, "dataCount": 1},
-    ]
+    api_jobs.return_value = iter(
+        [
+            [
+                {"jobId": 1, "dataCount": 1},
+                {"jobId": 2, "dataCount": 1},
+                {"jobId": 3, "dataCount": 1},
+                {"jobId": 4, "dataCount": 1},
+                {"jobId": 5, "dataCount": 1},
+                {"jobId": 6, "dataCount": 1},
+                {"jobId": 7, "dataCount": 1},
+                {"jobId": 8, "dataCount": 1},
+                {"jobId": 9, "dataCount": 1},
+                {"jobId": 1000, "dataCount": 1},
+                {"jobId": 1001, "dataCount": 1},
+            ]
+        ]
+    )
     job.load_job_ids()
     dl_csv.assert_called_once_with([{"jobId": 1001, "dataCount": 1}])
     dl_csv.reset_mock()
 
     # Test target_rows hit
-    job.job_ids = [
-        {"jobId": 1, "dataCount": 1},
-        {"jobId": 1000, "dataCount": 1},
-        {"jobId": 1001, "dataCount": 1_000_000},
-        {"jobId": 1002, "dataCount": 500},
-    ]
+    api_jobs.return_value = iter(
+        [
+            [
+                {"jobId": 1, "dataCount": 1},
+                {"jobId": 1000, "dataCount": 1},
+                {"jobId": 1001, "dataCount": 1_000_000},
+                {"jobId": 1002, "dataCount": 500},
+            ]
+        ]
+    )
     job.load_job_ids()
     dl_csv.assert_has_calls(
         [
@@ -80,12 +89,16 @@ def test_load_job_ids(disk_free: MagicMock, dl_csv: MagicMock):
     dl_csv.reset_mock()
 
     # Test combine jobIds
-    job.job_ids = [
-        {"jobId": 1, "dataCount": 1},
-        {"jobId": 1000, "dataCount": 1},
-        {"jobId": 1001, "dataCount": 500},
-        {"jobId": 1002, "dataCount": 500},
-    ]
+    api_jobs.return_value = iter(
+        [
+            [
+                {"jobId": 1, "dataCount": 1},
+                {"jobId": 1000, "dataCount": 1},
+                {"jobId": 1001, "dataCount": 500},
+                {"jobId": 1002, "dataCount": 500},
+            ]
+        ]
+    )
     job.load_job_ids()
     dl_csv.assert_called_once_with(
         [
@@ -95,25 +108,17 @@ def test_load_job_ids(disk_free: MagicMock, dl_csv: MagicMock):
     )
     dl_csv.reset_mock()
 
-    # Confirm job sorting
-    job.job_ids = [
-        {"jobId": 1002, "dataCount": 200},
-        {"jobId": 1001, "dataCount": 500},
-        {"jobId": 1004, "dataCount": 500},
-        {"jobId": 1003, "dataCount": 300},
-    ]
-    job.load_job_ids()
-    dl_csv.assert_called_once_with(
+    # Test disk_free_pct hit
+    api_jobs.return_value = iter(
         [
-            {"jobId": 1001, "dataCount": 500},
-            {"jobId": 1002, "dataCount": 200},
-            {"jobId": 1003, "dataCount": 300},
-            {"jobId": 1004, "dataCount": 500},
+            [
+                {"jobId": 1, "dataCount": 1},
+                {"jobId": 1000, "dataCount": 1},
+                {"jobId": 1001, "dataCount": 500},
+                {"jobId": 1002, "dataCount": 500},
+            ]
         ]
     )
-    dl_csv.reset_mock()
-
-    # Test disk_free_pct hit
     disk_free.return_value = 50
     job.load_job_ids()
     dl_csv.assert_called_once_with([{"jobId": 1001, "dataCount": 500}])
