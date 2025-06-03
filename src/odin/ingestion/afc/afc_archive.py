@@ -318,6 +318,10 @@ class ArchiveAFCAPI(OdinJob):
             if len(download_jobs) > 0:
                 self.download_json(download_jobs)
 
+            # This is ugly, but should work for now...
+            if disk_free_pct() < 60:
+                break
+
     def sync_parquet(self) -> None:
         """Convert json to parquet and sync with S3 files."""
         log = ProcessLog("afc_api_sync_parquet")
