@@ -29,6 +29,13 @@ from odin.utils.parquet import ds_unique_values
 
 import polars as pl
 
+
+class APIEmptyResponse(Exception):
+    """API Returned 204."""
+
+    pass
+
+
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 
 API_ROOT = "https://dwhexperianceapi-production.ir-e1.cloudhub.io/api/v1/datawarehouse"
@@ -176,7 +183,9 @@ class ArchiveAFCAPI(OdinJob):
         :return: API Response
         """
         r = self.req_pool.request(method, url=url, fields=fields, preload_content=preload_content)
-        if r.status != 200:
+        if r.status == 204:
+            raise APIEmptyResponse("API 204 Response, NO DATA.")
+        elif r.status != 200:
             raise urllib3.exceptions.HTTPError(
                 f"API ERROR: {url=} status={r.status} response_data={r.data.decode()}"
             )
@@ -215,8 +224,7 @@ class ArchiveAFCAPI(OdinJob):
         # set self.pq_job_id from parquet dataset
         self.pq_job_id: int | None = None
         self.max_job_id: int | None = None
-        pq_objects = list_objects(self.export_folder, in_filter=".parquet")
-        if pq_objects:
+        if list_objects(self.export_folder, in_filter=".parquet"):
             _, self.pq_job_id = ds_metadata_min_max(
                 ds_from_path(f"s3://{self.export_folder}"), "job_id"
             )
@@ -227,14 +235,18 @@ class ArchiveAFCAPI(OdinJob):
         Generate job_id's from /count endpoint.
 
         Will pull job_ids from /count endpoint in batches until no more job_ids are available.
+        Initial request will be exclusive of self.pq_job_id
         """
         count_url = f"{API_ROOT}/count"
         req_fields = {"table_name": self.table, "limit": str(10_000)}
         job_id_from = self.pq_job_id
         while True:
             if job_id_from is not None:
-                req_fields["jobIdFrom"] = str(job_id_from)
-            r = self.make_request(count_url, fields=req_fields)
+                req_fields["jobIdFrom"] = str(job_id_from + 1)
+            try:
+                r = self.make_request(count_url, fields=req_fields)
+            except APIEmptyResponse:
+                break
             api_counts: APICounts = r.json()
             api_counts = sorted(api_counts, key=itemgetter("jobId"))
             if api_counts[-1]["jobId"] != job_id_from:
@@ -425,8 +437,9 @@ class ArchiveAFCAPI(OdinJob):
         )
         self.setup_job()
         self.load_job_ids()
+        next_run_duration = self.re_run_check()
         self.sync_parquet()
-        return self.re_run_check()
+        return next_run_duration
 
 
 def schedule_afc_archive(schedule: sched.scheduler) -> None:
