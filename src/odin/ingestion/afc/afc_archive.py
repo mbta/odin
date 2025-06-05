@@ -30,7 +30,7 @@ from odin.utils.parquet import ds_unique_values
 import polars as pl
 
 
-class APIEmptyResponse(Exception):
+class APIEmptyResponseError(Exception):
     """API Returned 204."""
 
     pass
@@ -184,7 +184,7 @@ class ArchiveAFCAPI(OdinJob):
         """
         r = self.req_pool.request(method, url=url, fields=fields, preload_content=preload_content)
         if r.status == 204:
-            raise APIEmptyResponse("API 204 Response, NO DATA.")
+            raise APIEmptyResponseError("API 204 Response, NO DATA.")
         elif r.status != 200:
             raise urllib3.exceptions.HTTPError(
                 f"API ERROR: {url=} status={r.status} response_data={r.data.decode()}"
@@ -222,34 +222,40 @@ class ArchiveAFCAPI(OdinJob):
         self.table_type = schemas_dict[self.table]["type"]
 
         # set self.pq_job_id from parquet dataset
-        self.pq_job_id: int | None = None
-        self.max_job_id: int | None = None
+        self.pq_job_id = 0
+        self.max_job_id = 0
         if list_objects(self.export_folder, in_filter=".parquet"):
             _, self.pq_job_id = ds_metadata_min_max(
                 ds_from_path(f"s3://{self.export_folder}"), "job_id"
             )
         log.complete(pq_job_id=self.pq_job_id)
 
-    def api_job_ids(self) -> Generator[APICounts]:
+    def api_job_ids(self, job_id_from: int) -> Generator[APICounts]:
         """
         Generate job_id's from /count endpoint.
 
         Will pull job_ids from /count endpoint in batches until no more job_ids are available.
-        Initial request will be exclusive of self.pq_job_id
+
+        :param job_id_from: job_id to start pulling from (exclusive)
+
+        :return: sorted list of APICounts
         """
         count_url = f"{API_ROOT}/count"
         req_fields = {"table_name": self.table, "limit": str(10_000)}
-        job_id_from = self.pq_job_id
         while True:
-            if job_id_from is not None:
-                req_fields["jobIdFrom"] = str(job_id_from + 1)
+            req_fields["jobIdFrom"] = str(job_id_from)
             try:
                 r = self.make_request(count_url, fields=req_fields)
-            except APIEmptyResponse:
+            except APIEmptyResponseError:
                 break
             api_counts: APICounts = r.json()
-            api_counts = sorted(api_counts, key=itemgetter("jobId"))
-            if api_counts[-1]["jobId"] != job_id_from:
+            # /count endpoint currently returns results inclusive if `jobIdFrom` parameter
+            # however this is not documented so this process is designed to work with the endpoint
+            # being either inclusive or exclusive of the `jobIdFrom` parameter
+            api_counts = sorted(
+                [j for j in api_counts if j["jobId"] > job_id_from], key=itemgetter("jobId")
+            )
+            if len(api_counts) > 0:
                 yield api_counts
             else:
                 break
@@ -313,9 +319,10 @@ class ArchiveAFCAPI(OdinJob):
         target_rows = int(50 * 1024 * 1024 / (12 * self.schema.len()))
         download_jobs: APICounts = []
         download_rows = 0
-        for job_ids in self.api_job_ids():
+        for job_ids in self.api_job_ids(self.pq_job_id):
             for api_job in job_ids:
-                if self.pq_job_id is not None and int(api_job["jobId"]) <= int(self.pq_job_id):
+                # extra check to make certain jobId should be processed
+                if int(api_job["jobId"]) <= int(self.pq_job_id):
                     continue
                 download_jobs.append(api_job)
                 download_rows += int(api_job["dataCount"])
@@ -401,7 +408,7 @@ class ArchiveAFCAPI(OdinJob):
         """
         log = ProcessLog("re_run_check", table=self.table, max_job_id=self.max_job_id)
         return_duration = NEXT_RUN_DEFAULT
-        if self.max_job_id is not None:
+        if self.max_job_id > 0:
             r = self.make_request(
                 url=f"{API_ROOT}/count",
                 fields={"table_name": self.table, "jobIdFrom": str(self.max_job_id)},
