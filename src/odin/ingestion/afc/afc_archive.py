@@ -316,6 +316,7 @@ class ArchiveAFCAPI(OdinJob):
         API data will be downloaded in batches to limit API reponse time.
         """
         # assume 12 bytes per column to ballbark 50mb per request
+        min_disk_free_pct = 60
         target_rows = int(50 * 1024 * 1024 / (12 * self.schema.len()))
         download_jobs: APICounts = []
         download_rows = 0
@@ -332,13 +333,13 @@ class ArchiveAFCAPI(OdinJob):
                     download_jobs = []
                     download_rows = 0
                 # stop if disk is getting too full
-                if disk_free_pct() < 60:
+                if disk_free_pct() < min_disk_free_pct:
                     break
             if len(download_jobs) > 0:
                 self.download_json(download_jobs)
 
             # This is ugly, but should work for now...
-            if disk_free_pct() < 60:
+            if disk_free_pct() < min_disk_free_pct:
                 break
 
     def sync_parquet(self) -> None:
