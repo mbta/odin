@@ -8,6 +8,7 @@ from operator import itemgetter
 from pathlib import Path
 from typing import Literal
 from typing import TypedDict
+from typing import Generator
 
 
 from odin.job import OdinJob
@@ -27,6 +28,13 @@ from odin.utils.parquet import pq_dataset_writer
 from odin.utils.parquet import ds_unique_values
 
 import polars as pl
+
+
+class APIEmptyResponseError(Exception):
+    """API Returned 204."""
+
+    pass
+
 
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 
@@ -175,7 +183,9 @@ class ArchiveAFCAPI(OdinJob):
         :return: API Response
         """
         r = self.req_pool.request(method, url=url, fields=fields, preload_content=preload_content)
-        if r.status != 200:
+        if r.status == 204:
+            raise APIEmptyResponseError("API 204 Response, NO DATA.")
+        elif r.status != 200:
             raise urllib3.exceptions.HTTPError(
                 f"API ERROR: {url=} status={r.status} response_data={r.data.decode()}"
             )
@@ -212,25 +222,44 @@ class ArchiveAFCAPI(OdinJob):
         self.table_type = schemas_dict[self.table]["type"]
 
         # set self.pq_job_id from parquet dataset
-        self.pq_job_id: int | None = None
-        self.max_job_id: int | None = None
-        pq_objects = list_objects(self.export_folder, in_filter=".parquet")
-        if pq_objects:
+        self.pq_job_id = 0
+        self.max_job_id = 0
+        if list_objects(self.export_folder, in_filter=".parquet"):
             _, self.pq_job_id = ds_metadata_min_max(
                 ds_from_path(f"s3://{self.export_folder}"), "job_id"
             )
-        log.add_metadata(pq_job_id=self.pq_job_id)
+        log.complete(pq_job_id=self.pq_job_id)
 
-        # pull list of job_id's available to process from API
+    def api_job_ids(self, job_id_from: int) -> Generator[APICounts]:
+        """
+        Generate job_id's from /count endpoint.
+
+        Will pull job_ids from /count endpoint in batches until no more job_ids are available.
+
+        :param job_id_from: job_id to start pulling from (exclusive)
+
+        :return: sorted list of APICounts
+        """
         count_url = f"{API_ROOT}/count"
-        count_fields = {"table_name": self.table}
-        if self.pq_job_id is not None:
-            count_fields["jobIdFrom"] = str(self.pq_job_id)
-        r = self.make_request(count_url, fields=count_fields)
-        self.job_ids: APICounts = r.json()
-        assert isinstance(self.job_ids, list)
-
-        log.complete(num_job_ids=len(self.job_ids))
+        req_fields = {"table_name": self.table, "limit": str(10_000)}
+        while True:
+            req_fields["jobIdFrom"] = str(job_id_from)
+            try:
+                r = self.make_request(count_url, fields=req_fields)
+            except APIEmptyResponseError:
+                break
+            api_counts: APICounts = r.json()
+            # /count endpoint currently returns results inclusive if `jobIdFrom` parameter
+            # however this is not documented so this process is designed to work with the endpoint
+            # being either inclusive or exclusive of the `jobIdFrom` parameter
+            api_counts = sorted(
+                [j for j in api_counts if j["jobId"] > job_id_from], key=itemgetter("jobId")
+            )
+            if len(api_counts) > 0:
+                yield api_counts
+            else:
+                break
+            job_id_from = api_counts[-1]["jobId"]
 
     def download_json(self, download_jobs: APICounts) -> None:
         """
@@ -286,25 +315,32 @@ class ArchiveAFCAPI(OdinJob):
 
         API data will be downloaded in batches to limit API reponse time.
         """
-        # assume 12 bytes per column to ballbark 20mb per json request
-        target_rows = 20 * 1024 * 1024 / (12 * self.schema.len())
+        # assume 12 bytes per column to ballbark 50mb per request
+        min_disk_free_pct = 60
+        target_rows = int(50 * 1024 * 1024 / (12 * self.schema.len()))
         download_jobs: APICounts = []
         download_rows = 0
-        for api_job in sorted(self.job_ids, key=itemgetter("jobId")):
-            if self.pq_job_id is not None and int(api_job["jobId"]) <= int(self.pq_job_id):
-                continue
-            download_jobs.append(api_job)
-            download_rows += int(api_job["dataCount"])
-            self.max_job_id = int(api_job["jobId"])
-            if download_rows > target_rows:
+        for job_ids in self.api_job_ids(self.pq_job_id):
+            for api_job in job_ids:
+                # extra check to make certain jobId should be processed
+                if int(api_job["jobId"]) <= int(self.pq_job_id):
+                    continue
+                download_jobs.append(api_job)
+                download_rows += int(api_job["dataCount"])
+                self.max_job_id = int(api_job["jobId"])
+                if download_rows > target_rows:
+                    self.download_json(download_jobs)
+                    download_jobs = []
+                    download_rows = 0
+                # stop if disk is getting too full
+                if disk_free_pct() < min_disk_free_pct:
+                    break
+            if len(download_jobs) > 0:
                 self.download_json(download_jobs)
-                download_jobs = []
-                download_rows = 0
-            # stop if disk is getting too full
-            if disk_free_pct() < 60:
+
+            # This is ugly, but should work for now...
+            if disk_free_pct() < min_disk_free_pct:
                 break
-        if len(download_jobs) > 0:
-            self.download_json(download_jobs)
 
     def sync_parquet(self) -> None:
         """Convert json to parquet and sync with S3 files."""
@@ -373,7 +409,7 @@ class ArchiveAFCAPI(OdinJob):
         """
         log = ProcessLog("re_run_check", table=self.table, max_job_id=self.max_job_id)
         return_duration = NEXT_RUN_DEFAULT
-        if self.max_job_id is not None:
+        if self.max_job_id > 0:
             r = self.make_request(
                 url=f"{API_ROOT}/count",
                 fields={"table_name": self.table, "jobIdFrom": str(self.max_job_id)},
@@ -409,8 +445,9 @@ class ArchiveAFCAPI(OdinJob):
         )
         self.setup_job()
         self.load_job_ids()
+        next_run_duration = self.re_run_check()
         self.sync_parquet()
-        return self.re_run_check()
+        return next_run_duration
 
 
 def schedule_afc_archive(schedule: sched.scheduler) -> None:
