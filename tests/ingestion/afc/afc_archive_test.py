@@ -141,7 +141,7 @@ def csv_file(tmp_path_factory) -> Generator[str]:
     ]
     (pl.DataFrame(data).write_ndjson(path))
 
-    yield str(tmp_path)
+    yield str(path)
     shutil.rmtree(tmp_path)
 
 
@@ -180,6 +180,21 @@ def test_verify_downloads(csv_file):
         {"jobId": 3, "dataCount": 3},
     ]
     assert_re = re.escape("record counts from `count` and `stagetable` not equal:(job_id 1: 10!=1)")
+    with pytest.raises(AssertionError, match=assert_re):
+        verify_downloads(csv_file, csv_schema, download_jobs)
+
+    download_jobs = [
+        {"jobId": 1, "dataCount": 1},
+        {"jobId": 2, "dataCount": 2},
+        {"jobId": 3, "dataCount": 3},
+    ]
+    csv_schema = pl.Schema({"job_id": pl.Int64()})
+    assert_re = re.escape("Columns in API download not found in API schema: (value)")
+    with pytest.raises(AssertionError, match=assert_re):
+        verify_downloads(csv_file, csv_schema, download_jobs)
+
+    csv_schema = pl.Schema({"job_id": pl.Int64(), "value": pl.String(), "extra_col": pl.String()})
+    assert_re = re.escape("Columns in API schema not found in API download: (extra_col)")
     with pytest.raises(AssertionError, match=assert_re):
         verify_downloads(csv_file, csv_schema, download_jobs)
 

@@ -1,5 +1,6 @@
 import os
 import gzip
+import json
 import sched
 import shutil
 import urllib3
@@ -98,18 +99,34 @@ def verify_downloads(path: str, schema: pl.Schema, download_jobs: APICounts) -> 
     """
     Run checks on downloaded files to ensure they are in alignment with `count` endpoint.
 
-    API Endpoints are not working as expected, this verification step will confirm that `count`
-    and `stagetable` endpoints are in alignment with what they should be returning.
+    These checks are based on previous API Endpoints issues that we should confirm have not been
+    reintroduced to the API.
+     - confirm that `count` and `stagetable` endpoints are in alignment
+     - confirm that `stagetable` and tableinfos` (schema) endpoints are in alignment
 
     :param path: path to downloaded json file
     :param schema: schema of file
     :param download_jobs: job list from `count` endpoint
     """
+    log = ProcessLog("verify_downloads", path=path)
+    schema_columns = set(schema.names())
+    with open(path, "r") as r:
+        file_columns = set(json.loads(r.readline()).keys())
+
+    not_in_schema = file_columns - schema_columns
+    assert len(not_in_schema) == 0, (
+        f"Columns in API download not found in API schema: ({', '.join(not_in_schema)})"
+    )
+
+    not_in_file = schema_columns - file_columns
+    assert len(not_in_file) == 0, (
+        f"Columns in API schema not found in API download: ({', '.join(not_in_file)})"
+    )
+
     # create comparison dataframe with following columns:
     #   jobId -> job_id values to compare
     #   jsonCount -> record count found in json file
     #   dataCount -> record cound from `count` endpoint
-    log = ProcessLog("verify_downloads", path=path)
     compare_df = (
         pl.scan_ndjson(
             source=path,
