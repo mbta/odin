@@ -4,7 +4,6 @@ from string import Template
 
 import duckdb
 
-from odin.utils.aws.ecs import AWS_ENV
 from odin.utils.logger import ProcessLog
 from odin.utils.aws.s3 import list_partitions
 from odin.utils.aws.s3 import upload_file
@@ -17,7 +16,7 @@ from odin.utils.parquet import ds_from_path
 import odin.generate.data_dictionary.cubic_reports_sql as cubic_sql
 
 
-DB_FILE = f"fares_data_repository_{AWS_ENV}.db"
+DB_FILE = "fares_data_repository.db"
 
 
 @dataclass
