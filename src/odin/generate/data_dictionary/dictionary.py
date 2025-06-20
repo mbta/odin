@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 
 from odin.job import OdinJob
 from odin.job import job_proc_schedule
+from odin.utils.aws.ecs import AWS_ENV
 from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import ODIN_DATA
 from odin.utils.locations import ODIN_DICTIONARY
@@ -103,7 +104,8 @@ class DataDictionary(OdinJob):
         with open(json_tmp, "w") as json_writer:
             json.dump(data_dictionary, json_writer)
 
-        upload_path = os.path.join(DATA_SPRINGBOARD, ODIN_DICTIONARY, "data_dictionary.json")
+        dd_file_name = f"data_dictionary_{AWS_ENV}.json"
+        upload_path = os.path.join(DATA_SPRINGBOARD, ODIN_DICTIONARY, dd_file_name)
         upload_file(json_tmp, upload_path)
 
         # Create and upload DuckDB access file.
