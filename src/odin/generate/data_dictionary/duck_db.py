@@ -12,6 +12,7 @@ from odin.utils.locations import CUBIC_ODS_FACT_DATA
 from odin.utils.locations import CUBIC_QLIK_DATA
 from odin.utils.locations import AFC_DATA
 from odin.utils.locations import CUBIC_ODS_REPORTS
+from odin.utils.parquet import ds_from_path
 import odin.generate.data_dictionary.cubic_reports_sql as cubic_sql
 
 
@@ -28,25 +29,29 @@ class ViewBuilder:
 
 
 DROP_VIEW = "DROP VIEW IF EXISTS $schema.$table;"
-READ_PQ = "read_parquet('$s3_path/**/*.parquet')"
+READ_PQ = "read_parquet('$s3_path/**/*.parquet', union_by_name = true)"
 
 dataset_views = [
     ViewBuilder(
         s3_prefix=os.path.join(DATA_SPRINGBOARD, AFC_DATA),
         schema="sb_api",
-        template=Template(f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT * FROM {READ_PQ};"),
+        template=Template(
+            f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT $columns FROM {READ_PQ};"
+        ),
     ),
     ViewBuilder(
         s3_prefix=os.path.join(DATA_SPRINGBOARD, CUBIC_ODS_FACT_DATA),
         schema="cubic_ods",
-        template=Template(f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT * FROM {READ_PQ};"),
+        template=Template(
+            f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT $columns FROM {READ_PQ};"
+        ),
     ),
     ViewBuilder(
         s3_prefix=os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DATA),
         schema="cubic_ods_history",
         template=Template(
             (
-                f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT * FROM {READ_PQ} "
+                f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT $columns FROM {READ_PQ} "
                 f"WHERE snapshot=(SELECT max(snapshot) FROM {READ_PQ});"
             )
         ),
@@ -88,10 +93,13 @@ def create_fares_db(folder: str) -> str:
                     view_log = ProcessLog(
                         "create_table_views", schema=view.schema, view_table=view_table
                     )
+                    s3_path = f"s3://{os.path.join(view.s3_prefix, view_table)}"
+                    ds_columns = list(ds_from_path(s3_path + "/").schema.names)
                     view_query = view.template.substitute(
                         schema=view.schema,
                         table=view_table.replace(".", "_").lower(),
-                        s3_path=f"s3://{os.path.join(view.s3_prefix, view_table)}",
+                        s3_path=s3_path,
+                        columns=",".join(ds_columns),
                     )
                     con.execute(view_query)
                 except Exception as exception:

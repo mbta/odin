@@ -4,6 +4,8 @@ import boto3
 
 from odin.utils.logger import ProcessLog
 
+AWS_ENV = os.getenv("ECS_TASK_GROUP", "no_env").split("-")[-1]
+
 
 def running_in_aws() -> bool:
     """
