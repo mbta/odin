@@ -70,6 +70,7 @@ cubic_report_views = [
     cubic_sql.COMP_D_VIEW,
     cubic_sql.AD_HOC_VIEW,
     cubic_sql.WC321_CLEARING_HOUSE,
+    cubic_sql.WA160,
 ]
 
 
