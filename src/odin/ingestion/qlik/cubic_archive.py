@@ -13,6 +13,8 @@ from typing import Optional
 from itertools import batched
 from concurrent.futures import ThreadPoolExecutor
 
+import psutil
+
 from odin.utils.logger import ProcessLog
 from odin.utils.runtime import sigterm_check
 from odin.job import OdinJob
@@ -285,7 +287,9 @@ class ArchiveCubicQlikTable(OdinJob):
                             cdc_paths += written
                             self.archive_objects += archive
                         # create maximum of 10 parquet files in one event loop.
-                        if len(cdc_paths) > 9:
+                        # or memory usage getting high
+                        # TODO: monitor this memory threshold make sure performance is ok
+                        if len(cdc_paths) > 9 or psutil.virtual_memory().percent > 60:
                             break
                     if cdc_bytes > 0:
                         written, archive = cdc_csv_to_parquet(

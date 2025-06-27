@@ -5,6 +5,7 @@ from typing import Generator
 from pathlib import Path
 
 import polars as pl
+import pyarrow as pa
 import pyarrow.dataset as pd
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
@@ -103,11 +104,34 @@ def test_ds_from_path(pq_files) -> None:
     """Test ds_from_path parquet utility."""
     ds = ds_from_path(pq_files[0])
     assert isinstance(ds, pd.UnionDataset)
+    expected_scehma = pa.schema(
+        (
+            ("col1", pa.int64()),
+            ("col2", pa.int64()),
+            ("file", pa.string()),
+            ("year", pa.int32()),
+        )
+    )
+    assert ds.schema.equals(expected_scehma)
 
     ds = ds_from_path(pq_files)
     assert isinstance(ds, pd.UnionDataset)
     assert ds.count_rows() == PQ_NUM_ROWS * len(pq_files)
     assert len(ds.schema.names) == 9
+    expected_scehma = pa.schema(
+        (
+            ("col1", pa.int64()),
+            ("col2", pa.int64()),
+            ("file", pa.string()),
+            ("year", pa.int32()),
+            ("col3", pa.int64()),
+            ("col4", pa.int64()),
+            ("col5", pa.int64()),
+            ("col6", pa.int64()),
+            ("col7", pa.large_string()),
+        )
+    )
+    assert ds.schema.equals(expected_scehma)
 
 
 def test_ds_column_min_max(pq_files) -> None:
