@@ -13,8 +13,6 @@ from typing import Optional
 from itertools import batched
 from concurrent.futures import ThreadPoolExecutor
 
-import psutil
-
 from odin.utils.logger import ProcessLog
 from odin.utils.runtime import sigterm_check
 from odin.job import OdinJob
@@ -263,7 +261,7 @@ class ArchiveCubicQlikTable(OdinJob):
                     continue
                 log.add_metadata(snapshot=snap_part)
                 os.makedirs(os.path.join(self.tmpdir, snap_part))
-                cdc_bytes = 0
+                cdc_batch_bytes = [0]
                 cdc_paths = []
                 failed_objects: List[str] = []
                 # Create temporary directory for cdc file downloads
@@ -272,26 +270,24 @@ class ArchiveCubicQlikTable(OdinJob):
                     # download .csv.gz cdc files in batches using ThreadPool download operation
                     # returns size of uncompressed csv file to determine when a bunch of downloaded
                     # csv files should be converted to parquet
-                    for batch in batched(work_objs, thread_cpus() * 2):
+                    for batch in batched(work_objs, thread_cpus()):
                         for size_bytes, obj_path in pool.map(thread_save_csv, batch):
-                            cdc_bytes += size_bytes
+                            cdc_batch_bytes[-1] += size_bytes
                             if isinstance(obj_path, str):
                                 failed_objects.append(obj_path)
                         if failed_objects:
                             raise Exception(f"Failed to save csv(s): {','.join(failed_objects)}")
-                        if cdc_bytes > batch_limit_bytes:
+                        if cdc_batch_bytes[-1] > batch_limit_bytes:
                             written, archive = cdc_csv_to_parquet(
                                 tmpdir, os.path.join(self.tmpdir, snap_part)
                             )
-                            cdc_bytes = 0
+                            cdc_batch_bytes.append(0)
                             cdc_paths += written
                             self.archive_objects += archive
-                        # create maximum of 10 parquet files in one event loop.
-                        # or memory usage getting high
-                        # TODO: monitor this memory threshold make sure performance is ok
-                        if len(cdc_paths) > 9 or psutil.virtual_memory().percent > 60:
+                        # process max of ~5GB raw csv files in one event loop.
+                        if sum(cdc_batch_bytes) > 5_000 * 1024 * 1024:
                             break
-                    if cdc_bytes > 0:
+                    if cdc_batch_bytes[-1] > 0:
                         written, archive = cdc_csv_to_parquet(
                             tmpdir, os.path.join(self.tmpdir, snap_part)
                         )
