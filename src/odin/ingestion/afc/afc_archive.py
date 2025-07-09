@@ -41,12 +41,13 @@ NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 
 API_ROOT = "https://dwhexperianceapi-production.ir-e1.cloudhub.io/api/v1/datawarehouse"
 
-# Table returned by `tableinfos` endpoint as of April 30, 2025
+# Table returned by `tableinfos` endpoint as of July 9, 2025
 API_TABLES = [
     "v_card",
     "v_deviceclass",
     "v_eventgroup",
     "v_eventhistory",
+    "v_eventtext",
     "v_mainshift",
     "v_media",
     "v_medium_types",
