@@ -191,7 +191,7 @@ class CubicODSFact(OdinJob):
         frag: pd.ParquetFileFragment
         for frag in self.history_ds.get_fragments():
             history_ds_groups += frag.num_row_groups
-        self.batch_size = max(5000, int(history_ds_rows / (20 * history_ds_groups)))
+        self.batch_size = max(5000, int(history_ds_rows / (4 * history_ds_groups)))
 
         try:
             self.fact_snapshot = str(fast_last_mod_ds_max(self.s3_export, "odin_snapshot"))
