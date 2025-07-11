@@ -21,7 +21,7 @@ from odin.utils.parquet import _pq_find_part_offset
 from odin.utils.parquet import ds_metadata_limit_k_sorted
 from odin.utils.parquet import pq_path_partitions
 from odin.utils.parquet import row_group_column_stats
-
+from odin.utils.parquet import ds_batched_join
 
 PQ_NUM_ROWS = 500_000
 PQ_MAX_INT = 50_000
@@ -260,3 +260,18 @@ def test_ds_metadata_limit_k_sorted(pq_files) -> None:
     assert df.shape == (PQ_NUM_ROWS, 9)
     assert df.get_column("col1")[0] == 0
     assert df.get_column("col1")[-1] == PQ_MAX_INT - 1
+
+
+def test_ds_batched_join(pq_files) -> None:
+    """
+    Test ds_batched_join parquet utility.
+
+    Limited scope here, hopefully expand.
+    """
+    ds = ds_from_path(pq_files)
+
+    match_frame = pl.DataFrame([{"col7": "single_value"}])
+
+    joined_frame = ds_batched_join(ds, match_frame, keys=["col7"], batch_size=10_000)
+
+    assert joined_frame.shape == (PQ_NUM_ROWS, 9)

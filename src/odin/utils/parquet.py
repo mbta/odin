@@ -114,8 +114,32 @@ def pq_rows_per_mb(source: Union[str, Sequence[str]], num_rows: Optional[int] = 
 class RowGroupStats(TypedDict):
     """Incomplete representation of Stats fields, but only ones currently used."""
 
+    has_min_max: bool
     max: Any
     min: Any
+    null_count: int
+    num_values: int
+
+
+def file_column_stats(pq_meta: pq.FileMetaData, column: str) -> list[RowGroupStats]:
+    """
+    Retrieve 'column' statistics from metadata of parquet file.
+
+    :param pq_meta: Metadata of parquet file.
+    :param column: Name of column to retrieve stats for.
+
+    :return: List of RowGroupStats, each List index correspends File RowGroup of same index.
+    """
+    col_index = pq_meta.schema.to_arrow_schema().get_field_index(column)
+    assert col_index >= 0
+    file_stats = []
+    for rg_index in range(pq_meta.num_row_groups):
+        rg_stats: RowGroupStats = (
+            pq_meta.row_group(rg_index).column(col_index).to_dict()["statistics"]  # type: ignore[assignment]
+        )
+        file_stats.append(rg_stats)
+
+    return file_stats
 
 
 def row_group_column_stats(rg_metadata: pq.RowGroupMetaData, column: str) -> RowGroupStats:
@@ -281,8 +305,7 @@ def ds_metadata_min_max(ds: pd.UnionDataset, column: str) -> Tuple[Any, Any]:
                 if column in ds.schema.names and column not in metadata.schema.names:
                     # column in dataset but not fragment file
                     continue
-                for rg_index in range(metadata.num_row_groups):
-                    col_stats = row_group_column_stats(metadata.row_group(rg_index), column)
+                for col_stats in file_column_stats(metadata, column):
                     if col_stats["min"] is not None:
                         column_mins.append(col_stats["min"])
                     if col_stats["max"] is not None:
@@ -440,9 +463,10 @@ def ds_metadata_limit_k_sorted(
             ):
                 continue
             pq_metadata = pq_file.metadata
+            rg_stats = file_column_stats(pq_metadata, sort_column)
             for rg_index in range(pq_metadata.num_row_groups):
                 # filter row group by metadata (min/max sort value only)
-                col_stats = row_group_column_stats(pq_metadata.row_group(rg_index), sort_column)
+                col_stats = rg_stats[rg_index]
                 if col_stats["min"] is None or col_stats["max"] is None:
                     continue
                 if min_sort_value is not None and col_stats["max"] <= min_sort_value:
@@ -521,31 +545,55 @@ def ds_batched_join(
 
     :return: ds records that joined to match_frame as polars Dataframe
     """
-    log = ProcessLog("ds_batched_join", keys="|".join(keys))
+    log = ProcessLog("ds_batched_join", keys="|".join(keys), batch_size=batch_size)
+    match_cols = match_frame.select(keys).unique()
+    log.add_metadata(match_rows=match_cols.height)
+    mod_cast, orig_cast = polars_decimal_as_string(match_cols)
     for key in keys:
-        if match_frame.get_column(key).null_count() == 0:
-            key_min = match_frame.get_column(key).min()
-            key_max = match_frame.get_column(key).max()
+        if match_cols.get_column(key).null_count() == 0:
+            key_min = match_cols.get_column(key).min()
+            key_max = match_cols.get_column(key).max()
             ds = ds.filter((pc.field(key) >= key_min) & (pc.field(key) <= key_max))
             break
-    join_frames = []
-    match_cols = match_frame.select(keys).unique()
-    mod_cast, orig_cast = polars_decimal_as_string(match_cols)
-    match_cols = match_cols.cast(dtypes=mod_cast)  # type: ignore[arg-type]
-    for batch in ds.to_batches(batch_size=batch_size, batch_readahead=0, fragment_readahead=0):
-        if batch.num_rows == 0:
-            continue
-        _df = pl.from_arrow(batch)
-        if isinstance(_df, pl.Series):
-            raise TypeError("Always dataframe.")
-        _df = _df.cast(mod_cast).join(match_cols, on=keys, how="inner", nulls_equal=True)  # type: ignore[arg-type]
-        if _df.shape[0] > 0:
-            join_frames.append(_df)
 
-    if join_frames:
-        return_frame = pl.concat(join_frames, how="diagonal")
+    return_frame = pl.from_arrow(pa.Table.from_pylist([], schema=ds.schema))  # type: ignore[assignment]
+    if match_cols.null_count().sum_horizontal().item() == 0:
+        join_tables = []
+        # perform join operation in pyarrow to constrain memmory
+        # this should work if match_cols conatins no NULL values
+        match_table = match_cols.to_arrow()
+        for batch in ds.to_batches(batch_size=batch_size, batch_readahead=0, fragment_readahead=0):
+            if batch.num_rows == 0:
+                continue
+            _table = pa.Table.from_batches([batch]).join(match_table, keys=keys, join_type="inner")
+            if _table.num_rows > 0:
+                join_tables.append(_table)
+            log.add_metadata(arrow_mem=int(pa.total_allocated_bytes() / (1024 * 1024)))
+        if join_tables:
+            return_frame = pl.from_arrow(pa.concat_tables(join_tables, promote_options="default"))
+
     else:
-        return_frame = pl.from_arrow(pa.Table.from_pylist([], schema=ds.schema))  # type: ignore[assignment]
+        # pyarrow can not perform join operations on columns containing NULL values
+        # if keys columns contain NULL values, use polars for JOIN operation
+        # converting the dataset RecordBatch to polars results in a memory leak because the memory
+        # associated with every polars DataFrame saved to join_frames is retained until the entire
+        # dataset has been iterated through
+        # this is a problem if the join operations ends up taking a very small number of records
+        # from a loarge number of paritions in a very large dataset
+        join_frames = []
+        match_cols = match_cols.cast(dtypes=mod_cast)  # type: ignore[arg-type]
+        for batch in ds.to_batches(batch_size=batch_size, batch_readahead=0, fragment_readahead=0):
+            if batch.num_rows == 0:
+                continue
+            _df = pl.from_arrow(batch)
+            if isinstance(_df, pl.Series):
+                raise TypeError("Always dataframe.")
+            _df = _df.cast(mod_cast).join(match_cols, on=keys, how="inner", nulls_equal=True)  # type: ignore[arg-type]
+            if _df.height > 0:
+                join_frames.append(_df)
+
+        if join_frames:
+            return_frame = pl.concat(join_frames, how="diagonal")
 
     if isinstance(return_frame, pl.Series):
         raise TypeError("Always dataframe.")
