@@ -60,6 +60,11 @@ API_TABLES = [
     "v_tvmstation",
     "v_tvmtable",
     "v_validation_taps",
+    "v_business_entities",  # DEV ONLY July 11, 2025
+    "v_ca_legal_relations",  # DEV ONLY July 11, 2025
+    "v_legal_persons",  # DEV ONLY July 11, 2025
+    "v_ta_ca_relations",  # DEV ONLY July 11, 2025
+    "v_ta_legal_relations",  # DEV ONLY July 11, 2025
 ]
 
 APICounts = list[dict[Literal["jobId", "dataCount"], int]]
