@@ -26,3 +26,4 @@ CUBIC_ODS_REPORTS = f"{ODIN_DATA}/cubic_reports"
 
 # AFC
 AFC_DATA = f"{ODIN_DATA}/afc/api"
+AFC_RESTRICTED = f"{ODIN_DATA}/afc/sb_restricted"

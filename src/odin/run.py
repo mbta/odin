@@ -15,6 +15,7 @@ from odin.ingestion.qlik.cubic_archive import schedule_cubic_archive_qlik
 from odin.ingestion.spare.spare_job import schedule_spare_jobs
 from odin.generate.cubic.ods_fact import schedule_cubic_ods_fact_gen
 from odin.ingestion.afc.afc_archive import schedule_afc_archive
+from odin.ingestion.afc.afc_restricted import schedule_restricted_afc_archive
 from odin.generate.data_dictionary.dictionary import schedule_dictionary
 
 
@@ -64,6 +65,7 @@ def start():
         schedule_cubic_ods_fact_gen(schedule)
     if "afc_archive" in config:
         schedule_afc_archive(schedule)
+        schedule_restricted_afc_archive(schedule)
     if "spare" in config:
         schedule_spare_jobs(schedule, config["spare"])
     if "data_dictionary" in config:
