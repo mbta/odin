@@ -49,7 +49,6 @@ API_TABLES = [
     "v_eventhistory",
     "v_eventtext",
     "v_mainshift",
-    "v_media",
     "v_medium_types",
     "v_person",
     "v_product_templates",
