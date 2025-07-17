@@ -314,7 +314,7 @@ def delete_objects(objects: List[str]):
     return failed_delete
 
 
-def rename_object(from_object: str, to_object: str) -> Optional[str]:
+def rename_object(from_object: str, to_object: str) -> str | None:
     """
     Rename an S3 object as copy and delete operation.
 
@@ -346,18 +346,45 @@ def rename_object(from_object: str, to_object: str) -> Optional[str]:
     return from_object
 
 
-def _thread_rename_object(args: Tuple[str, str]) -> Optional[str]:
-    """Threaded version of rename_object."""
+def _thread_rename_object(args: tuple[str, str]) -> str | None:
+    """
+    Threaded version of `rename_object`.
+
+    :param args: tuple[from_object, to_object]
+
+    :return: 'from_object' if failed, else None
+    """
     from_object, to_object = args
     return rename_object(from_object, to_object)
 
 
+def _rename_objects(rename_tuples=list[tuple[str, str]]) -> list[str]:
+    """
+    Threaded operation to rename list of S3 objects.
+
+    :param rename_tuples: list of tuples[from_object, to_object]
+
+    :return: list of objects that failed to move
+    """
+    failed_rename = []
+    thread_workers = thread_cpus()
+    if len(rename_tuples) > S3_POOL_COUNT:
+        thread_workers = S3_POOL_COUNT
+
+    with ThreadPoolExecutor(max_workers=thread_workers) as pool:
+        for result in pool.map(_thread_rename_object, rename_tuples):
+            if isinstance(result, str):
+                failed_rename.append(result)
+
+    return failed_rename
+
+
 def rename_objects(
-    objects: List[str],
+    objects: list[str],
     to_bucket: str,
-    prepend_prefix: Optional[str] = None,
-    replace_prefix: Optional[str] = None,
-):
+    prepend_prefix: str | None = None,
+    replace_prefix: str | None = None,
+) -> list[str]:
     """
     Rename S3 objects as copy and delete operation.
 
@@ -379,7 +406,6 @@ def rename_objects(
         replace_prefix=replace_prefix,
     )
 
-    failed_rename = []
     to_bucket = to_bucket.replace("s3://", "").split("/", 1)[0]
 
     thread_objects = []
@@ -394,14 +420,7 @@ def rename_objects(
             to_object = os.path.join(to_bucket, replace_prefix, os.path.basename(from_prefix))
         thread_objects.append((obj, to_object))
 
-    thread_workers = thread_cpus()
-    if len(objects) > S3_POOL_COUNT:
-        thread_workers = S3_POOL_COUNT
-
-    with ThreadPoolExecutor(max_workers=thread_workers) as pool:
-        for result in pool.map(_thread_rename_object, thread_objects):
-            if isinstance(result, str):
-                failed_rename.append(result)
+    failed_rename = _rename_objects(thread_objects)
 
     logger.add_metadata(failed_count=len(failed_rename))
     if len(failed_rename) == 0:

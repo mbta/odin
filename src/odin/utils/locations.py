@@ -15,15 +15,15 @@ ODIN_DICTIONARY = f"{ODIN_DATA}/dictionary"
 
 # CUBIC QLIK
 IN_QLIK_PREFIX = "cubic/ods_qlik"
-CUBIC_QLIK_DATA = f"{ODIN_DATA}/cubic_qlik"
+CUBIC_QLIK_DATA = f"{ODIN_DATA}/cubic/ods_history"
 CUBIC_QLIK_ERROR = f"{ODIN_ERROR}/cubic_qlik"
 CUBIC_QLIK_PROCESSED = f"{ODIN_ARCHIVE}/cubic_qlik/processed"
 CUBIC_QLIK_IGNORED = f"{ODIN_ARCHIVE}/cubic_qlik/ignored"
 
 # CUBIC ODS FACT
-CUBIC_ODS_FACT_DATA = f"{ODIN_DATA}/cubic_ods"
-CUBIC_ODS_REPORTS = f"{ODIN_DATA}/cubic_reports"
+CUBIC_ODS_FACT_DATA = f"{ODIN_DATA}/cubic/ods"
+CUBIC_ODS_REPORTS = f"{ODIN_DATA}/cubic/reports"
 
 # AFC
-AFC_DATA = f"{ODIN_DATA}/afc/api"
-AFC_RESTRICTED = f"{ODIN_DATA}/afc/sb_restricted"
+AFC_DATA = f"{ODIN_DATA}/sb/api"
+AFC_RESTRICTED = f"{ODIN_DATA}/sb/restricted"
