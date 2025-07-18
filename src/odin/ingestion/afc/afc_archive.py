@@ -41,13 +41,16 @@ NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 
 API_ROOT = "https://dwhexperianceapi-production.ir-e1.cloudhub.io/api/v1/datawarehouse"
 
-# Table returned by `tableinfos` endpoint as of July 9, 2025
+# Table returned by `tableinfos` endpoint as of July 18, 2025
 API_TABLES = [
+    "v_business_entities",
+    "v_ca_legal_relations",
     "v_card",
     "v_deviceclass",
     "v_eventgroup",
     "v_eventhistory",
     "v_eventtext",
+    "v_legal_persons",
     "v_mainshift",
     "v_medium_types",
     "v_person",
@@ -56,15 +59,12 @@ API_TABLES = [
     "v_sales_txns",
     "v_shiftevent",
     "v_stop_points",
+    "v_ta_ca_relations",
+    "v_ta_legal_relations",
     "v_trips",
     "v_tvmstation",
     "v_tvmtable",
     "v_validation_taps",
-    "v_business_entities",  # DEV ONLY July 11, 2025
-    "v_ca_legal_relations",  # DEV ONLY July 11, 2025
-    "v_legal_persons",  # DEV ONLY July 11, 2025
-    "v_ta_ca_relations",  # DEV ONLY July 11, 2025
-    "v_ta_legal_relations",  # DEV ONLY July 11, 2025
 ]
 
 APICounts = list[dict[Literal["jobId", "dataCount"], int]]
