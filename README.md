@@ -43,21 +43,44 @@ Run the [config_venv.sh](config_venv.sh) script after a repository clone, or aft
 ./config_venv.sh
 ```
 
+### Updating Package Versions
+
+To update a specific python package version, update [pyproject.toml](pyproject.toml) by adding `==PKG_VER_NUM` (to pin version) or `>=PKG_VER_NUM` to the package dependency declaration. 
+
+Then re-run the [config_venv.sh](config_venv.sh) script to update the requirements.txt files and commit the changes.
+
+## Continuous Integration
+
+Testing:
+```sh
+pytest tests
+```
+
+Formatter:
+```sh
+ruff format
+```
+
+Linter:
+```sh
+ruff check
+```
+
+Type checking:
+```sh
+mypy .
+```
+
+## Running the application.
+
+It is NOT recommended to run the entire application locally. Most jobs modify objects in S3 and may compete with alternate versions of the application already running on AWS.
+
+`docker` can be used to run a containerized version of the application.
+
+Running `start-odin` from the CLI will start the application.
+
 ## Job Configuration
 
 Which jobs to run, and their configuration, is controlled by a file `config.toml`. (It can also be passed in as an environment variable `ODIN_CONFIG`).
 
 Copy `config.toml.template` to `config.toml`, then uncomment the jobs you want to be started when the application starts.
-
-## Running the application.
-
-For local development, it's recommended to use `docker` to run  a containerized version of the application.
-
-It's also possible to run the run the application with `start-odin`.
-
-Take care, it is possible for a local version of the application to modify files in s3, if you have permissions and the application is configured that way.
-
-- Run tests with `pytest tests`
-- Run the formatter with `ruff format`
-- Run lints with `ruff check`
-- Run typechecking with `mypy .`
