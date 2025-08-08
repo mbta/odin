@@ -406,6 +406,13 @@ class CubicODSFact(OdinJob):
             part_columns = None
         insert_path = os.path.join(self.tmpdir, "temp_insert.parquet")
         insert_df.write_parquet(insert_path)
+        # TODO: This process creates an entire new copy of all `fact_ds` parquet files with all
+        # UPDATE and DELETE Records removed. This could be done much more efficiently by only
+        # re-writing parquet files that contain `odin_index` records being touched.
+        # This would probably require a re-writing of the `ds_batch_join` function to also return
+        # a list of parquet files with matching JOIN records.
+        # If a single parquet dataset grows larger than the disk space available in the ECS, this
+        # process will also likely begin to fail.
         sync_paths = pq_dataset_writer(
             fact_ds.filter(sync_filter),
             partition_columns=part_columns,
