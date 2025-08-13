@@ -134,6 +134,12 @@ class ArchiveCubicQlikTable(OdinJob):
                     download_object(found_objs[-1].path, destination)
                     sync_paths.append(destination)
 
+        # TODO: This process could be improved by not ALWAYS merging new data into existing parquet
+        # files. Be default, new append-only data could be written straigh to the dataset as new
+        # files and then once a threshold is hit (number of dataset files under max size limit)
+        # the files would begin to be merged together. Basically an automatic sweeping function
+        # that cleans-up/merges parquet files for better read performance at expected intervals.
+
         # Create new merged parquet file(s)
         new_paths = pq_dataset_writer(
             source=ds_from_path(sync_paths + tmp_paths),

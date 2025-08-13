@@ -69,7 +69,7 @@ class OdinJob(ABC):
             return_val.value = run_delay_secs
 
 
-def job_proc_schedule(job: OdinJob, schedule: sched.scheduler) -> None:
+def job_proc_schedule(job: OdinJob, schedule: sched.scheduler | None) -> None:
     """
     Odin Job Runner as Process.
 
@@ -80,8 +80,11 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler) -> None:
     killed by the machine kernel because of something like an OOM error. The exitcode of each
     process is checked and all non 0 codes are logged as job failures.
 
+    Jobs can be run on an ad-hoc basis, for development purposes by calling this function with
+    `schedule=None`.
+
     :param job: Job to be run and re-scheduled
-    :param schedule: main application scheduler
+    :param schedule: main application scheduler (or None to run Job once)
     """
     return_manager = get_context("spawn").Manager()
     proc_return_val = return_manager.Value("i", NEXT_RUN_FAILED)
@@ -98,4 +101,5 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler) -> None:
         fail_log.failed(SystemError("OdinJob killed by ECS."))
         proc_return_val.value = NEXT_RUN_FAILED
 
-    schedule.enter(proc_return_val.value, 1, job_proc_schedule, (job, schedule))
+    if schedule is not None:
+        schedule.enter(proc_return_val.value, 1, job_proc_schedule, (job, schedule))
