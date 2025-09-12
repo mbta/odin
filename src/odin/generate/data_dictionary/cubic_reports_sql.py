@@ -187,7 +187,7 @@ COMP_D_VIEW = """
 """
 
 
-LATE_TAP_ADJUSTMENT = """
+WC320_LATE_TAP_ADJUSTMENT = """
     SELECT
         s.settlement_day_key
         ,s.operating_day_key
@@ -451,8 +451,8 @@ WC321_CLEARING_HOUSE = """
 
 
 WA160 = """
-    DROP VIEW IF EXISTS cubic_reports.wa_160;
-    CREATE VIEW cubic_reports.wa_160
+    DROP VIEW IF EXISTS cubic_reports.wa160;
+    CREATE VIEW cubic_reports.wa160
     AS
     SELECT
         strptime(posting_day_key::varchar,'%Y%m%d')::date as posting_date,
