@@ -68,7 +68,7 @@ dataset_views = [
 
 cubic_report_mat_views = [
     {"name": "comp_b_addendum", "query": cubic_sql.COMP_B_ADDENDUM},
-    {"name": "late_tap_adjustment", "query": cubic_sql.LATE_TAP_ADJUSTMENT},
+    {"name": "wc320_late_tap_adjustment", "query": cubic_sql.WC320_LATE_TAP_ADJUSTMENT},
 ]
 
 cubic_report_views = [
