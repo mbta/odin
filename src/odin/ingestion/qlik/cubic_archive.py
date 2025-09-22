@@ -322,7 +322,7 @@ class ArchiveCubicQlikTable(OdinJob):
                 assert file_to_download.startswith(f"{DATA_ARCHIVE}/{IN_QLIK_PREFIX}")
                 download_location = file_to_download.replace(
                     f"{DATA_ARCHIVE}/{IN_QLIK_PREFIX}",
-                    f"{DATA_ARCHIVE}/{CUBIC_QLIK_PROCESSED}/{IN_QLIK_PREFIX}"
+                    f"{DATA_ARCHIVE}/{CUBIC_QLIK_PROCESSED}/{IN_QLIK_PREFIX}",
                 )
                 download_object(file_to_download, download_location)
         else:

@@ -162,7 +162,6 @@ class CubicODSFact(OdinJob):
         if running_in_aws():
             self.save_local = False
 
-
     def snapshot_check(self) -> None:
         """Check if new or ongoing snapshot"""
         history_snapshots = list_partitions(self.s3_source)
@@ -227,7 +226,6 @@ class CubicODSFact(OdinJob):
             move_path = new_path.replace(f"{self.tmpdir}/", "")
             upload_file(new_path, move_path)
 
-
     def dfm_from_cdc_records(self, cdc_df: pl.DataFrame) -> QlikDFM:
         """
         Produce Qlik DFM record from CDC Dataframe.
@@ -250,7 +248,6 @@ class CubicODSFact(OdinJob):
             return dfm_from_local
         else:
             return dfm_from_s3(dfm_path)
-
 
     def load_new_snapshot(self) -> None:
         """Load new snapshot from history tables"""
