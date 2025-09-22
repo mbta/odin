@@ -42,6 +42,7 @@ from odin.utils.locations import CUBIC_QLIK_DATA
 from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import DATA_ARCHIVE
 from odin.utils.locations import CUBIC_QLIK_PROCESSED
+from odin.utils.locations import IN_QLIK_PREFIX
 from odin.utils.parquet import pq_dataset_writer
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_unique_values
@@ -313,11 +314,20 @@ class ArchiveCubicQlikTable(OdinJob):
 
     def move_objects(self) -> None:
         """Move objects to Archive location"""
-        if self.save_local:
-            return
         dfm_archive = [s.replace(".csv.gz", ".dfm") for s in self.archive_objects]
         to_archive = self.archive_objects + dfm_archive
-        rename_objects(to_archive, DATA_ARCHIVE, prepend_prefix=CUBIC_QLIK_PROCESSED)
+        if self.save_local:
+            # if running locally, files will be moved to local disk
+            for file_to_download in to_archive:
+                assert file_to_download.startswith(f"{DATA_ARCHIVE}/{IN_QLIK_PREFIX}")
+                download_location = file_to_download.replace(
+                    f"{DATA_ARCHIVE}/{IN_QLIK_PREFIX}",
+                    f"{DATA_ARCHIVE}/{CUBIC_QLIK_PROCESSED}/{IN_QLIK_PREFIX}"
+                )
+                download_object(file_to_download, download_location)
+        else:
+            # if running in AWS, rename
+            rename_objects(to_archive, DATA_ARCHIVE, prepend_prefix=CUBIC_QLIK_PROCESSED)
 
     def run(self) -> int:
         """

@@ -2,6 +2,7 @@ import os
 import sched
 from typing import List
 from typing import Tuple
+import json
 
 import polars as pl
 import pyarrow as pa
@@ -35,6 +36,7 @@ from odin.utils.aws.s3 import upload_file
 from odin.ingestion.qlik.dfm import dfm_from_s3
 from odin.ingestion.qlik.dfm import QlikDFM
 from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES
+from odin.utils.aws.ecs import running_in_aws
 
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
 NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
@@ -138,23 +140,6 @@ def cdc_to_fact(
     return (insert_df, update_df.cast(orig_cast), delete_df)
 
 
-def dfm_from_cdc_records(cdc_df: pl.DataFrame) -> QlikDFM:
-    """
-    Produce Qlik DFM record from CDC Dataframe.
-
-    Will produce QlikDFM for last available csv file found in cdc_df. This QlikDFM information
-    will be used to determine keys to be used for CDC-> Fact table operations.
-
-    :param cdc_df: Dataframe of CDC records from qlik history dataset
-
-    :return: dfm contents as TypedDict
-    """
-    dfm_path = str(cdc_df.get_column("header__from_csv").max())
-    dfm_path = dfm_path.replace("s3://", "").split("/", 1)[-1]
-    dfm_path = os.path.join(DATA_ARCHIVE, CUBIC_QLIK_PROCESSED, dfm_path)
-    return dfm_from_s3(dfm_path)
-
-
 class CubicODSFact(OdinJob):
     """Create/Update Cubic ODS Fact tables"""
 
@@ -173,6 +158,11 @@ class CubicODSFact(OdinJob):
             "snapshot",
         ]
 
+        self.save_local = True
+        if running_in_aws():
+            self.save_local = False
+
+
     def snapshot_check(self) -> None:
         """Check if new or ongoing snapshot"""
         history_snapshots = list_partitions(self.s3_source)
@@ -180,7 +170,10 @@ class CubicODSFact(OdinJob):
             raise NoQlikHistoryError("No history snapshots available.")
         self.history_snapshot = history_snapshots[-1].replace("snapshot=", "")
         self.snapshot_source = f"{self.s3_source}/snapshot={self.history_snapshot}/"
-        self.history_ds = ds_from_path(f"s3://{self.snapshot_source}")
+        if self.save_local:
+            self.history_ds = ds_from_path(os.path.abspath(self.snapshot_source))
+        else:
+            self.history_ds = ds_from_path(f"s3://{self.snapshot_source}")
 
         self.part_columns = []
         if "edw_inserted_dtm" in self.history_ds.schema.names:
@@ -233,6 +226,31 @@ class CubicODSFact(OdinJob):
         for new_path in new_paths:
             move_path = new_path.replace(f"{self.tmpdir}/", "")
             upload_file(new_path, move_path)
+
+
+    def dfm_from_cdc_records(self, cdc_df: pl.DataFrame) -> QlikDFM:
+        """
+        Produce Qlik DFM record from CDC Dataframe.
+
+        Will produce QlikDFM for last available csv file found in cdc_df. This QlikDFM information
+        will be used to determine keys to be used for CDC-> Fact table operations.
+
+        :param cdc_df: Dataframe of CDC records from qlik history dataset
+
+        :return: dfm contents as TypedDict
+        """
+        dfm_path = str(cdc_df.get_column("header__from_csv").max())
+        dfm_path = dfm_path.replace("s3://", "").split("/", 1)[-1]
+        dfm_path = os.path.join(DATA_ARCHIVE, CUBIC_QLIK_PROCESSED, dfm_path)
+
+        if self.save_local:
+            dfm_path = dfm_path.replace(".csv.gz", ".dfm").replace(".csv", ".dfm")
+            with open(dfm_path, "r") as dfm_path_tmp:
+                dfm_from_local = json.load(dfm_path_tmp)
+            return dfm_from_local
+        else:
+            return dfm_from_s3(dfm_path)
+
 
     def load_new_snapshot(self) -> None:
         """Load new snapshot from history tables"""
@@ -303,7 +321,10 @@ class CubicODSFact(OdinJob):
 
         "B" Records are ignored for this process as they do not contain any relevant information.
         """
-        fact_ds = ds_from_path(f"s3://{self.s3_export}/")
+        if self.save_local:
+            fact_ds = ds_from_path(os.path.abspath(self.s3_export))
+        else:
+            fact_ds = ds_from_path(f"s3://{self.s3_export}/")
         _, max_fact_seq = ds_metadata_min_max(fact_ds, "header__change_seq")
         cdc_filter = (
             (pc.field("header__change_oper") == "I")
@@ -322,7 +343,7 @@ class CubicODSFact(OdinJob):
         if cdc_df.height == 0:
             return NEXT_RUN_LONG
 
-        dfm = dfm_from_cdc_records(cdc_df)
+        dfm = self.dfm_from_cdc_records(cdc_df)
         keys = [
             col["name"].lower() for col in dfm["dataInfo"]["columns"] if col["primaryKeyPos"] > 0
         ]
