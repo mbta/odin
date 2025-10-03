@@ -463,7 +463,7 @@ class ArchiveAFCAPI(OdinJob):
         self.req_pool = urllib3.PoolManager(
             headers=self.headers,
             timeout=urllib3.Timeout(total=60 * 10),  # 10 minute total timeout
-            retries=False,  # No retires, if retry-able failures are documented, can be updated
+            retries=False,  # No retries, if retry-able failures are documented, can be updated
         )
         self.setup_job()
         self.load_job_ids()
