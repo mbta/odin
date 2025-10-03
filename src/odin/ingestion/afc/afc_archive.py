@@ -232,9 +232,9 @@ class ArchiveAFCAPI(OdinJob):
         self.schema = make_pl_schema(schemas_dict[self.table])
 
         # Override make_pl_schema for v_validation_taps
-        if self.table == 'v_validation_taps':
-            self.schema['valid'] = pl.Boolean()
-            self.schema['onlineprocessingstatus'] = pl.Boolean()
+        if self.table == "v_validation_taps":
+            self.schema["valid"] = pl.Boolean()
+            self.schema["onlineprocessingstatus"] = pl.Boolean()
 
         # columns to be converted to datetime types
         # default polars datetime parser can not understand S&B timestamp string format
