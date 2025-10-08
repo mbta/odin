@@ -39,7 +39,7 @@ class APIEmptyResponseError(Exception):
 
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 
-API_ROOT = "https://dwhexperianceapi-production.ir-e1.cloudhub.io/api/v1/datawarehouse"
+API_ROOT = os.getenv("AFC_API_ROOT", "")
 
 # Table returned by `tableinfos` endpoint as of July 18, 2025
 API_TABLES = [
