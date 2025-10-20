@@ -41,7 +41,7 @@ NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 
 API_ROOT = os.getenv("AFC_ROOT", "")
 
-# Table returned by `tableinfos` endpoint as of July 18, 2025
+# Table returned by `tableinfos` endpoint as of October 20, 2025
 API_TABLES = [
     "v_business_entities",
     "v_ca_legal_relations",
