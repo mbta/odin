@@ -117,7 +117,7 @@ class DatasetDictionary:
 
 def generate_dictionary(
     path: str,
-    column_descriptions_by_table = None,
+    column_descriptions_by_table=None,
 ) -> Generator[dict[str, Any]]:
     """Recursively generate DatabaseDictionary objects."""
     path_parts = list_partitions(path)
@@ -127,14 +127,10 @@ def generate_dictionary(
             if not column_descriptions_by_table:
                 column_descriptions_by_table = {}
             column_descriptions = column_descriptions_by_table.get(dataset_name)
-            yield asdict(
-                DatasetDictionary(ds_path=path, column_descriptions=column_descriptions)
-            )
+            yield asdict(DatasetDictionary(ds_path=path, column_descriptions=column_descriptions))
     else:
         for part in path_parts:
-            yield from generate_dictionary(
-                os.path.join(path, part), column_descriptions_by_table
-            )
+            yield from generate_dictionary(os.path.join(path, part), column_descriptions_by_table)
 
 
 class DataDictionary(OdinJob):
