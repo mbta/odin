@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from dataclasses import asdict
 from typing import Generator
 from typing import Any
+import urllib3
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -22,6 +23,45 @@ from odin.generate.data_dictionary.duck_db import create_fares_db
 
 NEXT_RUN_DEFAULT = 60 * 60 * 24  # 24 hours
 ODIN_ROOT = f"s3://{os.path.join(DATA_SPRINGBOARD, ODIN_DATA)}"
+AFC_ROOT = os.getenv("AFC_ROOT", "")
+
+
+def fetch_AFC_column_descriptions() -> dict[str, dict[str, str | None]]:
+    """Fetch column descriptions from AFC tableinfos endpoint."""
+    if not AFC_ROOT:
+        return {}
+
+    headers = {
+        "client_id": os.getenv("AFC_API_CLIENT_ID", ""),
+        "client_secret": os.getenv("AFC_API_CLIENT_SECRET", ""),
+    }
+
+    try:
+        pool = urllib3.PoolManager(
+            headers=headers,
+            timeout=urllib3.Timeout(total=60),
+            retries=False,
+        )
+        response = pool.request("GET", f"{AFC_ROOT}/tableinfos")
+
+        if response.status != 200:
+            return {}
+
+        column_descriptions = {}
+        for table_dict in response.json():
+            for table_name, table_info in table_dict.items():
+                table_columns = table_info.get("table_infos", [])
+                column_descriptions[table_name] = {}
+                for col in table_columns:
+                    column_name = col.get("column_name")
+                    if column_name:
+                        remarks = col.get("remarks")
+                        column_descriptions[table_name][column_name] = remarks
+
+        return column_descriptions
+
+    except Exception as e:
+        return {}
 
 
 @dataclass
@@ -31,15 +71,17 @@ class DatasetField:
     column_name: str
     column_type: str
     is_partition: bool
+    column_description: str | None
 
-    def __init__(self, column: pa.Field) -> None:
+    def __init__(self, column: pa.Field, description: str | None = None) -> None:
         """Create DatasetField from pyarrow field."""
         self.column_type = str(column.type)
         if isinstance(column.type, pa.DictionaryType):
             self.column_type = str(column.type.value_type)
         self.column_name = column.name
-        # in testing DictionaryType is always partition column, futher testing may change this...
+        # in testing DictionaryType is always partition column, further testing may change this...
         self.is_partition = isinstance(column.type, pa.DictionaryType)
+        self.column_description = description
 
 
 @dataclass
@@ -53,7 +95,11 @@ class DatasetDictionary:
     child_files: list[str]
     schema: list[DatasetField]
 
-    def __init__(self, ds_path: str) -> None:
+    def __init__(
+        self,
+        ds_path: str,
+        column_descriptions: dict[str, str | None] | None = None,
+    ) -> None:
         """Create DatasetDictionary from datset path."""
         data_objects = list_objects(ds_path, in_filter=".parquet")
         self.dataset_group = os.path.dirname(ds_path).replace(ODIN_ROOT, "").strip("/")
@@ -61,18 +107,34 @@ class DatasetDictionary:
         self.dataset_path = ds_path
         self.size_mb = int(sum([obj.size_bytes for obj in data_objects]) / (1024 * 1024))
         self.child_files = [obj.path for obj in data_objects]
-        self.schema = [DatasetField(c) for c in pq.ParquetDataset(ds_path).schema]
+        if not column_descriptions:
+            column_descriptions = {}
+        self.schema = [
+            DatasetField(c, column_descriptions.get(c.name))
+            for c in pq.ParquetDataset(ds_path).schema
+        ]
 
 
-def generate_dictionary(path: str) -> Generator[dict[str, Any]]:
+def generate_dictionary(
+    path: str,
+    column_descriptions_by_table = None,
+) -> Generator[dict[str, Any]]:
     """Recursively generate DatabaseDictionary objects."""
     path_parts = list_partitions(path)
     if len(path_parts) == 0 or "=" in "".join(path_parts):
         if list_objects(path, in_filter=".parquet"):
-            yield asdict(DatasetDictionary(ds_path=path))
+            dataset_name = os.path.basename(path)
+            if not column_descriptions_by_table:
+                column_descriptions_by_table = {}
+            column_descriptions = column_descriptions_by_table.get(dataset_name)
+            yield asdict(
+                DatasetDictionary(ds_path=path, column_descriptions=column_descriptions)
+            )
     else:
         for part in path_parts:
-            yield from generate_dictionary(os.path.join(path, part))
+            yield from generate_dictionary(
+                os.path.join(path, part), column_descriptions_by_table
+            )
 
 
 class DataDictionary(OdinJob):
@@ -98,7 +160,14 @@ class DataDictionary(OdinJob):
         }
         """
         # Create and upload Data Dictionary json file.
-        data_dictionary = [d for d in generate_dictionary(ODIN_ROOT)]
+        column_descriptions = fetch_AFC_column_descriptions()
+        data_dictionary = [
+            d
+            for d in generate_dictionary(
+                ODIN_ROOT,
+                column_descriptions_by_table=column_descriptions,
+            )
+        ]
 
         json_tmp = os.path.join(self.tmpdir, "temp.json")
         with open(json_tmp, "w") as json_writer:
