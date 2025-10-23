@@ -16,6 +16,7 @@ from odin.utils.aws.ecs import AWS_ENV
 from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import ODIN_DATA
 from odin.utils.locations import ODIN_DICTIONARY
+from odin.utils.logger import ProcessLog
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import list_partitions
 from odin.utils.aws.s3 import upload_file
@@ -28,6 +29,8 @@ AFC_ROOT = os.getenv("AFC_ROOT", "")
 
 def fetch_AFC_column_descriptions() -> dict[str, dict[str, str | None]]:
     """Fetch column descriptions from AFC tableinfos endpoint."""
+    log = ProcessLog("fetch_AFC_column_descriptions")
+
     if not AFC_ROOT:
         return {}
 
@@ -47,7 +50,7 @@ def fetch_AFC_column_descriptions() -> dict[str, dict[str, str | None]]:
         if response.status != 200:
             return {}
 
-        column_descriptions = {}
+        column_descriptions: dict[str, dict[str, str | None]] = {}
         for table_dict in response.json():
             for table_name, table_info in table_dict.items():
                 table_columns = table_info.get("table_infos", [])
@@ -60,7 +63,8 @@ def fetch_AFC_column_descriptions() -> dict[str, dict[str, str | None]]:
 
         return column_descriptions
 
-    except Exception as e:
+    except Exception as exception:
+        log.failed(exception=exception)
         return {}
 
 
