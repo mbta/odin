@@ -314,9 +314,9 @@ COMP_B_ADDENDUM = """
 # This report is essentially a supplemented version of the CCH_AFC_TRANSACTION table...
 # TODO: The name of the CASE statement rows is currently unknown.
 WC231_CLEARING_HOUSE = """
-    DROP VIEW IF EXISTS cubic_reports.wc_231_clearing_house;
+    DROP VIEW IF EXISTS cubic_reports.wc231_clearing_house;
     DROP VIEW IF EXISTS cubic_reports.wc_321_clearing_house;
-    CREATE VIEW cubic_reports.wc_231_clearing_house
+    CREATE VIEW cubic_reports.wc231_clearing_house
     AS
     SELECT
         CCH_STAGE_CATEGORY.CATEGORY_NAME,
@@ -560,8 +560,8 @@ AD_HOC_JOURNAL_ENTRIES = """
 """
 
 WC231_PASS_ID_ADHOC = """
-    DROP VIEW IF EXISTS cubic_reports.wc_231_pass_id_adhoc;
-    CREATE VIEW cubic_reports.wc_231_pass_id_adhoc
+    DROP VIEW IF EXISTS cubic_reports.wc231_pass_id_adhoc;
+    CREATE VIEW cubic_reports.wc231_pass_id_adhoc
     AS
     SELECT
         CCH_STAGE_CATEGORY.CATEGORY_NAME,
