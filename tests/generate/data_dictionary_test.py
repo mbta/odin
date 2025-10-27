@@ -110,7 +110,10 @@ def test_generate_dictionary_schema_with_descriptions(pq_file):
         },
     }
     with patch("odin.generate.data_dictionary.dictionary.ODIN_ROOT", pq_file):
-        result = [d for d in generate_dictionary(pq_file, column_descriptions_by_table=column_descriptions)]
+        result = [
+            d
+            for d in generate_dictionary(pq_file, column_descriptions_by_table=column_descriptions)
+        ]
     schema = {field["column_name"]: field["column_description"] for field in result[0]["schema"]}
     assert schema["int_col"] == "Column containing ints"
     assert schema["string_col"] == "Column containing strings"
