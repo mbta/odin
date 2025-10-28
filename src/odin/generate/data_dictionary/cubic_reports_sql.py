@@ -315,7 +315,6 @@ COMP_B_ADDENDUM = """
 # TODO: The name of the CASE statement rows is currently unknown.
 WC231_CLEARING_HOUSE = """
     DROP VIEW IF EXISTS cubic_reports.wc231_clearing_house;
-    DROP VIEW IF EXISTS cubic_reports.wc_321_clearing_house;
     CREATE VIEW cubic_reports.wc231_clearing_house
     AS
     SELECT
