@@ -121,7 +121,7 @@ class DatasetDictionary:
 
 def generate_dictionary(
     path: str,
-    column_descriptions_by_table=None,
+    column_descriptions_by_table: dict[str, dict[str, str | None]] | None = None,
 ) -> Generator[dict[str, Any]]:
     """Recursively generate DatabaseDictionary objects."""
     path_parts = list_partitions(path)
