@@ -1,9 +1,3 @@
-# TODO
-# 1) Decide on approach for data type casting/scrubbing (in memory with Polars, streaming from disk)
-# 2) Implement hive partition handling for S3 Parquet paths
-# 3) Add list to keep track of tables to publish
-# 4) Append data to existing Tableau datasources instead of overwriting
-
 import os
 import boto3
 import pyarrow
@@ -21,6 +15,8 @@ from tableauhyperapi import (
     Telemetry,
     escape_string_literal,
 )
+
+S3_BUCKET = "mbta-ctd-dataplatform-springboard" # TODO: move to env var
 
 TABLES_TO_SYNC = [
     "EDW.JOURNAL_ENTRY",
@@ -45,8 +41,6 @@ SCRUB_RULES = {
         "drops": {},
     },
 }
-
-S3_BUCKET = "mbta-ctd-dataplatform-springboard"
 
 
 def download_parquet(local_path: str, s3_bucket: str, s3_object_key: str) -> None:
