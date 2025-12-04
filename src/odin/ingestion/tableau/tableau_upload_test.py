@@ -16,7 +16,7 @@ from tableauhyperapi import (
     escape_string_literal,
 )
 
-S3_BUCKET = "mbta-ctd-dataplatform-springboard" # TODO: move to env var
+S3_BUCKET = "mbta-ctd-dataplatform-springboard"  # TODO: move to env var
 
 TABLES_TO_SYNC = [
     "EDW.JOURNAL_ENTRY",
@@ -44,7 +44,7 @@ SCRUB_RULES = {
 
 
 def download_parquet(local_path: str, s3_bucket: str, s3_object_key: str) -> None:
-    print(f'Downloading Parquet file from s3://{s3_bucket}/{s3_object_key} to {local_path}...')
+    print(f"Downloading Parquet file from s3://{s3_bucket}/{s3_object_key} to {local_path}...")
     s3_client = boto3.client("s3")
     s3_client.download_file(Bucket=s3_bucket, Key=s3_object_key, Filename=local_path)
 
@@ -83,20 +83,26 @@ def convert_parquet_dtype(dtype: pyarrow.DataType) -> SqlType:
 
 def parquet_schema_to_hyper_definition(parquet_path: str, table_name: str) -> TableDefinition:
     """Create Tableau Hyper table definition from parquet schema"""
-
     schema = pq.read_schema(parquet_path, filesystem=fs.LocalFileSystem())
 
-    columns = [TableDefinition.Column(field.name, convert_parquet_dtype(field.type)) for field in schema]
+    columns = [
+        TableDefinition.Column(field.name, convert_parquet_dtype(field.type)) for field in schema
+    ]
     return TableDefinition(table_name="public." + table_name.replace(" ", "_"), columns=columns)
 
 
 def build_hyper_from_parquet(
-        parquet_filepath: str,
-        hyper_filepath: str,
-        table_def: TableDefinition) -> None:
+    parquet_filepath: str, hyper_filepath: str, table_def: TableDefinition
+) -> None:
     """Build Tableau Hyper extract from Parquet file"""
-    with HyperProcess(telemetry=Telemetry.DO_NOT_SEND_USAGE_DATA_TO_TABLEAU, parameters={"log_config": ""}) as hyper:
-        with Connection(endpoint=hyper.endpoint, database=hyper_filepath, create_mode=CreateMode.CREATE_AND_REPLACE) as conn:
+    with HyperProcess(
+        telemetry=Telemetry.DO_NOT_SEND_USAGE_DATA_TO_TABLEAU, parameters={"log_config": ""}
+    ) as hyper:
+        with Connection(
+            endpoint=hyper.endpoint,
+            database=hyper_filepath,
+            create_mode=CreateMode.CREATE_AND_REPLACE,
+        ) as conn:
             conn.catalog.create_table(table_definition=table_def)
             copy_cmd = (
                 f"COPY {table_def.table_name} "
@@ -109,14 +115,20 @@ def build_hyper_from_parquet(
 
 
 def resolve_project_id(server, path):
-    """Given a path, resolve Tableau project and return its ID.
-    Necessary for nested projects, as project names are not unique in Tableau."""
+    """
+    Given a path, resolve Tableau project and return its ID.
+    Necessary for nested projects, as project names are not unique in Tableau.
+    """
     options = TSC.RequestOptions(pagesize=1000)
     projects, _ = server.projects.get(options)
     parent = None
     for name in path.split("/"):
         parent = next(
-            (proj for proj in projects if proj.name == name and proj.parent_id == (parent.id if parent else None)),
+            (
+                proj
+                for proj in projects
+                if proj.name == name and proj.parent_id == (parent.id if parent else None)
+            ),
             None,
         )
         if parent is None:
@@ -126,10 +138,11 @@ def resolve_project_id(server, path):
 
 
 def publish_hyper_to_tableau(
-        hyper_filepath: str,
-        datasource_name: str,
-        project_name: str,
-        server_url: str,) -> None:
+    hyper_filepath: str,
+    datasource_name: str,
+    project_name: str,
+    server_url: str,
+) -> None:
     """Publish Tableau Hyper extract to Tableau Server"""
     tableau_auth = TSC.PersonalAccessTokenAuth(
         os.environ["TABLEAU_PERSONAL_ACCESS_TOKEN_NAME"],
@@ -141,13 +154,17 @@ def publish_hyper_to_tableau(
     with server.auth.sign_in(tableau_auth):
         project_id = resolve_project_id(server, project_name)
         datasource_item = TSC.DatasourceItem(project_id=project_id, name=datasource_name)
-        server.datasources.publish(datasource_item, hyper_filepath, mode=TSC.Server.PublishMode.Overwrite)
+        server.datasources.publish(
+            datasource_item, hyper_filepath, mode=TSC.Server.PublishMode.Overwrite
+        )
 
 
 def scrub_parquet(parquet_path: str, datasource_name: str) -> str:
-    """Cast/drop columns in Parquet file according to SCRUB_RULES
+    """
+    Cast/drop columns in Parquet file according to SCRUB_RULES
     Processes parquet files in memory with Polars
-    Larger files/updates should use a streaming approach instead."""
+    Larger files/updates should use a streaming approach instead.
+    """
     rules = SCRUB_RULES.get(datasource_name, {"casts": {}, "drops": set()})
     df = pl.read_parquet(parquet_path)
 
@@ -169,10 +186,10 @@ def scrub_parquet(parquet_path: str, datasource_name: str) -> str:
 
 
 def upload_tableau_table(table_name: str) -> None:
-    s3_object_key = f"odin/data/cubic/ods/{table_name}/odin_year=2023/year_001.parquet" # using older/smaller subset for testing
+    s3_object_key = f"odin/data/cubic/ods/{table_name}/odin_year=2023/year_001.parquet"  # using older/smaller subset for testing
 
-    parquet_filepath = f'{table_name}.parquet'
-    hyper_filepath = f'{table_name}.hyper'
+    parquet_filepath = f"{table_name}.parquet"
+    hyper_filepath = f"{table_name}.hyper"
 
     # Download Parquet file from S3
     download_parquet(parquet_filepath, S3_BUCKET, s3_object_key)
@@ -184,7 +201,9 @@ def upload_tableau_table(table_name: str) -> None:
     # For testing, taking small chunk of data and overwriting existing datasources
     if table_name == "EDW.DEVICE_EVENT":
         df = pl.read_parquet(scrubbed_filepath)
-        df.filter(pl.col("staging_inserted_dtm") > datetime(2023, 10, 6, 0, 0, 0)).write_parquet(scrubbed_filepath, compression="snappy")
+        df.filter(pl.col("staging_inserted_dtm") > datetime(2023, 10, 6, 0, 0, 0)).write_parquet(
+            scrubbed_filepath, compression="snappy"
+        )
 
     # Create Tableau Hyper table definition from Parquet schema
     table_def = parquet_schema_to_hyper_definition(scrubbed_filepath, table_name)
@@ -193,15 +212,15 @@ def upload_tableau_table(table_name: str) -> None:
     build_hyper_from_parquet(scrubbed_filepath, hyper_filepath, table_def)
 
     # Publish to Tableau
-    os.environ["TABLEAU_SERVER_URL"] = 'https://awdatatest.mbta.com/' # hardcoding test server
-    os.environ["TABLEAU_SITE_ID"] = '' # default site
-    os.environ["TABLEAU_WORKBOOK_PROJECT"] = 'Technology Innovation/odin_rest_api_test'
+    os.environ["TABLEAU_SERVER_URL"] = "https://awdatatest.mbta.com/"  # hardcoding test server
+    os.environ["TABLEAU_SITE_ID"] = ""  # default site
+    os.environ["TABLEAU_WORKBOOK_PROJECT"] = "Technology Innovation/odin_rest_api_test"
 
     publish_hyper_to_tableau(
-            hyper_filepath,
-            table_name,
-            os.environ["TABLEAU_WORKBOOK_PROJECT"],
-            os.environ["TABLEAU_SERVER_URL"],
+        hyper_filepath,
+        table_name,
+        os.environ["TABLEAU_WORKBOOK_PROJECT"],
+        os.environ["TABLEAU_SERVER_URL"],
     )
 
 
