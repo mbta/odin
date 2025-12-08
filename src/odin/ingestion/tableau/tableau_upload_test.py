@@ -5,6 +5,7 @@ from pyarrow import parquet as pq
 from pyarrow import fs
 import polars as pl
 from datetime import datetime
+from typing import Any, Dict, Set, TypedDict
 import tableauserverclient as TSC
 from tableauhyperapi import (
     Connection,
@@ -23,22 +24,28 @@ TABLES_TO_SYNC = [
     "EDW.DEVICE_EVENT",
 ]
 
+
+class ScrubRule(TypedDict):
+    casts: Dict[str, Any]
+    drops: Set[str]
+
+
 # This dictionary defines and tracks column-specific rules for each table, including:
 # - Data type casts when convert_parquet_dtype() does not handle a column the way we want
 # - Columns to drop from hyper files, for data sensitivity, relevance, or size reasons
-SCRUB_RULES = {
+SCRUB_RULES: Dict[str, ScrubRule] = {
     "EDW.JOURNAL_ENTRY": {
         "casts": {
             "line_item_nbr": pl.Int64,
         },
-        "drops": {"restricted_purse_id"},
+        "drops": set(["restricted_purse_id"]),
     },
     "EDW.DEVICE_EVENT": {
         "casts": {
             "component_serial_nbr": pl.Int64,
             "device_transaction_id": pl.Int64,
         },
-        "drops": {},
+        "drops": set(),
     },
 }
 
@@ -54,7 +61,7 @@ def convert_parquet_dtype(dtype: pyarrow.DataType) -> SqlType:
     Map Parquet data types to Tableau Hyper data types
     Modified from LAMP codebase
     """
-    dtype = str(dtype)
+    dtype_str = str(dtype)
     dtype_map = {
         "int8": SqlType.small_int(),
         "uint8": SqlType.small_int(),
@@ -68,14 +75,14 @@ def convert_parquet_dtype(dtype: pyarrow.DataType) -> SqlType:
         "float": SqlType.double(),
         "double": SqlType.double(),
     }
-    map_check = dtype_map.get(dtype)
+    map_check = dtype_map.get(dtype_str)
     if map_check is not None:
         return map_check
 
-    if dtype.startswith("date32"):
+    if dtype_str.startswith("date32"):
         return SqlType.date()
 
-    if dtype.startswith("timestamp"):
+    if dtype_str.startswith("timestamp"):
         return SqlType.timestamp()
 
     return SqlType.text()
@@ -159,13 +166,12 @@ def publish_hyper_to_tableau(
         )
 
 
-def scrub_parquet(parquet_path: str, datasource_name: str) -> str:
+def scrub_parquet(parquet_path: str, rules: ScrubRule) -> str:
     """
     Cast/drop columns in Parquet file according to SCRUB_RULES
     Processes parquet files in memory with Polars
     Larger files/updates should use a streaming approach instead.
     """
-    rules = SCRUB_RULES.get(datasource_name, {"casts": {}, "drops": set()})
     df = pl.read_parquet(parquet_path)
 
     cast_exprs = [
@@ -195,7 +201,8 @@ def upload_tableau_table(table_name: str) -> None:
     download_parquet(parquet_filepath, S3_BUCKET, s3_object_key)
 
     # Cast/scrub columns for Hyper ingestion
-    scrubbed_filepath = scrub_parquet(parquet_filepath, table_name)
+    rules = SCRUB_RULES.get(table_name, {"casts": {}, "drops": set()})
+    scrubbed_filepath = scrub_parquet(parquet_filepath, rules)
 
     # Create incremental update logic (TODO)
     # For testing, taking small chunk of data and overwriting existing datasources
