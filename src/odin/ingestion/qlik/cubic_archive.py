@@ -378,7 +378,7 @@ def schedule_cubic_archive_qlik(schedule: sched.scheduler) -> None:
         except Exception as exception:
             # on Error don't schedule Archive Job
             log = ProcessLog("schedule_cubic_archive_qlik", table=table)
-            log.add_metadata(exception)
+            log.failed(exception)
             continue
         job = ArchiveCubicQlikTable(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))
