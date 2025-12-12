@@ -375,8 +375,10 @@ def schedule_cubic_archive_qlik(schedule: sched.scheduler) -> None:
         # to the "ignore" odin partition, if there is an existing processed shapshot, it is a no-op
         try:
             clean_old_snapshots(table)
-        except Exception as _:
+        except Exception as exception:
             # on Error don't schedule Archive Job
+            log = ProcessLog("schedule_cubic_archive_qlik", table=table)
+            log.failed(exception)
             continue
         job = ArchiveCubicQlikTable(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))
