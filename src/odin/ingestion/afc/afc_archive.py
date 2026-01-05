@@ -45,7 +45,6 @@ API_ROOT = os.getenv("AFC_ROOT", "")
 API_TABLES = [
     "v_business_entities",
     "v_ca_legal_relations",
-    "v_card",
     "v_deviceclass",
     "v_eventgroup",
     "v_eventhistory",
