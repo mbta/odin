@@ -3,10 +3,11 @@ import boto3
 import pyarrow
 from pyarrow import parquet as pq
 from pyarrow import fs
+import pyarrow.dataset as pad
 import polars as pl
 import argparse
 import json
-from typing import Any, Dict, Set, TypedDict
+from typing import Any, Dict, Set, TypedDict, List
 import tableauserverclient as TSC
 from tableauhyperapi import (
     Connection,
@@ -18,13 +19,17 @@ from tableauhyperapi import (
     escape_string_literal,
 )
 
-S3_BUCKET = "mbta-ctd-dataplatform-local"  # TODO: using personal bucket for testing
+from odin.utils.aws.s3 import list_objects, list_partitions
+from odin.utils.parquet import file_column_stats
+
+S3_BUCKET = "mbta-ctd-dataplatform-dev-springboard"
 BATCH_SIZE = 500_000  # Number of rows per Hyper file batch
 
 TABLES_TO_SYNC = [
-    # "EDW.JOURNAL_ENTRY",
+    "EDW.ABP_TAP",
+    "EDW.JOURNAL_ENTRY",
     # "EDW.DEVICE_EVENT", # large table, only retest if necessary
-    "EDW.TEST_TRAIN_DATA",  # test table for incremental uploads
+    # "EDW.TEST_TRAIN_DATA",  # test table for incremental uploads
 ]
 
 
@@ -42,12 +47,19 @@ class ScrubRule(TypedDict):
 # - index_column: The column used for incremental updating. Watermark tracks largest value of index
 #       column successfully synced to Tableau
 SCRUB_RULES: Dict[str, ScrubRule] = {
+    "EDW.ABP_TAP": {
+        "casts": {
+            "token_id": pl.Int64,
+        },
+        "drops": set(),
+        "index_column": "tap_id",
+    },
     "EDW.JOURNAL_ENTRY": {
         "casts": {
             "line_item_nbr": pl.Int64,
         },
         "drops": set(["restricted_purse_id"]),
-        "index_column": "job_id",
+        "index_column": "journal_entry_key",
     },
     "EDW.DEVICE_EVENT": {
         "casts": {
@@ -71,6 +83,161 @@ def download_parquet(local_path: str, s3_bucket: str, s3_object_key: str) -> Non
     print(f"Downloading Parquet file from s3://{s3_bucket}/{s3_object_key} to {local_path}...")
     s3_client = boto3.client("s3")
     s3_client.download_file(Bucket=s3_bucket, Key=s3_object_key, Filename=local_path)
+
+
+def get_table_s3_prefix(table_name: str) -> str:
+    """Get the S3 prefix for a table's hive-partitioned data."""
+    return f"s3://{S3_BUCKET}/odin/data/cubic/ods/{table_name}/"
+
+
+def discover_partitioned_files(table_name: str) -> List[str]:
+    """
+    Discover all parquet files across all hive partitions for a table.
+
+    :param table_name: Name of the table (e.g., "EDW.JOURNAL_ENTRY")
+    :return: List of S3 paths to all parquet files
+    """
+    base_prefix = get_table_s3_prefix(table_name)
+    print(f"Discovering partitions under {base_prefix}...")
+
+    # List all partitions (e.g., odin_year=2023, odin_year=2024)
+    partitions = list_partitions(base_prefix)
+    print(f"Found {len(partitions)} partition(s): {partitions}")
+
+    all_files: List[str] = []
+    for partition in partitions:
+        partition_path = f"{base_prefix}{partition}/"
+        objects = list_objects(partition_path, in_filter=".parquet")
+        all_files.extend([obj.path for obj in objects])
+
+    print(f"Total parquet files discovered: {len(all_files)}")
+    return all_files
+
+
+def filter_files_by_metadata(file_paths: List[str], index_column: str, watermark: Any) -> List[str]:
+    """
+    Filter parquet files to only those that might contain data above the watermark.
+
+    Uses parquet metadata (row group statistics) to efficiently determine which files
+    may contain new data without reading the actual data.
+
+    :param file_paths: List of S3 paths to parquet files
+    :param index_column: Column name used for watermarking
+    :param watermark: Current watermark value (only data > watermark is needed)
+    :return: List of file paths that may contain data above the watermark
+    """
+    if watermark is None:
+        print("No watermark set, all files will be processed")
+        return file_paths
+
+    print(f"Filtering files using metadata where {index_column} max > {watermark}...")
+    filtered_files: List[str] = []
+
+    s3_fs = fs.S3FileSystem()
+
+    for file_path in file_paths:
+        try:
+            # Remove s3:// prefix for PyArrow S3FileSystem
+            s3_path = file_path.replace("s3://", "")
+            pq_file = pq.ParquetFile(s3_path, filesystem=s3_fs)
+            metadata = pq_file.metadata
+
+            # Check if index_column exists in this file's schema
+            schema_names = pq_file.schema_arrow.names
+            if index_column not in schema_names:
+                print(f"  Skipping {file_path}: column '{index_column}' not in schema")
+                continue
+
+            # Get column statistics across all row groups
+            file_max = None
+            col_stats = file_column_stats(metadata, index_column)
+            for rg_stats in col_stats:
+                if rg_stats["has_min_max"] and rg_stats["max"] is not None:
+                    if file_max is None or rg_stats["max"] > file_max:
+                        file_max = rg_stats["max"]
+
+            if file_max is not None and file_max > watermark:
+                filtered_files.append(file_path)
+                print(f"  Include {file_path}: max={file_max} > watermark={watermark}")
+            else:
+                print(f"  Skip {file_path}: max={file_max} <= watermark={watermark}")
+
+            pq_file.close()
+
+        except Exception as e:
+            # If we can't read metadata, include the file to be safe
+            print(f"  Warning: Could not read metadata for {file_path}: {e}")
+            filtered_files.append(file_path)
+
+    print(f"Files after metadata filtering: {len(filtered_files)} of {len(file_paths)}")
+    return filtered_files
+
+
+def load_filtered_data_from_s3(
+    file_paths: List[str],
+    rules: ScrubRule,
+    watermark: Any,
+) -> pl.LazyFrame:
+    """
+    Load data from S3 parquet files, applying scrub rules and watermark filtering.
+
+    Uses PyArrow dataset with hive partitioning to efficiently read from S3
+    without downloading files to local disk.
+
+    :param file_paths: List of S3 paths to parquet files to read
+    :param rules: Scrub rules for casting and dropping columns
+    :param watermark: Current watermark value for filtering
+    :return: LazyFrame with filtered and scrubbed data
+    """
+    if not file_paths:
+        # Return empty LazyFrame with no schema
+        return pl.LazyFrame()
+
+    print(f"Loading data from {len(file_paths)} S3 files...")
+
+    # Create S3 filesystem for PyArrow
+    s3_fs = fs.S3FileSystem()
+
+    # Strip s3:// prefix for PyArrow - it expects paths without the scheme
+    s3_paths = [p.replace("s3://", "") for p in file_paths]
+
+    # Create a PyArrow dataset from the S3 paths with hive partitioning
+    # This reads metadata only initially
+    ds = pad.dataset(
+        s3_paths,
+        format="parquet",
+        partitioning="hive",
+        filesystem=s3_fs,
+    )
+
+    # Convert to Polars LazyFrame for efficient processing
+    # scan_pyarrow allows predicate pushdown and lazy evaluation
+    lf = pl.scan_pyarrow_dataset(ds)
+
+    # Apply scrub rules
+    schema = lf.collect_schema()
+    columns = schema.names()
+
+    # Apply casts
+    cast_exprs = [
+        pl.col(col).cast(dtype, strict=False)
+        for col, dtype in rules["casts"].items()
+        if col in columns
+    ]
+    if cast_exprs:
+        lf = lf.with_columns(*cast_exprs)
+
+    # Drop columns
+    drop_cols = [col for col in rules["drops"] if col in columns]
+    if drop_cols:
+        lf = lf.drop(drop_cols)
+
+    # Apply watermark filter if applicable
+    if watermark is not None and rules["index_column"] and rules["index_column"] in columns:
+        print(f"Applying filter: {rules['index_column']} > {watermark}")
+        lf = lf.filter(pl.col(rules["index_column"]) > watermark)
+
+    return lf
 
 
 def get_latest_watermark(table_name: str, index_column: str) -> Any | None:
@@ -239,16 +406,19 @@ def get_scrubbed_lazyframe(parquet_path: str, rules: ScrubRule) -> pl.LazyFrame:
 
 
 def upload_tableau_table(table_name: str, overwrite_table: bool = False) -> None:
-    """Upload a single table to Tableau, optionally forcing an overwrite."""
-    s3_object_key = f"talexander3/test/{table_name}_BC.parquet"
+    """
+    Upload a single table to Tableau, optionally forcing an overwrite.
 
-    parquet_filepath = f"{table_name}.parquet"
-
-    # Download Parquet file from S3
-    download_parquet(parquet_filepath, S3_BUCKET, s3_object_key)
-
-    # Get rules and watermark
+    This function:
+    1. Discovers all parquet files across all hive partitions for the table
+    2. Uses metadata to filter files that might contain new data (based on watermark)
+    3. Reads only the relevant data directly from S3 without downloading full files
+    4. Batches the data and publishes to Tableau
+    """
+    # Get rules for this table
     rules = SCRUB_RULES.get(table_name, {"casts": {}, "drops": set(), "index_column": None})
+
+    # Get watermark for incremental processing
     watermark = None
     if overwrite_table:
         print(
@@ -259,13 +429,25 @@ def upload_tableau_table(table_name: str, overwrite_table: bool = False) -> None
         watermark = get_latest_watermark(table_name, rules["index_column"])
         print(f"Current watermark: {watermark}")
 
-    # Prepare LazyFrame with scrubbing rules
-    lf = get_scrubbed_lazyframe(parquet_filepath, rules)
+    # Step 1: Discover all parquet files across all hive partitions
+    all_files = discover_partitioned_files(table_name)
 
-    # Filter for new data if watermark exists
+    if not all_files:
+        print(f"No parquet files found for table {table_name}")
+        return
+
+    # Step 2: Filter files based on metadata (only if we have a watermark and index column)
     if watermark is not None and rules["index_column"]:
-        print(f"Filtering for data where {rules['index_column']} > {watermark}")
-        lf = lf.filter(pl.col(rules["index_column"]) > watermark)
+        filtered_files = filter_files_by_metadata(all_files, rules["index_column"], watermark)
+    else:
+        filtered_files = all_files
+
+    if not filtered_files:
+        print(f"No files contain data above watermark for {table_name}")
+        return
+
+    # Step 3: Load filtered data directly from S3 (no local download needed)
+    lf = load_filtered_data_from_s3(filtered_files, rules, watermark)
 
     # Calculate new max watermark from the filtered data (before batching)
     new_watermark = None
@@ -281,8 +463,6 @@ def upload_tableau_table(table_name: str, overwrite_table: bool = False) -> None
 
     if total_rows == 0:
         print(f"No new data found for {table_name}")
-        if os.path.exists(parquet_filepath):
-            os.remove(parquet_filepath)
         return
 
     print(f"Processing {total_rows} rows for {table_name} in batches of {BATCH_SIZE}...")
@@ -304,7 +484,7 @@ def upload_tableau_table(table_name: str, overwrite_table: bool = False) -> None
         # slice(offset, length)
         chunk_df = lf.slice(offset, BATCH_SIZE).collect()
 
-        chunk_parquet_path = f"chunk_{offset}_{parquet_filepath}"
+        chunk_parquet_path = f"chunk_{offset}_{table_name}.parquet"
         chunk_hyper_path = f"chunk_{offset}_{table_name}.hyper"
 
         # Write temp parquet for this batch
@@ -345,10 +525,6 @@ def upload_tableau_table(table_name: str, overwrite_table: bool = False) -> None
     # Update state if successful and we have a new max value
     if new_watermark is not None:
         update_watermark(table_name, new_watermark)
-
-    # Cleanup source file
-    if os.path.exists(parquet_filepath):
-        os.remove(parquet_filepath)
 
 
 def run_tableau_uploads(overwrite_table: bool = False) -> None:
