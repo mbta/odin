@@ -66,9 +66,10 @@ API_TABLES = [
     "v_validation_taps",
     "v_cashless_payments",
     "v_inspections",
-    "v_tsmstatus",
-    "v_salesdetail",
-    "v_salestransaction",
+    #   Commenting out until S&B gives us a job_id to start at
+    #    "v_tsmstatus",
+    #    "v_salesdetail",
+    #    "v_salestransaction",
 ]
 
 APICounts = list[dict[Literal["jobId", "dataCount"], int]]
