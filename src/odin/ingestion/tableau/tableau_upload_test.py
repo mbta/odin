@@ -195,6 +195,9 @@ def resolve_project_id(server: TSC.Server, path: str) -> str:
         if parent is None:
             raise RuntimeError(f"Project '{name}' not found in path '{path}'")
 
+    if parent is None:
+        raise RuntimeError(f"No projects found in path '{path}'")
+
     return parent.id
 
 
