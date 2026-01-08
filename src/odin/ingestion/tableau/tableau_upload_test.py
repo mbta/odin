@@ -30,9 +30,7 @@ from odin.utils.parquet import file_column_stats
 # Scheduling constants
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
 NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
-# NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
-NEXT_RUN_LONG = 60 * 1  # 1 minute
-NEXT_RUN_DEFAULT = 60 * 2  # 2 minutes
+NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
 # S3 Configuration
 S3_BUCKET = "mbta-ctd-dataplatform-dev-springboard"
@@ -185,11 +183,12 @@ def resolve_project_id(server: TSC.Server, path: str) -> str:
     projects, _ = server.projects.get(options)
     parent = None
     for name in path.split("/"):
+        parent_id = parent.id if parent is not None else None
         parent = next(
             (
                 proj
                 for proj in projects
-                if proj.name == name and proj.parent_id == (parent.id if parent else None)
+                if proj.name == name and proj.parent_id == parent_id
             ),
             None,
         )
