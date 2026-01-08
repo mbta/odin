@@ -44,6 +44,8 @@ def start():
         private=[
             "AFC_API_CLIENT_ID",
             "AFC_API_CLIENT_SECRET",
+            "TABLEAU_PERSONAL_ACCESS_TOKEN_NAME",
+            "TABLEAU_PERSONAL_ACCESS_TOKEN_SECRET",
         ],
         aws=[
             "ECS_CLUSTER",
