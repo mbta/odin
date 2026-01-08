@@ -185,11 +185,7 @@ def resolve_project_id(server: TSC.Server, path: str) -> str:
     for name in path.split("/"):
         parent_id = parent.id if parent is not None else None
         parent = next(
-            (
-                proj
-                for proj in projects
-                if proj.name == name and proj.parent_id == parent_id
-            ),
+            (proj for proj in projects if proj.name == name and proj.parent_id == parent_id),
             None,
         )
         if parent is None:
