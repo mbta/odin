@@ -6,7 +6,6 @@ from pyarrow import fs
 import pyarrow.dataset as pad
 import polars as pl
 import sched
-import argparse
 import json
 from typing import Any, Dict, Set, TypedDict, List
 import tableauserverclient as TSC
@@ -39,10 +38,8 @@ BATCH_SIZE = 500_000  # Number of rows per Hyper file batch
 
 # Tables to sync
 TABLES_TO_SYNC = [
-    # "EDW.ABP_TAP",
     "EDW.JOURNAL_ENTRY",
-    # "EDW.DEVICE_EVENT", # large table, only retest if necessary
-    # "EDW.TEST_TRAIN_DATA",  # test table for incremental uploads
+    # "EDW.ABP_TAP",
 ]
 
 
@@ -73,19 +70,6 @@ SCRUB_RULES: Dict[str, ScrubRule] = {
         },
         "drops": set(["restricted_purse_id"]),
         "index_column": "journal_entry_key",
-    },
-    "EDW.DEVICE_EVENT": {
-        "casts": {
-            "component_serial_nbr": pl.Int64,
-            "device_transaction_id": pl.Int64,
-        },
-        "drops": set(),
-        "index_column": "job_id",
-    },
-    "EDW.TEST_TRAIN_DATA": {
-        "casts": {},
-        "drops": set(),
-        "index_column": "job_id",
     },
 }
 
@@ -589,29 +573,3 @@ def schedule_tableau_upload(schedule: sched.scheduler) -> None:
     for table in TABLES_TO_SYNC:
         job = TableauUpload(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))
-
-
-if __name__ == "__main__":
-    # For development/testing - run a single table upload
-
-    parser = argparse.ArgumentParser(description="Publish Parquet data to Tableau extracts")
-    parser.add_argument(
-        "--overwrite-table",
-        action="store_true",
-        help="Overwrite the destination table instead of appending incrementally",
-    )
-    parser.add_argument(
-        "--table",
-        type=str,
-        default=None,
-        help="Specific table to upload (default: all configured tables)",
-    )
-    args = parser.parse_args()
-
-    if args.table:
-        job = TableauUpload(args.table, overwrite_table=args.overwrite_table)
-        job_proc_schedule(job, None)
-    else:
-        for table_name in TABLES_TO_SYNC:
-            job = TableauUpload(table_name, overwrite_table=args.overwrite_table)
-            job_proc_schedule(job, None)
