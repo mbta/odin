@@ -16,7 +16,7 @@ from odin.generate.cubic.ods_fact import schedule_cubic_ods_fact_gen
 from odin.ingestion.afc.afc_archive import schedule_afc_archive
 from odin.ingestion.afc.afc_restricted import schedule_restricted_afc_archive
 from odin.generate.data_dictionary.dictionary import schedule_dictionary
-from odin.ingestion.tableau.tableau_upload_test import schedule_tableau_upload
+from odin.ingestion.tableau.tableau_upload import schedule_tableau_upload
 
 
 def start():
