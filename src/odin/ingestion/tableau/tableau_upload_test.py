@@ -176,7 +176,7 @@ def resolve_project_id(server: TSC.Server, path: str) -> str:
     Resolve a Tableau project path to its ID.
 
     :param server: Tableau server client
-    :param path: Project path (e.g., "Technology Innovation/odin_rest_api_test")
+    :param path: Project path (e.g., "Technology Innovation/Odin")
     :return: Project ID
     """
     options = TSC.RequestOptions(pagesize=1000)
@@ -513,7 +513,7 @@ class TableauUpload(OdinJob):
         # Setup Tableau Environment
         server_url = os.environ.get("TABLEAU_SERVER_URL", "https://awdatatest.mbta.com/")
         project_name = os.environ.get(
-            "TABLEAU_WORKBOOK_PROJECT", "Technology Innovation/odin_rest_api_test"
+            "TABLEAU_WORKBOOK_PROJECT", "Technology Innovation/Odin"
         )
 
         # Process in batches
