@@ -25,6 +25,7 @@ from odin.utils.logger import ProcessLog
 from odin.utils.logger import LOGGER
 from odin.utils.aws.s3 import list_objects, list_partitions
 from odin.utils.parquet import file_column_stats
+from odin.utils.locations import DATA_SPRINGBOARD
 
 # Scheduling constants
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
@@ -32,7 +33,6 @@ NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
 # S3 Configuration
-S3_BUCKET = "mbta-ctd-dataplatform-dev-springboard"
 STATE_FILE_KEY = "odin/state/tableau_watermarks.json"
 BATCH_SIZE = 500_000  # Number of rows per Hyper file batch
 
@@ -43,7 +43,7 @@ TABLES_TO_SYNC = [
 ]
 
 
-class ScrubRule(TypedDict):
+class TableConfig(TypedDict):
     """Rules for casting/dropping columns and the index watermark column."""
 
     casts: Dict[str, Any]
@@ -56,7 +56,7 @@ class ScrubRule(TypedDict):
 # - drops: Columns to drop from hyper files, for data sensitivity, relevance, or size reasons
 # - index_column: The column used for incremental updating. Watermark tracks largest value of index
 #       column successfully synced to Tableau
-SCRUB_RULES: Dict[str, ScrubRule] = {
+TABLE_CONFIG: Dict[str, TableConfig] = {
     "EDW.ABP_TAP": {
         "casts": {
             "token_id": pl.Int64,
@@ -201,8 +201,8 @@ class TableauUpload(OdinJob):
         """
         self.table = table
         self.overwrite_table = overwrite_table
-        self.s3_prefix = f"s3://{S3_BUCKET}/odin/data/cubic/ods/{table}/"
-        self.rules = SCRUB_RULES.get(table, {"casts": {}, "drops": set(), "index_column": None})
+        self.s3_prefix = f"s3://{DATA_SPRINGBOARD}/odin/data/cubic/ods/{table}/"
+        self.rules = TABLE_CONFIG.get(table, {"casts": {}, "drops": set(), "index_column": None})
         self.start_kwargs = {"table": table}
 
     def discover_partitioned_files(self) -> List[str]:
@@ -294,14 +294,14 @@ class TableauUpload(OdinJob):
         watermark: Any,
     ) -> pl.LazyFrame:
         """
-        Load data from S3 parquet files, applying scrub rules and watermark filtering.
+        Load data from S3 parquet files, applying table configuration rules and watermark filtering.
 
         Uses PyArrow dataset with hive partitioning to efficiently read from S3
         without downloading files to local disk.
 
         :param file_paths: List of S3 paths to parquet files to read
         :param watermark: Current watermark value for filtering
-        :return: LazyFrame with filtered and scrubbed data
+        :return: LazyFrame with data filtered according to watermark and table rules
         """
         if not file_paths:
             return pl.LazyFrame()
@@ -326,7 +326,7 @@ class TableauUpload(OdinJob):
         # Convert to Polars LazyFrame for efficient processing
         lf = pl.scan_pyarrow_dataset(ds)
 
-        # Apply scrub rules
+        # Apply table-specific configuration rules
         schema = lf.collect_schema()
         columns = schema.names()
 
@@ -364,9 +364,9 @@ class TableauUpload(OdinJob):
         s3 = boto3.client("s3")
         try:
             LOGGER.info(
-                f"Fetching watermark for {self.table} from s3://{S3_BUCKET}/{STATE_FILE_KEY}"
+                f"Fetching watermark for {self.table} from s3://{DATA_SPRINGBOARD}/{STATE_FILE_KEY}"
             )
-            response = s3.get_object(Bucket=S3_BUCKET, Key=STATE_FILE_KEY)
+            response = s3.get_object(Bucket=DATA_SPRINGBOARD, Key=STATE_FILE_KEY)
             state = json.loads(response["Body"].read().decode("utf-8"))
             return state.get(self.table)
         except s3.exceptions.NoSuchKey:
@@ -388,14 +388,14 @@ class TableauUpload(OdinJob):
         try:
             # Read current state first to preserve other tables
             try:
-                response = s3.get_object(Bucket=S3_BUCKET, Key=STATE_FILE_KEY)
+                response = s3.get_object(Bucket=DATA_SPRINGBOARD, Key=STATE_FILE_KEY)
                 state = json.loads(response["Body"].read().decode("utf-8"))
             except s3.exceptions.NoSuchKey:
                 state = {}
 
             state[self.table] = new_value
 
-            s3.put_object(Bucket=S3_BUCKET, Key=STATE_FILE_KEY, Body=json.dumps(state, default=str))
+            s3.put_object(Bucket=DATA_SPRINGBOARD, Key=STATE_FILE_KEY, Body=json.dumps(state, default=str))
             LOGGER.info(f"Updated watermark for {self.table} to {new_value}")
         except Exception as e:
             LOGGER.error(f"Error updating watermark state: {e}")
