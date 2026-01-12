@@ -395,7 +395,11 @@ class TableauUpload(OdinJob):
 
             state[self.table] = new_value
 
-            s3.put_object(Bucket=DATA_SPRINGBOARD, Key=CHECKPOINT_FILE_KEY, Body=json.dumps(state, default=str))
+            s3.put_object(
+                Bucket=DATA_SPRINGBOARD,
+                Key=CHECKPOINT_FILE_KEY,
+                Body=json.dumps(state, default=str),
+            )
             LOGGER.info(f"Updated watermark for {self.table} to {new_value}")
         except Exception as e:
             LOGGER.error(f"Error updating watermark state: {e}")
@@ -496,9 +500,7 @@ class TableauUpload(OdinJob):
 
         # Setup Tableau Environment
         server_url = os.environ.get("TABLEAU_SERVER_URL", "https://awdatatest.mbta.com/")
-        project_name = os.environ.get(
-            "TABLEAU_WORKBOOK_PROJECT", "Technology Innovation/Odin"
-        )
+        project_name = os.environ.get("TABLEAU_WORKBOOK_PROJECT", "Technology Innovation/Odin")
 
         # Process in batches
         for offset in range(0, total_rows, BATCH_SIZE):
