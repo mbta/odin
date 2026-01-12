@@ -33,7 +33,7 @@ NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
 # S3 Configuration
-STATE_FILE_KEY = "odin/state/tableau_watermarks.json"
+CHECKPOINT_FILE_KEY = "odin/state/tableau_checkpoints.json"
 BATCH_SIZE = 500_000  # Number of rows per Hyper file batch
 
 # Tables to sync
@@ -364,9 +364,9 @@ class TableauUpload(OdinJob):
         s3 = boto3.client("s3")
         try:
             LOGGER.info(
-                f"Fetching watermark for {self.table} from s3://{DATA_SPRINGBOARD}/{STATE_FILE_KEY}"
+                f"Fetching watermark for {self.table} from s3://{DATA_SPRINGBOARD}/{CHECKPOINT_FILE_KEY}"
             )
-            response = s3.get_object(Bucket=DATA_SPRINGBOARD, Key=STATE_FILE_KEY)
+            response = s3.get_object(Bucket=DATA_SPRINGBOARD, Key=CHECKPOINT_FILE_KEY)
             state = json.loads(response["Body"].read().decode("utf-8"))
             return state.get(self.table)
         except s3.exceptions.NoSuchKey:
@@ -388,14 +388,14 @@ class TableauUpload(OdinJob):
         try:
             # Read current state first to preserve other tables
             try:
-                response = s3.get_object(Bucket=DATA_SPRINGBOARD, Key=STATE_FILE_KEY)
+                response = s3.get_object(Bucket=DATA_SPRINGBOARD, Key=CHECKPOINT_FILE_KEY)
                 state = json.loads(response["Body"].read().decode("utf-8"))
             except s3.exceptions.NoSuchKey:
                 state = {}
 
             state[self.table] = new_value
 
-            s3.put_object(Bucket=DATA_SPRINGBOARD, Key=STATE_FILE_KEY, Body=json.dumps(state, default=str))
+            s3.put_object(Bucket=DATA_SPRINGBOARD, Key=CHECKPOINT_FILE_KEY, Body=json.dumps(state, default=str))
             LOGGER.info(f"Updated watermark for {self.table} to {new_value}")
         except Exception as e:
             LOGGER.error(f"Error updating watermark state: {e}")
