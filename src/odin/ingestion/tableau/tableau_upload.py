@@ -44,7 +44,7 @@ TABLES_TO_SYNC = [
 
 
 class TableConfig(TypedDict):
-    """Rules for casting/dropping columns and the index watermark column."""
+    """Rules for casting/dropping columns and the index high watermark column."""
 
     casts: Dict[str, Any]
     drops: Set[str]
@@ -54,8 +54,8 @@ class TableConfig(TypedDict):
 # This dictionary defines and tracks column-specific rules for each table, including:
 # - casts: Data type casts when convert_parquet_dtype() does not handle a column the way we want
 # - drops: Columns to drop from hyper files, for data sensitivity, relevance, or size reasons
-# - index_column: The column used for incremental updating. Watermark tracks largest value of index
-#       column successfully synced to Tableau
+# - index_column: The column used for incremental updating. High watermark tracks largest value of
+#       index_column successfully synced to Tableau
 TABLE_CONFIG: Dict[str, TableConfig] = {
     "EDW.ABP_TAP": {
         "casts": {
@@ -424,7 +424,6 @@ class TableauUpload(OdinJob):
         tableau_auth = TSC.PersonalAccessTokenAuth(
             os.environ["TABLEAU_PERSONAL_ACCESS_TOKEN_NAME"],
             os.environ["TABLEAU_PERSONAL_ACCESS_TOKEN_SECRET"],
-            os.environ["TABLEAU_SITE_ID"],
         )
 
         server = TSC.Server(server_url, use_server_version=True, http_options={"verify": False})
