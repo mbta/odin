@@ -46,7 +46,7 @@ TABLES_TO_SYNC = [
 class TableConfig(TypedDict):
     """Rules for casting/dropping columns and the index high watermark column."""
 
-    casts: Dict[str, Any]
+    casts: Dict[str, pl.DataType]
     drops: Set[str]
     index_column: str | None
 
