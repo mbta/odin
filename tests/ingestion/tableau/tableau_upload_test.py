@@ -16,6 +16,7 @@ from odin.ingestion.tableau.tableau_upload import (
     TABLE_CONFIG,
 )
 
+
 # Create fixtures (sample data and mock server)
 @pytest.fixture(scope="module")
 def sample_parquet_file(tmp_path_factory) -> Generator[str, None, None]:
@@ -148,7 +149,9 @@ def test_parquet_schema_to_hyper_definition(sample_parquet_file):
     # Verify all expected columns are present
     expected_columns = ["stop_id", "line", "speed", "is_active", "last_train_date"]
     for expected_col in expected_columns:
-        assert expected_col in column_names, f"Column '{expected_col}' not found in table definition"
+        assert expected_col in column_names, (
+            f"Column '{expected_col}' not found in table definition"
+        )
 
 
 def test_build_hyper_from_parquet(sample_parquet_file, tmp_path):
@@ -177,7 +180,7 @@ def test_build_hyper_from_parquet(sample_parquet_file, tmp_path):
 
 def test_resolve_project_id(mock_tableau_server):
     """
-    The resolve_project_id function should be able to take a nested project path 
+    The resolve_project_id function should be able to take a nested project path
     like "Technology Innovation/Odin" and return the ID of the "Odin" project
     by iterating through the mock project hierarchy
     """
@@ -210,12 +213,8 @@ def test_table_config_structure():
         )
 
         # Verify types
-        assert isinstance(config["casts"], dict), (
-            f"Table {table_name}: 'casts' should be a dict"
-        )
-        assert isinstance(config["drops"], set), (
-            f"Table {table_name}: 'drops' should be a set"
-        )
+        assert isinstance(config["casts"], dict), f"Table {table_name}: 'casts' should be a dict"
+        assert isinstance(config["drops"], set), f"Table {table_name}: 'drops' should be a set"
         assert config["index_column"] is None or isinstance(config["index_column"], str), (
             f"Table {table_name}: 'index_column' should be None or str"
         )
