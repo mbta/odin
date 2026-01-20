@@ -21,10 +21,6 @@ class ArchiveMasabi(OdinJob):
         self.table = table
         self.start_kwargs = {"table": table}
         self.export_folder = os.path.join(DATA_SPRINGBOARD, MASABI_DATA, table)
-        self.headers = {
-            "client_id": os.getenv("MASABI_API_CLIENT_ID", ""),
-            "client_secret": os.getenv("MASABI_API_CLIENT_SECRET", ""),
-        }
 
     def run(self) -> int:
         """Execute the Masabi archive run loop."""
