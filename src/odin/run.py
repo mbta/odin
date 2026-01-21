@@ -47,6 +47,8 @@ def start():
             "AFC_API_CLIENT_SECRET",
             "TABLEAU_PERSONAL_ACCESS_TOKEN_NAME",
             "TABLEAU_PERSONAL_ACCESS_TOKEN_SECRET",
+            "MASABI_DATA_API_USERNAME",
+            "MASABI_DATA_API_PASSWORD",
         ],
         aws=[
             "ECS_CLUSTER",
