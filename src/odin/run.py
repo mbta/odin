@@ -2,20 +2,23 @@ import sched
 import signal
 import time
 
-from odin.utils.runtime import validate_env_vars
-from odin.utils.runtime import handle_sigterm
-from odin.utils.runtime import load_config
-from odin.utils.logger import ProcessLog
-from odin.migrate.process import start_migrations
-from odin.utils.aws.ecs import check_for_parallel_tasks
-
-# Job Schedule functions
-from odin.utils.runtime import schedule_sigterm_check
-from odin.ingestion.qlik.cubic_archive import schedule_cubic_archive_qlik
 from odin.generate.cubic.ods_fact import schedule_cubic_ods_fact_gen
+from odin.generate.data_dictionary.dictionary import schedule_dictionary
 from odin.ingestion.afc.afc_archive import schedule_afc_archive
 from odin.ingestion.afc.afc_restricted import schedule_restricted_afc_archive
-from odin.generate.data_dictionary.dictionary import schedule_dictionary
+from odin.ingestion.masabi.masabi_archive import schedule_masabi_archive
+from odin.ingestion.qlik.cubic_archive import schedule_cubic_archive_qlik
+from odin.migrate.process import start_migrations
+from odin.utils.aws.ecs import check_for_parallel_tasks
+from odin.utils.logger import ProcessLog
+
+# Job Schedule functions
+from odin.utils.runtime import (
+    handle_sigterm,
+    load_config,
+    schedule_sigterm_check,
+    validate_env_vars,
+)
 
 
 def start():
@@ -43,6 +46,8 @@ def start():
         private=[
             "AFC_API_CLIENT_ID",
             "AFC_API_CLIENT_SECRET",
+            "MASABI_DATA_API_USERNAME",
+            "MASABI_DATA_API_PASSWORD",
         ],
         aws=[
             "ECS_CLUSTER",
@@ -67,5 +72,7 @@ def start():
         schedule_restricted_afc_archive(schedule)
     if "data_dictionary" in config:
         schedule_dictionary(schedule)
+    if "masabi_archive" in config:
+        schedule_masabi_archive(schedule)
 
     schedule.run()
