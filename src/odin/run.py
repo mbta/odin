@@ -46,6 +46,8 @@ def start():
         private=[
             "AFC_API_CLIENT_ID",
             "AFC_API_CLIENT_SECRET",
+            "MASABI_DATA_API_USERNAME",
+            "MASABI_DATA_API_PASSWORD",
         ],
         aws=[
             "ECS_CLUSTER",
