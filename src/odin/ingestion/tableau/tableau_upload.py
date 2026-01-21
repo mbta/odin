@@ -22,7 +22,6 @@ from tableauhyperapi import (
 from odin.job import OdinJob
 from odin.job import job_proc_schedule
 from odin.utils.logger import ProcessLog
-from odin.utils.logger import LOGGER
 from odin.utils.aws.s3 import list_objects, list_partitions
 from odin.utils.parquet import file_column_stats
 from odin.utils.locations import DATA_SPRINGBOARD
@@ -211,12 +210,11 @@ class TableauUpload(OdinJob):
 
         :return: List of S3 paths to all parquet files
         """
-        ProcessLog("discover_partitions", table=self.table)
-        LOGGER.info(f"Discovering partitions under {self.s3_prefix}")
+        log = ProcessLog("discover_partitioned_files", table=self.table, s3_prefix=self.s3_prefix)
 
         # List all partitions (e.g., odin_year=2023, odin_year=2024)
         partitions = list_partitions(self.s3_prefix)
-        LOGGER.info(f"Found {len(partitions)} partition(s): {partitions}")
+        log.add_metadata(partition_count=len(partitions), partitions=str(partitions))
 
         all_files: List[str] = []
         for partition in partitions:
@@ -224,7 +222,7 @@ class TableauUpload(OdinJob):
             objects = list_objects(partition_path, in_filter=".parquet")
             all_files.extend([obj.path for obj in objects])
 
-        LOGGER.info(f"Total parquet files discovered: {len(all_files)}")
+        log.complete(total_files_discovered=len(all_files))
         return all_files
 
     def filter_files_by_metadata(
@@ -241,13 +239,22 @@ class TableauUpload(OdinJob):
         :param watermark: Current watermark value (only data > watermark is needed)
         :return: List of file paths that may contain data above the watermark
         """
+        log = ProcessLog(
+            "filter_files_by_metadata",
+            table=self.table,
+            index_column=index_column,
+            watermark=str(watermark),
+            input_file_count=len(file_paths),
+        )
+
         if watermark is None:
-            LOGGER.info("No watermark set, all files will be processed")
+            log.complete(result="no_watermark_set", filtered_file_count=len(file_paths))
             return file_paths
 
-        ProcessLog("filter_files_by_metadata", table=self.table, watermark=str(watermark))
-        LOGGER.info(f"Filtering files using metadata where {index_column} max > {watermark}")
         filtered_files: List[str] = []
+        skipped_missing_column = 0
+        skipped_below_watermark = 0
+        metadata_read_errors = 0
 
         s3_fs = fs.S3FileSystem()
 
@@ -261,7 +268,7 @@ class TableauUpload(OdinJob):
                 # Check if index_column exists in this file's schema
                 schema_names = pq_file.schema_arrow.names
                 if index_column not in schema_names:
-                    LOGGER.info(f"Skipping {file_path}: column '{index_column}' not in schema")
+                    skipped_missing_column += 1
                     continue
 
                 # Get column statistics across all row groups
@@ -274,18 +281,23 @@ class TableauUpload(OdinJob):
 
                 if file_max is not None and file_max > watermark:
                     filtered_files.append(file_path)
-                    LOGGER.info(f"Include {file_path}: max={file_max} > watermark={watermark}")
                 else:
-                    LOGGER.info(f"Skip {file_path}: max={file_max} <= watermark={watermark}")
+                    skipped_below_watermark += 1
 
                 pq_file.close()
 
             except Exception as e:
                 # If we can't read metadata, include the file to be safe
-                LOGGER.warning(f"Could not read metadata for {file_path}: {e}")
+                log.add_metadata(metadata_read_error=f"{file_path}: {e}")
+                metadata_read_errors += 1
                 filtered_files.append(file_path)
 
-        LOGGER.info(f"Files after metadata filtering: {len(filtered_files)} of {len(file_paths)}")
+        log.complete(
+            filtered_file_count=len(filtered_files),
+            skipped_missing_column=skipped_missing_column,
+            skipped_below_watermark=skipped_below_watermark,
+            metadata_read_errors=metadata_read_errors,
+        )
         return filtered_files
 
     def load_filtered_data_from_s3(
@@ -303,11 +315,16 @@ class TableauUpload(OdinJob):
         :param watermark: Current watermark value for filtering
         :return: LazyFrame with data filtered according to watermark and table rules
         """
-        if not file_paths:
-            return pl.LazyFrame()
+        log = ProcessLog(
+            "load_filtered_data_from_s3",
+            table=self.table,
+            file_count=len(file_paths),
+            watermark=str(watermark) if watermark is not None else "None",
+        )
 
-        ProcessLog("load_filtered_data", table=self.table, file_count=len(file_paths))
-        LOGGER.info(f"Loading data from {len(file_paths)} S3 files")
+        if not file_paths:
+            log.complete(result="empty_file_paths")
+            return pl.LazyFrame()
 
         # Create S3 filesystem for PyArrow
         s3_fs = fs.S3FileSystem()
@@ -338,21 +355,25 @@ class TableauUpload(OdinJob):
         ]
         if cast_exprs:
             lf = lf.with_columns(*cast_exprs)
+            log.add_metadata(casts_applied=len(cast_exprs))
 
         # Drop columns
         drop_cols = [col for col in self.rules["drops"] if col in columns]
         if drop_cols:
             lf = lf.drop(drop_cols)
+            log.add_metadata(columns_dropped=len(drop_cols))
 
         # Apply watermark filter if applicable
+        watermark_filter_applied = False
         if (
             watermark is not None
             and self.rules["index_column"]
             and self.rules["index_column"] in columns
         ):
-            LOGGER.info(f"Applying filter: {self.rules['index_column']} > {watermark}")
             lf = lf.filter(pl.col(self.rules["index_column"]) > watermark)
+            watermark_filter_applied = True
 
+        log.complete(watermark_filter_applied=str(watermark_filter_applied))
         return lf
 
     def get_latest_watermark(self) -> Any | None:
@@ -361,18 +382,23 @@ class TableauUpload(OdinJob):
 
         :return: Watermark value or None if not found
         """
+        log = ProcessLog(
+            "get_latest_watermark",
+            table=self.table,
+            s3_path=f"s3://{DATA_SPRINGBOARD}/{CHECKPOINT_FILE_KEY}",
+        )
         s3 = boto3.client("s3")
         try:
-            LOGGER.info(
-                f"Fetching watermark for {self.table} from s3://{DATA_SPRINGBOARD}/{CHECKPOINT_FILE_KEY}"
-            )
             response = s3.get_object(Bucket=DATA_SPRINGBOARD, Key=CHECKPOINT_FILE_KEY)
             state = json.loads(response["Body"].read().decode("utf-8"))
-            return state.get(self.table)
+            watermark = state.get(self.table)
+            log.complete(watermark=str(watermark) if watermark is not None else "None")
+            return watermark
         except s3.exceptions.NoSuchKey:
+            log.complete(result="no_checkpoint_file")
             return None
         except Exception as e:
-            LOGGER.warning(f"Could not read watermark state: {e}")
+            log.failed(e)
             return None
 
     def update_watermark(self, new_value: Any) -> None:
@@ -381,7 +407,14 @@ class TableauUpload(OdinJob):
 
         :param new_value: New watermark value
         """
+        log = ProcessLog(
+            "update_watermark",
+            table=self.table,
+            new_value=str(new_value) if new_value is not None else "None",
+        )
+
         if new_value is None:
+            log.complete(result="skipped_null_value")
             return
 
         s3 = boto3.client("s3")
@@ -400,9 +433,9 @@ class TableauUpload(OdinJob):
                 Key=CHECKPOINT_FILE_KEY,
                 Body=json.dumps(state, default=str),
             )
-            LOGGER.info(f"Updated watermark for {self.table} to {new_value}")
+            log.complete(result="success")
         except Exception as e:
-            LOGGER.error(f"Error updating watermark state: {e}")
+            log.failed(e)
 
     def publish_hyper_to_tableau(
         self,
@@ -421,16 +454,30 @@ class TableauUpload(OdinJob):
         :param server_url: Tableau server URL
         :param publish_mode: Publish mode (Overwrite or Append)
         """
-        tableau_auth = TSC.PersonalAccessTokenAuth(
-            os.environ["TABLEAU_PERSONAL_ACCESS_TOKEN_NAME"],
-            os.environ["TABLEAU_PERSONAL_ACCESS_TOKEN_SECRET"],
+        log = ProcessLog(
+            "publish_hyper_to_tableau",
+            datasource_name=datasource_name,
+            project_name=project_name,
+            server_url=server_url,
+            publish_mode=str(publish_mode),
         )
 
-        server = TSC.Server(server_url, use_server_version=True, http_options={"verify": False})
-        with server.auth.sign_in(tableau_auth):
-            project_id = resolve_project_id(server, project_name)
-            datasource_item = TSC.DatasourceItem(project_id=project_id, name=datasource_name)
-            server.datasources.publish(datasource_item, hyper_filepath, mode=publish_mode)
+        try:
+            tableau_auth = TSC.PersonalAccessTokenAuth(
+                os.environ["TABLEAU_PERSONAL_ACCESS_TOKEN_NAME"],
+                os.environ["TABLEAU_PERSONAL_ACCESS_TOKEN_SECRET"],
+            )
+
+            server = TSC.Server(server_url, use_server_version=True, http_options={"verify": False})
+            with server.auth.sign_in(tableau_auth):
+                project_id = resolve_project_id(server, project_name)
+                datasource_item = TSC.DatasourceItem(project_id=project_id, name=datasource_name)
+                server.datasources.publish(datasource_item, hyper_filepath, mode=publish_mode)
+
+            log.complete(result="success")
+        except Exception as e:
+            log.failed(e)
+            raise
 
     def run(self) -> int:
         """
@@ -445,23 +492,25 @@ class TableauUpload(OdinJob):
         :return: Seconds until next run
         """
         self.start_kwargs = {"table": self.table, "overwrite": str(self.overwrite_table)}
+        log = ProcessLog(
+            "run",
+            table=self.table,
+            overwrite=str(self.overwrite_table),
+        )
 
         # Get watermark for incremental processing
         watermark = None
         if self.overwrite_table:
-            LOGGER.info(
-                f"Overwrite requested for {self.table}; skipping watermark fetch "
-                "and publishing overwrite."
-            )
+            log.add_metadata(watermark_status="skipped_overwrite_mode")
         elif self.rules["index_column"]:
             watermark = self.get_latest_watermark()
-            LOGGER.info(f"Current watermark: {watermark}")
+            log.add_metadata(current_watermark=str(watermark) if watermark is not None else "None")
 
         # Step 1: Discover all parquet files across all hive partitions
         all_files = self.discover_partitioned_files()
 
         if not all_files:
-            LOGGER.info(f"No parquet files found for table {self.table}")
+            log.complete(result="no_parquet_files_found")
             return NEXT_RUN_LONG
 
         # Step 2: Filter files based on metadata (only if we have a watermark and index column)
@@ -473,7 +522,7 @@ class TableauUpload(OdinJob):
             filtered_files = all_files
 
         if not filtered_files:
-            LOGGER.info(f"No files contain data above watermark for {self.table}")
+            log.complete(result="no_files_above_watermark")
             return NEXT_RUN_LONG
 
         # Step 3: Load filtered data directly from S3 (no local download needed)
@@ -485,35 +534,32 @@ class TableauUpload(OdinJob):
             try:
                 new_watermark = lf.select(pl.col(self.rules["index_column"]).max()).collect().item()
             except Exception as e:
-                LOGGER.warning(f"Could not calculate new watermark: {e}")
+                log.add_metadata(watermark_calculation_error=str(e))
 
         # Calculate total rows to process
         total_rows = lf.select(pl.len()).collect().item()
 
         if total_rows == 0:
-            LOGGER.info(f"No new data found for {self.table}")
+            log.complete(result="no_new_data")
             return NEXT_RUN_LONG
 
-        ProcessLog("process_batches", table=self.table, total_rows=total_rows)
-        LOGGER.info(f"Processing {total_rows} rows for {self.table} in batches of {BATCH_SIZE}")
+        log.add_metadata(total_rows=total_rows, batch_size=BATCH_SIZE)
 
         # Setup Tableau Environment
         server_url = os.environ.get("TABLEAU_SERVER_URL", "https://awdatatest.mbta.com/")
         project_name = os.environ.get("TABLEAU_WORKBOOK_PROJECT", "Technology Innovation/Odin")
 
         # Process in batches
+        total_batches = (total_rows + BATCH_SIZE - 1) // BATCH_SIZE
         for offset in range(0, total_rows, BATCH_SIZE):
             batch_num = offset // BATCH_SIZE + 1
-            ProcessLog(
+            batch_log = ProcessLog(
                 "process_batch",
                 table=self.table,
                 batch_num=batch_num,
+                total_batches=total_batches,
                 offset=offset,
                 batch_end=min(offset + BATCH_SIZE, total_rows),
-            )
-            LOGGER.info(
-                f"Preparing batch {batch_num} (rows {offset} to "
-                f"{min(offset + BATCH_SIZE, total_rows)})"
             )
 
             # Slice the LazyFrame and materialize the batch
@@ -530,7 +576,7 @@ class TableauUpload(OdinJob):
 
             # Build Hyper extract for this batch
             row_count = build_hyper_from_parquet(chunk_parquet_path, chunk_hyper_path, table_def)
-            LOGGER.info(f"Hyper extract contains {row_count} rows")
+            batch_log.add_metadata(hyper_row_count=row_count)
 
             # Determine Publish Mode
             # If watermark is None (Full Refresh):
@@ -543,7 +589,7 @@ class TableauUpload(OdinJob):
             else:
                 mode = TSC.Server.PublishMode.Append
 
-            LOGGER.info(f"Publishing batch {batch_num} to Tableau (Mode: {mode})")
+            batch_log.add_metadata(publish_mode=str(mode))
             self.publish_hyper_to_tableau(
                 chunk_hyper_path,
                 self.table,
@@ -558,10 +604,16 @@ class TableauUpload(OdinJob):
             if os.path.exists(chunk_hyper_path):
                 os.remove(chunk_hyper_path)
 
+            batch_log.complete()
+
         # Update state if successful and we have a new max value
         if new_watermark is not None:
             self.update_watermark(new_watermark)
 
+        log.complete(
+            new_watermark=str(new_watermark) if new_watermark is not None else "None",
+            batches_processed=total_batches,
+        )
         return NEXT_RUN_DEFAULT
 
 
