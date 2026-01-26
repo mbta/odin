@@ -75,8 +75,8 @@ API_TABLES = [
 # Set to ignore entries past the latest exported Job ID for the specified table
 API_TABLE_START_JOBID = {
     "v_tsmstatus": 10607794,
-    "v_salesdetail": 10607794,
-    "v_salestransaction": 0
+    "v_salesdetail": 10607704,
+    "v_salestransaction": 0,
 }
 
 APICounts = list[dict[Literal["jobId", "dataCount"], int]]
