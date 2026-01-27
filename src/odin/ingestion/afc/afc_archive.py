@@ -75,18 +75,22 @@ API_TABLES = [
 
 # Set to ignore entries past the latest exported Job ID for the specified table
 API_TABLE_START_JOBID = {}
-if os.getenv("environment") == 'dev':
+if os.getenv("environment") == "dev":
     # Dev settings
-    API_TABLE_START_JOBID.update({
-        "v_salesdetail": 0,
-        "v_salestransaction": 0,
-    })
+    API_TABLE_START_JOBID.update(
+        {
+            "v_salesdetail": 0,
+            "v_salestransaction": 0,
+        }
+    )
 else:
     # Prod settings
-    API_TABLE_START_JOBID.update({
-        "v_salesdetail": 10607794,
-        "v_salestransaction": 10607904,
-    })
+    API_TABLE_START_JOBID.update(
+        {
+            "v_salesdetail": 10607794,
+            "v_salestransaction": 10607904,
+        }
+    )
 
 APICounts = list[dict[Literal["jobId", "dataCount"], int]]
 
