@@ -312,3 +312,56 @@ def test_sync_parquet_transactional(
     dl_obj.assert_called_once_with("temp_.parquet", f"{tmpdir}/temp_.parquet")
     mock_upload.assert_called_once_with(export_file, f"{export}/table_001.parquet")
     del_obj.assert_called_once_with([])
+
+
+_FakeRequestResponse = MagicMock()
+_FakeRequestResponse.json.return_value = [{'test_table':
+                                           {'table_infos': [{'data_type': 'test_table_type'}],
+                                            'type': 'test_type'}}]
+_FakeSchema = MagicMock()
+_FakeSchema.len.return_value = 10000
+
+
+@patch.dict("odin.ingestion.afc.afc_archive.API_TABLE_START_JOBID", {"test_table": 123})
+@patch("odin.ingestion.afc.afc_archive.list_objects")
+@patch("odin.ingestion.afc.afc_archive.ds_metadata_min_max")
+@patch.object(ArchiveAFCAPI, 'make_request',
+              return_value=_FakeRequestResponse)
+@patch.object(ArchiveAFCAPI, 'api_job_ids', return_value=[])
+@patch("odin.ingestion.afc.afc_archive.make_pl_schema", return_value=_FakeSchema)
+def test_set_starting_jobid(make_pl_schema: MagicMock, api_job_ids: MagicMock,
+                            make_request: MagicMock, ds_metadata_min_max: MagicMock,
+                            list_objects: MagicMock):
+    """Test API_TABLE_START_JOBID to set starting jobid for table ingestion."""
+    import odin.ingestion.afc.afc_archive as afc_archive
+
+    # If there are prior parquet files, return greatest of either previous job_id or starting job_id
+    for max_job_id, jobid_start_id in [(100, 1000), (2000, 100)]:
+        afc_archive.API_TABLE_START_JOBID = {"test_table": jobid_start_id}
+        list_objects.return_value = [True]
+        ds_metadata_min_max.return_value = (0, max_job_id)
+
+        job = ArchiveAFCAPI("test_table")
+        job.setup_job()
+        job.load_job_ids()
+
+        expected_start_jobid = max(max_job_id, jobid_start_id)
+        api_job_ids.assert_called_with(expected_start_jobid)
+
+    # If there are no prior parquet files found, should always go from starting job_id
+    for jobid_start_id in [0, 100, 1000]:
+        afc_archive.API_TABLE_START_JOBID = {"test_table": jobid_start_id}
+        list_objects.return_value = 0 
+        ds_metadata_min_max.return_value = None
+
+        job = ArchiveAFCAPI("test_table")
+        job.setup_job()
+        job.load_job_ids()
+
+        api_job_ids.assert_called_with(jobid_start_id)
+
+
+
+
+
+
