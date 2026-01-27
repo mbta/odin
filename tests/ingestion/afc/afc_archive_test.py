@@ -315,9 +315,9 @@ def test_sync_parquet_transactional(
 
 
 _FakeRequestResponse = MagicMock()
-_FakeRequestResponse.json.return_value = [{'test_table':
-                                           {'table_infos': [{'data_type': 'test_table_type'}],
-                                            'type': 'test_type'}}]
+_FakeRequestResponse.json.return_value = [
+    {"test_table": {"table_infos": [{"data_type": "test_table_type"}], "type": "test_type"}}
+]
 _FakeSchema = MagicMock()
 _FakeSchema.len.return_value = 10000
 
@@ -325,13 +325,16 @@ _FakeSchema.len.return_value = 10000
 @patch.dict("odin.ingestion.afc.afc_archive.API_TABLE_START_JOBID", {"test_table": 123})
 @patch("odin.ingestion.afc.afc_archive.list_objects")
 @patch("odin.ingestion.afc.afc_archive.ds_metadata_min_max")
-@patch.object(ArchiveAFCAPI, 'make_request',
-              return_value=_FakeRequestResponse)
-@patch.object(ArchiveAFCAPI, 'api_job_ids', return_value=[])
+@patch.object(ArchiveAFCAPI, "make_request", return_value=_FakeRequestResponse)
+@patch.object(ArchiveAFCAPI, "api_job_ids", return_value=[])
 @patch("odin.ingestion.afc.afc_archive.make_pl_schema", return_value=_FakeSchema)
-def test_set_starting_jobid(make_pl_schema: MagicMock, api_job_ids: MagicMock,
-                            make_request: MagicMock, ds_metadata_min_max: MagicMock,
-                            list_objects: MagicMock):
+def test_set_starting_jobid(
+    make_pl_schema: MagicMock,
+    api_job_ids: MagicMock,
+    make_request: MagicMock,
+    ds_metadata_min_max: MagicMock,
+    list_objects: MagicMock,
+):
     """Test API_TABLE_START_JOBID to set starting jobid for table ingestion."""
     import odin.ingestion.afc.afc_archive as afc_archive
 
@@ -359,9 +362,3 @@ def test_set_starting_jobid(make_pl_schema: MagicMock, api_job_ids: MagicMock,
         job.load_job_ids()
 
         api_job_ids.assert_called_with(jobid_start_id)
-
-
-
-
-
-
