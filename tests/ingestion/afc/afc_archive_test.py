@@ -351,7 +351,7 @@ def test_set_starting_jobid(make_pl_schema: MagicMock, api_job_ids: MagicMock,
     # If there are no prior parquet files found, should always go from starting job_id
     for jobid_start_id in [0, 100, 1000]:
         afc_archive.API_TABLE_START_JOBID = {"test_table": jobid_start_id}
-        list_objects.return_value = 0 
+        list_objects.return_value = 0
         ds_metadata_min_max.return_value = None
 
         job = ArchiveAFCAPI("test_table")
