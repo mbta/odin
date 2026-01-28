@@ -75,7 +75,7 @@ API_TABLES = [
 
 # Set to ignore entries past the latest exported Job ID for the specified table
 API_TABLE_START_JOBID = {}
-if os.getenv("environment") == "dev":
+if os.getenv("ECS_TASK_GROUP") == "family:odin-dev":
     # Dev settings
     API_TABLE_START_JOBID.update(
         {
