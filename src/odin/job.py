@@ -3,6 +3,9 @@ from abc import abstractmethod
 from multiprocessing import get_context
 from multiprocessing.sharedctypes import Synchronized
 from typing import Dict
+import glob
+import os
+import shutil
 import tempfile
 import sched
 
@@ -14,6 +17,26 @@ from odin.utils.runtime import sigterm_check
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 NEXT_RUN_FAILED = 60 * 60 * 24  # 24 hours
 
+# Prefix for Odin temp directories to avoid conflicts with other processes
+ODINJOB_TMPDIR_PREFIX = "odinjob_tmp_"
+
+
+def cleanup_orphaned_temp_dirs() -> None:
+    """
+    Clean up orphaned Odin temporary directories from previous failed runs
+
+    When a subprocess is killed (e.g. through OOM), the finally block that normally
+    cleans up TemporaryDirectory never runs. This function cleans up any leftover
+    tmp directories matching the OdinJob prefix
+    """
+    tmp_base = tempfile.gettempdir()
+    for tmp_path in glob.glob(os.path.join(tmp_base, f"{ODINJOB_TMPDIR_PREFIX}*")):
+        if os.path.isdir(tmp_path):
+            try:
+                shutil.rmtree(tmp_path, ignore_errors=True)
+            except Exception:
+                pass
+
 
 class OdinJob(ABC):
     """Base Class for Odin Event Loop Jobs."""
@@ -24,7 +47,10 @@ class OdinJob(ABC):
         """Reset TemporaryDirectory folder."""
         if hasattr(self, "_tdir"):
             self._tdir.cleanup()  # type: ignore
-        self._tdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self._tdir = tempfile.TemporaryDirectory(
+            prefix=ODINJOB_TMPDIR_PREFIX,
+            ignore_cleanup_errors=True,
+        )
         self.tmpdir = self._tdir.name
 
     @abstractmethod
@@ -86,6 +112,9 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler | None) -> None:
     :param job: Job to be run and re-scheduled
     :param schedule: main application scheduler (or None to run Job once)
     """
+    # Clean up any orphaned temp directories from previous killed processes
+    cleanup_orphaned_temp_dirs()
+
     return_manager = get_context("spawn").Manager()
     proc_return_val = return_manager.Value("i", NEXT_RUN_FAILED)
     proc = get_context("spawn").Process(target=job.start, args=(proc_return_val,))
