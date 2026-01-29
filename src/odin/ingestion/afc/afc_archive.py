@@ -67,24 +67,13 @@ API_TABLES = [
     "v_cashless_payments",
     "v_inspections",
     "v_tsmstatus",
-    #   Commenting out until S&B gives us a job_id to start at
-    #    "v_salesdetail",
-    #    "v_salestransaction",
+    "v_salesdetail",
+    "v_salestransaction",
 ]
 
 
-# Set to ignore entries past the latest exported Job ID for the specified table
 API_TABLE_START_JOBID = {}
-if os.getenv("ECS_TASK_GROUP") == "family:odin-dev":
-    # Dev settings
-    API_TABLE_START_JOBID.update(
-        {
-            "v_salesdetail": 0,
-            "v_salestransaction": 0,
-        }
-    )
-else:
-    # Prod settings
+if os.getenv("ECS_TASK_GROUP") == "family:odin-prod":
     API_TABLE_START_JOBID.update(
         {
             "v_salesdetail": 10607794,
