@@ -37,8 +37,8 @@ BATCH_SIZE = 500_000  # Number of rows per Hyper file batch
 
 # Tables to sync
 TABLES_TO_SYNC = [
+    "EDW.ABP_TAP",
     "EDW.JOURNAL_ENTRY",
-    # "EDW.ABP_TAP",
 ]
 
 
