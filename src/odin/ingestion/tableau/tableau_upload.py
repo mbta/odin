@@ -546,8 +546,8 @@ class TableauUpload(OdinJob):
         log.add_metadata(total_rows=total_rows, batch_size=BATCH_SIZE)
 
         # Setup Tableau Environment
-        server_url = os.environ.get("TABLEAU_SERVER_URL", "https://awdatatest.mbta.com/")
-        project_name = os.environ.get("TABLEAU_WORKBOOK_PROJECT", "Technology Innovation/Odin")
+        server_url = os.environ.get("TABLEAU_SERVER_URL", "")
+        project_name = os.environ.get("TABLEAU_WORKBOOK_PROJECT", "")
 
         # Process in batches
         total_batches = (total_rows + BATCH_SIZE - 1) // BATCH_SIZE
