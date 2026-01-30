@@ -30,12 +30,27 @@ def cleanup_orphaned_temp_dirs() -> None:
     tmp directories matching the OdinJob prefix
     """
     tmp_base = tempfile.gettempdir()
-    for tmp_path in glob.glob(os.path.join(tmp_base, f"{ODINJOB_TMPDIR_PREFIX}*")):
-        if os.path.isdir(tmp_path):
-            try:
-                shutil.rmtree(tmp_path, ignore_errors=True)
-            except Exception:
-                pass
+    orphaned_dirs = glob.glob(os.path.join(tmp_base, f"{ODINJOB_TMPDIR_PREFIX}*"))
+    orphaned_dirs = [p for p in orphaned_dirs if os.path.isdir(p)]
+
+    if not orphaned_dirs:
+        return
+
+    log = ProcessLog(
+        "cleanup_orphaned_temp_dirs",
+        orphaned_count=len(orphaned_dirs),
+        tmp_base=tmp_base,
+    )
+    cleaned_count = 0
+    for tmp_path in orphaned_dirs:
+        try:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+            if not os.path.exists(tmp_path):
+                cleaned_count += 1
+        except Exception:
+            pass
+
+    log.complete(cleaned_count=cleaned_count)
 
 
 class OdinJob(ABC):
