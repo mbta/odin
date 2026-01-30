@@ -66,11 +66,20 @@ API_TABLES = [
     "v_validation_taps",
     "v_cashless_payments",
     "v_inspections",
-    #   Commenting out until S&B gives us a job_id to start at
-    #    "v_tsmstatus",
-    #    "v_salesdetail",
-    #    "v_salestransaction",
+    "v_tsmstatus",
+    "v_salesdetail",
+    "v_salestransaction",
 ]
+
+
+API_TABLE_START_JOBID = {}
+if os.getenv("ECS_TASK_GROUP") == "family:odin-prod":
+    API_TABLE_START_JOBID.update(
+        {
+            "v_salesdetail": 10607794,
+            "v_salestransaction": 10607904,
+        }
+    )
 
 APICounts = list[dict[Literal["jobId", "dataCount"], int]]
 
@@ -248,13 +257,15 @@ class ArchiveAFCAPI(OdinJob):
         # this determines of process performs incremental load or full refresh
         self.table_type = schemas_dict[self.table]["type"]
 
-        # set self.pq_job_id from parquet dataset
-        self.pq_job_id = 0
-        self.max_job_id = 0
+        # set self.pq_job_id from parquet dataset or specified start point
+        last_exported_id = 0
         if list_objects(self.export_folder, in_filter=".parquet"):
-            _, self.pq_job_id = ds_metadata_min_max(
+            _, last_exported_id = ds_metadata_min_max(
                 ds_from_path(f"s3://{self.export_folder}"), "job_id"
             )
+        self.pq_job_id = max(last_exported_id, API_TABLE_START_JOBID.get(self.table, 0))
+        self.max_job_id = 0
+
         log.complete(pq_job_id=self.pq_job_id)
 
     def api_job_ids(self, job_id_from: int) -> Generator[APICounts]:
