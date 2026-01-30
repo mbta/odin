@@ -16,6 +16,7 @@ from odin.generate.cubic.ods_fact import schedule_cubic_ods_fact_gen
 from odin.ingestion.afc.afc_archive import schedule_afc_archive
 from odin.ingestion.afc.afc_restricted import schedule_restricted_afc_archive
 from odin.generate.data_dictionary.dictionary import schedule_dictionary
+from odin.ingestion.tableau.tableau_upload import schedule_tableau_upload
 
 
 def start():
@@ -43,6 +44,8 @@ def start():
         private=[
             "AFC_API_CLIENT_ID",
             "AFC_API_CLIENT_SECRET",
+            "TABLEAU_PERSONAL_ACCESS_TOKEN_NAME",
+            "TABLEAU_PERSONAL_ACCESS_TOKEN_SECRET",
         ],
         aws=[
             "ECS_CLUSTER",
@@ -67,5 +70,7 @@ def start():
         schedule_restricted_afc_archive(schedule)
     if "data_dictionary" in config:
         schedule_dictionary(schedule)
+    if "tableau_upload" in config:
+        schedule_tableau_upload(schedule)
 
     schedule.run()

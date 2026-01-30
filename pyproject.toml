@@ -18,6 +18,8 @@ dependencies = [
     "psutil",
     "pyarrow",
     "urllib3==2.3.0",
+    "tableauhyperapi",
+    "tableauserverclient",
 ]
 optional-dependencies.dev = [
     "ipykernel",
