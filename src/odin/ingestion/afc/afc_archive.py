@@ -80,6 +80,8 @@ if os.getenv("ECS_TASK_GROUP") == "family:odin-prod":
         }
     )
 
+REQUEST_RETRIES = 3
+
 APICounts = list[dict[Literal["jobId", "dataCount"], int]]
 
 APITableSchema = list[dict[Literal["column_name", "data_type"], str]]
@@ -325,30 +327,38 @@ class ArchiveAFCAPI(OdinJob):
             "jobIdFrom": str(job_id_from),
             "jobIdTo": str(job_id_to),
         }
-        r = self.make_request(url, fields=fields, preload_content=False)
 
         json_path = os.path.join(self.tmpdir, f"{job_id_from}.json")
         gz_path = f"{json_path}.gz"
+        success = False
+        for retry_num in range(REQUEST_RETRIES):
+            r = self.make_request(url, fields=fields, preload_content=False)
 
-        # download json.gz file (as stream)
-        with open(gz_path, mode="wb") as gz_write:
-            shutil.copyfileobj(r, gz_write)
-        r.release_conn()
+            # download json.gz file (as stream)
+            with open(gz_path, mode="wb") as gz_write:
+                shutil.copyfileobj(r, gz_write)
+            r.release_conn()
 
-        # convert to json.gz to json, so polars can be used
-        # json file should also produce more consistent disk and memory usage profiles
-        with gzip.open(gz_path, mode="rb") as gz_read, open(json_path, mode="wb") as json_w:
-            try:
-                shutil.copyfileobj(gz_read, json_w)
-            except EOFError:
-                # Sometimes there is a file read error on gz_path, which may be due to
-                # filesystem latency.
-                time.sleep(10)
-                shutil.copyfileobj(gz_read, json_w)
+            # convert to json.gz to json, so polars can be used
+            # json file should also produce more consistent disk and memory usage profiles
+            with gzip.open(gz_path, mode="rb") as gz_read, open(json_path, mode="wb") as json_w:
+                try:
+                    shutil.copyfileobj(gz_read, json_w)
+                    success = True
+                except EOFError:
+                    ProcessLog(
+                        "download_json", gz_path=gz_path, json_path=json_path, retrying=retry_num
+                    )
+                    time.sleep(10)
+                    continue
 
-        os.remove(gz_path)
+            os.remove(gz_path)
+            break
 
-        log.complete()
+        if success:
+            log.complete()
+        else:
+            log.failed(IOError("Failed to download and convert JSON file."))
         verify_downloads(json_path, self.schema, download_jobs)
 
     def load_job_ids(self) -> None:
