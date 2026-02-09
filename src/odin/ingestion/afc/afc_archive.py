@@ -4,12 +4,11 @@ import json
 import sched
 import shutil
 import urllib3
+import time
 from collections import ChainMap
 from operator import itemgetter
 from pathlib import Path
-from typing import Literal
-from typing import TypedDict
-from typing import Generator
+from typing import Literal, TypedDict, Generator
 
 
 from odin.job import OdinJob
@@ -339,7 +338,14 @@ class ArchiveAFCAPI(OdinJob):
         # convert to json.gz to json, so polars can be used
         # json file should also produce more consistent disk and memory usage profiles
         with gzip.open(gz_path, mode="rb") as gz_read, open(json_path, mode="wb") as json_w:
-            shutil.copyfileobj(gz_read, json_w)
+            try:
+                shutil.copyfileobj(gz_read, json_w)
+            except EOFError:
+                # Sometimes there is a file read error on gz_path, which may be due to
+                # filesystem latency.
+                time.sleep(10)
+                shutil.copyfileobj(gz_read, json_w)
+
         os.remove(gz_path)
 
         log.complete()
