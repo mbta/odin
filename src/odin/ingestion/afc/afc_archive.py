@@ -332,28 +332,29 @@ class ArchiveAFCAPI(OdinJob):
         gz_path = f"{json_path}.gz"
         success = False
         for retry_num in range(REQUEST_RETRIES):
-            r = self.make_request(url, fields=fields, preload_content=False)
+            try:
+                r = self.make_request(url, fields=fields, preload_content=False)
 
-            # download json.gz file (as stream)
-            with open(gz_path, mode="wb") as gz_write:
-                shutil.copyfileobj(r, gz_write)
-            r.release_conn()
+                # download json.gz file (as stream)
+                with open(gz_path, mode="wb") as gz_write:
+                    shutil.copyfileobj(r, gz_write)
+                r.release_conn()
 
-            # convert to json.gz to json, so polars can be used
-            # json file should also produce more consistent disk and memory usage profiles
-            with gzip.open(gz_path, mode="rb") as gz_read, open(json_path, mode="wb") as json_w:
-                try:
+                # convert to json.gz to json, so polars can be used
+                # json file should also produce more consistent disk and memory usage profiles
+                with gzip.open(gz_path, mode="rb") as gz_read, open(json_path, mode="wb") as json_w:
                     shutil.copyfileobj(gz_read, json_w)
-                    success = True
-                except EOFError:
-                    ProcessLog(
-                        "download_json", gz_path=gz_path, json_path=json_path, retrying=retry_num
-                    )
-                    time.sleep(10)
-                    continue
 
-            os.remove(gz_path)
-            break
+                os.remove(gz_path)
+                success = True
+                break
+            except Exception as e:
+                ProcessLog(
+                        "download_json", gz_path=gz_path, json_path=json_path, retrying=retry_num,
+                        exception=str(e)
+                )
+                time.sleep(10)
+                continue
 
         if success:
             log.complete()
