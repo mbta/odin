@@ -350,9 +350,13 @@ class ArchiveAFCAPI(OdinJob):
                 break
             except Exception as e:
                 ProcessLog(
-                        "download_json", gz_path=gz_path, json_path=json_path, retrying=retry_num,
-                        exception=str(e)
+                    "download_json",
+                    gz_path=gz_path,
+                    json_path=json_path,
+                    retrying=retry_num,
+                    exception=str(e),
                 )
+
                 time.sleep(10)
                 continue
 
