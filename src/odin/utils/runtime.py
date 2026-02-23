@@ -4,6 +4,7 @@ import shutil
 import sys
 import time
 import tomllib
+from importlib.metadata import distributions
 from typing import List
 from typing import Any
 
@@ -49,6 +50,29 @@ def validate_env_vars(
         )
         logger.failed(exception)
         raise exception
+
+    logger.complete()
+
+
+def log_installed_packages() -> None:
+    """
+    Log the versions of all installed Python packages.
+
+    This provides visibility into the exact package versions being used
+    at application runtime for debugging and reproducibility.
+    """
+    logger = ProcessLog("log_installed_packages")
+
+    # Log Python version
+    logger.add_metadata(python_version=sys.version, print_log=False)
+
+    packages = {}
+    for dist in distributions():
+        packages[dist.metadata["Name"]] = dist.version
+
+    # Sort packages alphabetically for consistent output
+    for name in sorted(packages.keys()):
+        logger.add_metadata(**{name: packages[name]}, print_log=False)
 
     logger.complete()
 
