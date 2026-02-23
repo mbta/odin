@@ -3,6 +3,7 @@ import signal
 import time
 
 from odin.utils.runtime import validate_env_vars
+from odin.utils.runtime import log_installed_packages
 from odin.utils.runtime import handle_sigterm
 from odin.utils.runtime import load_config
 from odin.utils.logger import ProcessLog
@@ -55,6 +56,7 @@ def start():
             "ECS_TASK_GROUP",
         ],
     )
+    log_installed_packages()
     check_for_parallel_tasks()
     start_migrations()
 
