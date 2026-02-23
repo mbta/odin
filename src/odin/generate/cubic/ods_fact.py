@@ -21,6 +21,8 @@ from odin.utils.locations import DATA_ARCHIVE
 from odin.utils.locations import CUBIC_QLIK_PROCESSED
 from odin.utils.parquet import fast_last_mod_ds_max
 from odin.utils.parquet import ds_metadata_min_max
+from odin.utils.parquet import ds_column_min_max
+from odin.utils.parquet import ds_files
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_unique_values
 from odin.utils.parquet import pq_dataset_writer
@@ -303,8 +305,27 @@ class CubicODSFact(OdinJob):
 
         "B" Records are ignored for this process as they do not contain any relevant information.
         """
+        # Load fact dataset and get current max sequence
+        s3_objects = list_objects(f"s3://{self.s3_export}/", in_filter=".parquet")
         fact_ds = ds_from_path(f"s3://{self.s3_export}/")
+        fact_files = ds_files(fact_ds)
+        initial_row_count = fact_ds.count_rows()
         _, max_fact_seq = ds_metadata_min_max(fact_ds, "header__change_seq")
+        actual_min, actual_max = ds_column_min_max(fact_ds, "header__change_seq")
+
+        # Log initial fact table state
+        init_log = ProcessLog(
+            "load_cdc_initial_state",
+            table=self.table,
+            s3_file_count=len(s3_objects),
+            fact_ds_file_count=len(fact_files),
+            initial_row_count=initial_row_count,
+            max_fact_seq_metadata=str(max_fact_seq),
+            max_fact_seq_actual=str(actual_max),
+            metadata_actual_match=str(max_fact_seq) == str(actual_max),
+        )
+        init_log.complete()
+
         cdc_filter = (
             (pc.field("header__change_oper") == "I")
             | (pc.field("header__change_oper") == "D")
@@ -317,6 +338,27 @@ class CubicODSFact(OdinJob):
             ds_filter=cdc_filter,
             ds_filter_columns=["header__change_oper"],
         )
+
+        # Log CDC fetch result
+        cdc_log = ProcessLog(
+            "load_cdc_fetch",
+            table=self.table,
+            cdc_df_height=cdc_df.height,
+            max_fact_seq_used=str(max_fact_seq),
+        )
+        if cdc_df.height == 0:
+            hist_min, hist_max = ds_metadata_min_max(self.history_ds, "header__change_seq")
+            cdc_log.add_metadata(
+                history_min_seq=str(hist_min),
+                history_max_seq=str(hist_max),
+            )
+        else:
+            cdc_log.add_metadata(
+                cdc_seq_min=str(cdc_df.get_column("header__change_seq").min()),
+                cdc_seq_max=str(cdc_df.get_column("header__change_seq").max()),
+            )
+        cdc_log.complete()
+
         max_load_records = max(10_000, cdc_df.height)
 
         if cdc_df.height == 0:
@@ -334,9 +376,11 @@ class CubicODSFact(OdinJob):
         # many CDC records often impact the same FACT row.
         # After cdc_to_fact colapses CDC records to FACT format, pull more CDC records until
         # expected number of FACT records are available for merging
-        for _ in range(10):
+        loop_iterations = 0
+        for loop_idx in range(10):
             num_load_records = insert_df.height + delete_df.height + update_df.height
             if cdc_df.height == 0 or num_load_records > max_load_records:
+                loop_iterations = loop_idx
                 break
             max_fact_seq = cdc_df.get_column("header__change_seq").max()
             cdc_df = ds_metadata_limit_k_sorted(
@@ -349,6 +393,24 @@ class CubicODSFact(OdinJob):
             insert_df, update_df, delete_df = cdc_to_fact(
                 cdc_df, insert_df, update_df, delete_df, keys
             )
+
+        # Log CDC processing summary after loop
+        cdc_final_seq = cdc_df.get_column("header__change_seq").max() if cdc_df.height > 0 else None
+        process_log = ProcessLog(
+            "load_cdc_processing",
+            table=self.table,
+            loop_iterations=loop_iterations,
+            insert_df_height=insert_df.height,
+            update_df_height=update_df.height,
+            delete_df_height=delete_df.height,
+            final_cdc_seq_max=str(cdc_final_seq) if cdc_final_seq else None,
+        )
+        process_log.complete()
+
+        # Track counts for row validation (before insert_df is modified by update merge)
+        delete_count = delete_df.height
+        original_insert_count = insert_df.height
+
         # Determine if next run should be immediate
         ds_available_count = 0
         if cdc_df.height > 0:
@@ -429,11 +491,49 @@ class CubicODSFact(OdinJob):
             export_file_prefix="year",
         )
 
+        # Get final seq max before upload for logging
+        final_insert_seq_max = (
+            insert_df.get_column("header__change_seq").max()
+            if "header__change_seq" in insert_df.columns
+            else None
+        )
+
         # Check for sigterm before upload (can't be un-done)
         sigterm_check()
         for new_path in new_paths:
             move_path = new_path.replace(f"{self.tmpdir}/", "")
             upload_file(new_path, move_path)
+
+        # Verify uploads and log final state
+        verify_ds = ds_from_path(f"s3://{self.s3_export}/")
+        verify_min, verify_max = ds_column_min_max(verify_ds, "header__change_seq")
+        verify_objects = list_objects(f"s3://{self.s3_export}/", in_filter=".parquet")
+        final_row_count = verify_ds.count_rows()
+
+        # Row count validation: original inserts add rows, deletes remove rows, updates are net-zero
+        # Note: insert_df.height includes updated rows (which are re-added after being dropped),
+        # so we use original_insert_count captured before update merge
+        expected_row_count = initial_row_count + original_insert_count - delete_count
+        row_count_mismatch = final_row_count != expected_row_count
+
+        upload_log = ProcessLog(
+            "load_cdc_upload_complete",
+            table=self.table,
+            files_uploaded=len(new_paths),
+            original_insert_count=original_insert_count,
+            final_insert_df_height=insert_df.height,
+            final_insert_seq_max=str(final_insert_seq_max) if final_insert_seq_max else None,
+            s3_verify_seq_min=str(verify_min),
+            s3_verify_seq_max=str(verify_max),
+            s3_verify_file_count=len(verify_objects),
+            initial_row_count=initial_row_count,
+            final_row_count=final_row_count,
+            expected_row_count=expected_row_count,
+            delete_count=delete_count,
+            row_count_mismatch=row_count_mismatch,
+            ds_available_count=ds_available_count,
+        )
+        upload_log.complete()
 
         if ds_available_count > int(0.9 * max_load_records):
             return NEXT_RUN_IMMEDIATE
