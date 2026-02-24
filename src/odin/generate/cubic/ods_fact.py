@@ -506,7 +506,7 @@ class CubicODSFact(OdinJob):
 
         # Verify uploads and log final state
         verify_ds = ds_from_path(f"s3://{self.s3_export}/")
-        verify_min, verify_max = ds_column_min_max(verify_ds, "header__change_seq")
+        verify_min, verify_max = ds_metadata_min_max(verify_ds, "header__change_seq")
         verify_objects = list_objects(f"s3://{self.s3_export}/", in_filter=".parquet")
         final_row_count = verify_ds.count_rows()
 
