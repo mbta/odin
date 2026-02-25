@@ -200,6 +200,23 @@ class CubicODSFact(OdinJob):
         except IndexError:
             self.fact_snapshot = ""
 
+        # Log snapshot check results
+        snapshot_match = self.history_snapshot == self.fact_snapshot
+        snapshot_log = ProcessLog(
+            "snapshot_check",
+            table=self.table,
+            history_snapshot=self.history_snapshot,
+            fact_snapshot=self.fact_snapshot if self.fact_snapshot else "(empty)",
+            snapshots_match=snapshot_match,
+            new_snapshot_detected=not snapshot_match,
+            history_snapshots_available=len(history_snapshots),
+            all_history_snapshots=str(history_snapshots[-5:]) if len(history_snapshots) > 5 else str(history_snapshots),
+            history_ds_rows=history_ds_rows,
+            history_ds_groups=history_ds_groups,
+            batch_size=self.batch_size,
+        )
+        snapshot_log.complete()
+
     def sync_tmp_paths(self, tmp_paths: list[str]) -> None:
         """Sync local parquet files with S3"""
         ProcessLog("sync_tmp_paths")
@@ -238,7 +255,39 @@ class CubicODSFact(OdinJob):
 
     def load_new_snapshot(self) -> None:
         """Load new snapshot from history tables"""
-        delete_objects([o.path for o in list_objects(f"{self.s3_export}/", in_filter=".parquet")])
+        # Log what will be deleted before the destructive operation
+        existing_objects = list_objects(f"{self.s3_export}/", in_filter=".parquet")
+        existing_paths = [o.path for o in existing_objects]
+
+        # Get row count of existing data before deletion
+        existing_row_count = 0
+        existing_seq_min = None
+        existing_seq_max = None
+        if existing_paths:
+            try:
+                existing_ds = ds_from_path(f"s3://{self.s3_export}/")
+                existing_row_count = existing_ds.count_rows()
+                existing_seq_min, existing_seq_max = ds_metadata_min_max(
+                    existing_ds, "header__change_seq"
+                )
+            except Exception as e:
+                existing_row_count = -1  # indicates error reading
+
+        delete_log = ProcessLog(
+            "load_new_snapshot_delete",
+            table=self.table,
+            history_snapshot=self.history_snapshot,
+            fact_snapshot=self.fact_snapshot if self.fact_snapshot else "(empty)",
+            files_to_delete=len(existing_paths),
+            existing_row_count=existing_row_count,
+            existing_seq_min=str(existing_seq_min) if existing_seq_min else None,
+            existing_seq_max=str(existing_seq_max) if existing_seq_max else None,
+            deleted_paths=str(existing_paths[:10]) if len(existing_paths) > 10 else str(existing_paths),
+            total_deleted_paths=len(existing_paths),
+        )
+        delete_log.complete()
+
+        delete_objects(existing_paths)
         write_schema = self.history_ds.schema
         for col in self.history_drop_columns:
             write_schema = write_schema.remove(write_schema.get_field_index(col))
@@ -291,6 +340,23 @@ class CubicODSFact(OdinJob):
         writer.close()
         self.sync_tmp_paths([write_path])
         self.reset_tmpdir()
+
+        # Log completion of new snapshot load
+        verify_ds = ds_from_path(f"s3://{self.s3_export}/")
+        verify_row_count = verify_ds.count_rows()
+        verify_objects = list_objects(f"{self.s3_export}/", in_filter=".parquet")
+        verify_seq_min, verify_seq_max = ds_metadata_min_max(verify_ds, "header__change_seq")
+        load_complete_log = ProcessLog(
+            "load_new_snapshot_complete",
+            table=self.table,
+            history_snapshot=self.history_snapshot,
+            loaded_row_count=verify_row_count,
+            loaded_file_count=len(verify_objects),
+            final_odin_index=odin_index,
+            header__change_seq_min=str(verify_seq_min),
+            header__change_seq_max=str(verify_seq_max),
+        )
+        load_complete_log.complete()
 
     def load_cdc_records(self) -> int:
         """
@@ -573,7 +639,27 @@ class CubicODSFact(OdinJob):
             self.snapshot_check()
             if self.history_snapshot != self.fact_snapshot:
                 # New snapshot detected
+                snapshot_check_log = ProcessLog(
+                    "snapshot_check_log",
+                    table=self.table,
+                    action="new_snapshot_load",
+                    history_snapshot=self.history_snapshot,
+                    fact_snapshot=self.fact_snapshot if self.fact_snapshot else "(empty)",
+                    snapshots_match=False,
+                )
+                snapshot_check_log.complete()
                 self.load_new_snapshot()
+            else:
+                # No new snapshot, update existing fact table
+                snapshot_check_log = ProcessLog(
+                    "snapshot_check_log",
+                    table=self.table,
+                    action="cdc_update_only",
+                    history_snapshot=self.history_snapshot,
+                    fact_snapshot=self.fact_snapshot,
+                    snapshots_match=True,
+                )
+                snapshot_check_log.complete()
             next_run_secs = self.load_cdc_records()
         # For development, other ODIN running...
         except pa.ArrowInvalid:
