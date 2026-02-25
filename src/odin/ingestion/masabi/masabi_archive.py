@@ -45,6 +45,12 @@ _API_PASSWORD = os.getenv("MASABI_DATA_API_PASSWORD", "")
 # dev environments where the dataset is small.
 API_PAGE_SIZE = int(os.getenv("MASABI_API_PAGE_SIZE", "1000"))
 
+# Retry config for individual API page requests.
+# On a non-200 response or network error, the request is retried up to
+# API_MAX_RETRIES times, waiting API_RETRY_DELAY_S seconds between each attempt.
+API_MAX_RETRIES: int = 3
+API_RETRY_DELAY_S: float = 5.0
+
 # Exclusive lower bound for the initial historical backfill: 2025-01-01 00:00:00 UTC (ms).
 MASABI_START_TIMESTAMP_MS: int = 1_735_689_600_000
 
@@ -190,21 +196,34 @@ class ArchiveMasabi(OdinJob):
         fields: dict[str, str],
     ) -> urllib3.BaseHTTPResponse:
         """
-        Issue a GET request to the Masabi API.
+        Issue a GET request to the Masabi API, retrying on failure.
+
+        Retries up to API_MAX_RETRIES times (with API_RETRY_DELAY_S seconds between
+        each attempt) on non-200 responses or network-level errors. Raises on the
+        final attempt if all retries are exhausted.
 
         :param pool: urllib3 connection pool manager
         :param url: full endpoint URL
         :param fields: query-string parameters
         :return: raw urllib3 response
-        :raises urllib3.exceptions.HTTPError: on any non-200 response
+        :raises urllib3.exceptions.HTTPError: if all attempts return a non-200 response
+        :raises urllib3.exceptions.RequestError: if all attempts fail with a network error
         """
-        r = pool.request("GET", url, fields=fields)
-        if r.status != 200:
-            raise urllib3.exceptions.HTTPError(
-                f"Masabi API error: url={url!r} status={r.status} "
-                f"response={r.data.decode()!r}"
-            )
-        return r
+        last_exc: Exception | None = None
+        for attempt in range(API_MAX_RETRIES + 1):
+            try:
+                r = pool.request("GET", url, fields=fields)
+                if r.status != 200:
+                    raise urllib3.exceptions.HTTPError(
+                        f"Masabi API error: url={url!r} status={r.status} "
+                        f"response={r.data.decode()!r}"
+                    )
+                return r
+            except (urllib3.exceptions.HTTPError, urllib3.exceptions.RequestError) as exc:
+                last_exc = exc
+                if attempt < API_MAX_RETRIES:
+                    time.sleep(API_RETRY_DELAY_S)
+        raise last_exc  # type: ignore[misc]
 
     # ------------------------------------------------------------------
     # API pagination
@@ -349,12 +368,25 @@ class ArchiveMasabi(OdinJob):
         log = ProcessLog("masabi_sync_parquet", table=self.table)
 
         # Convert NDJSON → local parquet using the pre-computed active schema.
+        #
+        # Rows at the maximum serverTimestamp are dropped before writing.
+        # Rationale: serverTimestamp values are not strictly unique — Masabi may
+        # write additional rows with the same timestamp after our run completes.
+        # The next run uses an *exclusive* lower bound
+        # (`gt(serverTimestamp:{from_ts})`), so any rows whose timestamp equals
+        # `from_ts` would be silently skipped, causing data loss. By dropping
+        # the boundary rows now, we guarantee that the next run's lower bound
+        # sits below those rows and re-fetches them in full (along with any
+        # late-arriving rows at that same timestamp).
         pq_path = ndjson_path.replace(".ndjson", ".parquet")
-        pl.scan_ndjson(ndjson_path, schema=self.active_schema).sink_parquet(
+        lf = pl.scan_ndjson(ndjson_path, schema=self.active_schema)
+        max_ts = lf.select(pl.col("serverTimestamp").max()).collect().item()
+        lf.filter(pl.col("serverTimestamp") < max_ts).sink_parquet(
             pq_path,
             compression="zstd",
             compression_level=3,
         )
+        log.add_metadata(boundary_ts_dropped=max_ts)
 
         # Download the last existing S3 file so we can merge into it.
         found_objs = list_objects(f"s3://{self.export_folder}", in_filter=".parquet")
