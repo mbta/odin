@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import sched
 import time
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Generator
 
 import polars as pl
 import urllib3
+import yaml
 
 from odin.job import NEXT_RUN_DEFAULT
 from odin.job import OdinJob
@@ -69,346 +71,72 @@ TABLE_EXCLUDE_COLUMNS: dict[str, list[str]] = {
 }
 
 # ---------------------------------------------------------------------------
-# Schemas
+# Schema loader
 #
-# Derived from masabi_schema.yaml (co-located in this package directory).
+# TABLE_SCHEMAS and TABLE_JSON_COLS are derived at import time from
+# masabi_schema.yaml (an OpenAPI 3.0.1 file co-located in this package).
+#
 # YAML type  →  Polars type
 #   string   →  pl.String()
 #   boolean  →  pl.Boolean()
 #   number   →  pl.Float64()
-#   array    →  pl.String()  (JSON-serialised; see TABLE_JSON_COLS)
-#   object   →  pl.String()  (JSON-serialised; see TABLE_JSON_COLS)
+#   array    →  pl.String()  (JSON-serialised)
+#   object   →  pl.String()  (JSON-serialised)
 #
-# When Masabi adds new columns in a future schema version, add them here and
-# to TABLE_JSON_COLS as needed. Old parquet files will expose the new column
-# as null (handled by DuckDB union_by_name=true). Never remove columns.
+# Any unknown YAML type falls back to pl.String() so that future schema
+# additions are safe by default.
 # ---------------------------------------------------------------------------
 
-TABLE_SCHEMAS: dict[str, pl.Schema] = {
-    "retail.account_actions": pl.Schema(
-        {
-            "action": pl.String(),
-            "allocatedAccountId": pl.String(),
-            "allocatedAppId": pl.String(),
-            "comment": pl.String(),
-            "email": pl.String(),
-            "entitlementProofId": pl.String(),
-            "entitlementRestrictionName": pl.String(),
-            "errorCode": pl.String(),
-            "errorReason": pl.String(),
-            "extraDeviceChanges": pl.Float64(),
-            "firstName": pl.String(),
-            "inventoryControlNumber": pl.String(),
-            "lastName": pl.String(),
-            "mediaFormat": pl.String(),
-            "origAppId": pl.String(),
-            "phoneNumber": pl.String(),
-            "tokenId": pl.String(),
-            "tokenName": pl.String(),
-            "usedDeviceChangeCredit": pl.Boolean(),
-            "username": pl.String(),
-            "verificationCode": pl.String(),
-            "accountId": pl.String(),
-            "appId": pl.String(),
-            "brand": pl.String(),
-            "channel": pl.String(),
-            "dayOfWeek": pl.String(),
-            "deviceId": pl.String(),
-            "deviceManufacturer": pl.String(),
-            "deviceModel": pl.String(),
-            "deviceOS": pl.String(),
-            "deviceParsedModel": pl.String(),
-            "eventId": pl.String(),
-            "hourOfDay": pl.Float64(),
-            "ingestTimestamp": pl.Float64(),
-            "ingestUid": pl.String(),
-            "ipAddress": pl.String(),  # JSON array
-            "localFareDate": pl.String(),
-            "ownerId": pl.String(),
-            "ownerType": pl.String(),
-            "platform": pl.String(),
-            "serverTimestamp": pl.Float64(),
-            "tableName": pl.String(),
-            "timezone": pl.String(),
-            "versionNumber": pl.String(),
-        }
-    ),
-    "retail.activations": pl.Schema(
-        {
-            "activeUses": pl.Float64(),
-            "clientUsesRemaining": pl.Float64(),
-            "fareBlocks": pl.String(),  # JSON object
-            "mediaChannel": pl.String(),
-            "purchaseId": pl.String(),
-            "purchaseTimestamp": pl.Float64(),
-            "riderTypeName": pl.String(),
-            "serverAdjustedDeviceTimestamp": pl.Float64(),
-            "source": pl.String(),
-            "transportModes": pl.String(),
-            "accountId": pl.String(),
-            "appId": pl.String(),
-            "brand": pl.String(),
-            "channel": pl.String(),
-            "dayOfWeek": pl.String(),
-            "destination": pl.String(),  # JSON object
-            "deviceId": pl.String(),
-            "deviceManufacturer": pl.String(),
-            "deviceModel": pl.String(),
-            "deviceOS": pl.String(),
-            "deviceParsedModel": pl.String(),
-            "deviceTimestamp": pl.Float64(),
-            "eventId": pl.String(),
-            "expiryTimestamp": pl.Float64(),
-            "hourOfDay": pl.Float64(),
-            "ingestTimestamp": pl.Float64(),
-            "ingestUid": pl.String(),
-            "ipAddress": pl.String(),  # JSON array
-            "issuingChannel": pl.String(),
-            "issuingPartner": pl.String(),
-            "localFareDate": pl.String(),
-            "location": pl.String(),  # JSON object
-            "locationAccuracy": pl.Float64(),
-            "locationTimestamp": pl.Float64(),
-            "numOfPeople": pl.Float64(),
-            "origin": pl.String(),  # JSON object
-            "ownerId": pl.String(),
-            "ownerType": pl.String(),
-            "platform": pl.String(),
-            "productFareType": pl.String(),
-            "productName": pl.String(),
-            "productRef": pl.String(),
-            "reservedSeat": pl.String(),
-            "riderType": pl.String(),
-            "serverTimestamp": pl.Float64(),
-            "serviceId": pl.String(),
-            "subBrand": pl.String(),
-            "tableName": pl.String(),
-            "tariffId": pl.String(),
-            "ticketFareType": pl.String(),
-            "ticketId": pl.String(),
-            "ticketName": pl.String(),
-            "ticketRef": pl.String(),
-            "timezone": pl.String(),
-            "versionNumber": pl.String(),
-        }
-    ),
-    "retail.ticket_purchases": pl.Schema(
-        {
-            "auth": pl.String(),
-            "campaignId": pl.String(),
-            "cardIndexInTransaction": pl.Float64(),
-            "cardsInTransaction": pl.Float64(),
-            "challenge": pl.String(),
-            "discountId": pl.String(),
-            "fees": pl.Float64(),
-            "fingerprint": pl.String(),
-            "initialNbProducts": pl.Float64(),
-            "initialNbTickets": pl.Float64(),
-            "nbProducts": pl.Float64(),
-            "nbTickets": pl.Float64(),
-            "productRefs": pl.String(),
-            "promotionCodes": pl.String(),  # JSON array
-            "pspTransactionReferences": pl.String(),  # JSON array
-            "riderTypeNames": pl.String(),  # JSON array
-            "salesAgent": pl.String(),
-            "terminal": pl.String(),
-            "totalInitialPrice": pl.Float64(),
-            "version3ds": pl.String(),
-            "accountId": pl.String(),
-            "appId": pl.String(),
-            "authorizationCode": pl.String(),
-            "bankAccountNumber": pl.String(),
-            "brand": pl.String(),
-            "cardCategory": pl.String(),
-            "cardName": pl.String(),
-            "cardSequenceNumber": pl.String(),
-            "cardSignature": pl.String(),
-            "cardType": pl.String(),
-            "channel": pl.String(),
-            "currencyCode": pl.String(),
-            "dayOfWeek": pl.String(),
-            "destination": pl.String(),  # JSON object
-            "deviceId": pl.String(),
-            "deviceManufacturer": pl.String(),
-            "deviceModel": pl.String(),
-            "deviceOS": pl.String(),
-            "deviceParsedModel": pl.String(),
-            "email": pl.String(),
-            "errorCode": pl.String(),
-            "eventId": pl.String(),
-            "expiryDate": pl.String(),
-            "fundingSource": pl.String(),
-            "hourOfDay": pl.Float64(),
-            "ingestTimestamp": pl.Float64(),
-            "ingestUid": pl.String(),
-            "ipAddress": pl.String(),  # JSON array
-            "localFareDate": pl.String(),
-            "location": pl.String(),  # JSON object
-            "locationAccuracy": pl.Float64(),
-            "locationTimestamp": pl.Float64(),
-            "merchantReference": pl.String(),
-            "merchantReference2": pl.String(),
-            "origin": pl.String(),  # JSON object
-            "ownerId": pl.String(),
-            "ownerType": pl.String(),
-            "panFirstSix": pl.String(),
-            "panLastFour": pl.String(),
-            "partner": pl.String(),
-            "paymentAccountReference": pl.String(),
-            "platform": pl.String(),
-            "processingPsp": pl.String(),
-            "productFareType": pl.String(),
-            "productName": pl.String(),
-            "purchaseId": pl.String(),
-            "riderType": pl.String(),
-            "serverTimestamp": pl.Float64(),
-            "subBrand": pl.String(),
-            "tableName": pl.String(),
-            "tariffId": pl.String(),
-            "timezone": pl.String(),
-            "totalValue": pl.Float64(),
-            "versionNumber": pl.String(),
-            "zipCode": pl.String(),
-        }
-    ),
-    "retail.tickets": pl.Schema(
-        {
-            "availableVia": pl.String(),  # JSON array
-            "creationReason": pl.String(),
-            "discountId": pl.String(),
-            "duration": pl.Float64(),
-            "effectivePurchaseTimestamp": pl.Float64(),
-            "fareBlocks": pl.String(),  # JSON object
-            "fulfilmentType": pl.String(),
-            "groupId": pl.String(),
-            "journeyId": pl.String(),
-            "maxActivations": pl.Float64(),
-            "multiLegJourneyId": pl.String(),
-            "nextTransferAgencyId": pl.String(),
-            "previousTransferAgencyId": pl.String(),
-            "priceIfBoughtAlone": pl.Float64(),
-            "productDescription": pl.String(),
-            "productInitialPrice": pl.Float64(),
-            "productPrice": pl.Float64(),
-            "riderGroupSize": pl.Float64(),
-            "riderTypeName": pl.String(),
-            "salesAgent": pl.String(),
-            "startTimestamp": pl.Float64(),
-            "terminal": pl.String(),
-            "transportModes": pl.String(),
-            "uses": pl.Float64(),
-            "accountId": pl.String(),
-            "appId": pl.String(),
-            "brand": pl.String(),
-            "channel": pl.String(),
-            "currencyCode": pl.String(),
-            "dayOfWeek": pl.String(),
-            "destination": pl.String(),  # JSON object
-            "deviceId": pl.String(),
-            "deviceManufacturer": pl.String(),
-            "deviceModel": pl.String(),
-            "deviceOS": pl.String(),
-            "deviceParsedModel": pl.String(),
-            "eventId": pl.String(),
-            "expiryTimestamp": pl.Float64(),
-            "hourOfDay": pl.Float64(),
-            "ingestTimestamp": pl.Float64(),
-            "ingestUid": pl.String(),
-            "ipAddress": pl.String(),  # JSON array
-            "localFareDate": pl.String(),
-            "numOfPeople": pl.Float64(),
-            "origin": pl.String(),  # JSON object
-            "ownerId": pl.String(),
-            "ownerType": pl.String(),
-            "partner": pl.String(),
-            "platform": pl.String(),
-            "productFareType": pl.String(),
-            "productName": pl.String(),
-            "productRef": pl.String(),
-            "purchaseId": pl.String(),
-            "reservedSeat": pl.String(),
-            "riderType": pl.String(),
-            "serverTimestamp": pl.Float64(),
-            "serviceId": pl.String(),
-            "subBrand": pl.String(),
-            "tableName": pl.String(),
-            "tariffId": pl.String(),
-            "ticketFareType": pl.String(),
-            "ticketId": pl.String(),
-            "ticketName": pl.String(),
-            "ticketRef": pl.String(),
-            "timezone": pl.String(),
-            "versionNumber": pl.String(),
-        }
-    ),
-    "retail.rider_entitlement_events": pl.Schema(
-        {
-            "action": pl.String(),
-            "creationTimestamp": pl.Float64(),
-            "displayName": pl.String(),
-            "enabled": pl.Boolean(),
-            "entitlementId": pl.String(),
-            "entitlementOwnerId": pl.String(),
-            "entitlementOwnerType": pl.String(),
-            "errorCode": pl.String(),
-            "errorReason": pl.String(),
-            "expirationTimestamp": pl.Float64(),
-            "productRestrictionName": pl.String(),
-            "proofId": pl.String(),
-            "riderTypeRestrictionId": pl.Float64(),
-            "status": pl.String(),
-            "tokenId": pl.String(),
-            "accountId": pl.String(),
-            "appId": pl.String(),
-            "brand": pl.String(),
-            "channel": pl.String(),
-            "dayOfWeek": pl.String(),
-            "deviceId": pl.String(),
-            "deviceManufacturer": pl.String(),
-            "deviceModel": pl.String(),
-            "deviceOS": pl.String(),
-            "deviceParsedModel": pl.String(),
-            "eventId": pl.String(),
-            "hourOfDay": pl.Float64(),
-            "ingestTimestamp": pl.Float64(),
-            "ingestUid": pl.String(),
-            "ipAddress": pl.String(),  # JSON array
-            "localFareDate": pl.String(),
-            "ownerId": pl.String(),
-            "ownerType": pl.String(),
-            "platform": pl.String(),
-            "serverTimestamp": pl.Float64(),
-            "subBrand": pl.String(),
-            "tableName": pl.String(),
-            "timezone": pl.String(),
-            "versionNumber": pl.String(),
-        }
-    ),
-}
+_SCHEMA_PATH = pathlib.Path(__file__).parent / "masabi_schema.yaml"
 
-# Columns whose API values are JSON arrays or objects; serialised to strings
-# before writing so they can be stored as pl.String in parquet.
-TABLE_JSON_COLS: dict[str, frozenset[str]] = {
-    "retail.account_actions": frozenset({"ipAddress"}),
-    "retail.activations": frozenset(
-        {"fareBlocks", "destination", "ipAddress", "location", "origin"}
-    ),
-    "retail.ticket_purchases": frozenset(
-        {
-            "promotionCodes",
-            "pspTransactionReferences",
-            "riderTypeNames",
-            "destination",
-            "ipAddress",
-            "location",
-            "origin",
-        }
-    ),
-    "retail.tickets": frozenset(
-        {"availableVia", "fareBlocks", "destination", "ipAddress", "origin"}
-    ),
-    "retail.rider_entitlement_events": frozenset({"ipAddress"}),
+_YAML_TYPE_MAP: dict[str, pl.DataType] = {
+    "string": pl.String(),
+    "boolean": pl.Boolean(),
+    "number": pl.Float64(),
+    "array": pl.String(),
+    "object": pl.String(),
 }
+_JSON_YAML_TYPES = frozenset({"array", "object"})
+
+
+def _load_schemas(
+    tables: list[str],
+) -> tuple[dict[str, pl.Schema], dict[str, frozenset[str]]]:
+    """
+    Load per-table column schemas and JSON-column sets from masabi_schema.yaml.
+
+    :param tables: table names to load (must all exist in the YAML)
+    :return: (TABLE_SCHEMAS, TABLE_JSON_COLS)
+    :raises KeyError: if a table in *tables* is absent from the YAML
+    """
+    with _SCHEMA_PATH.open() as fh:
+        spec = yaml.safe_load(fh)
+
+    all_schemas = spec["components"]["schemas"]
+    schemas: dict[str, pl.Schema] = {}
+    json_cols: dict[str, frozenset[str]] = {}
+
+    for table in tables:
+        if table not in all_schemas:
+            raise KeyError(
+                f"Table {table!r} not found in {_SCHEMA_PATH}; "
+                "update masabi_schema.yaml or remove it from TABLES"
+            )
+        properties: dict[str, dict[str, Any]] = all_schemas[table]["properties"]
+        column_types: dict[str, pl.DataType] = {}
+        json_set: set[str] = set()
+        for col, col_def in properties.items():
+            yaml_type: str = col_def.get("type", "string")
+            column_types[col] = _YAML_TYPE_MAP.get(yaml_type, pl.String())
+            if yaml_type in _JSON_YAML_TYPES:
+                json_set.add(col)
+        schemas[table] = pl.Schema(column_types)
+        json_cols[table] = frozenset(json_set)
+
+    return schemas, json_cols
+
+
+TABLE_SCHEMAS, TABLE_JSON_COLS = _load_schemas(TABLES)
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +153,7 @@ class ArchiveMasabi(OdinJob):
         self.start_kwargs = {"table": table}
         self.export_folder = os.path.join(DATA_SPRINGBOARD, MASABI_DATA, table)
         self.json_cols: frozenset[str] = TABLE_JSON_COLS[table]
-        self.exclude_cols: frozenset[str] = frozenset(TABLE_EXCLUDE_COLUMNS[table])
+        self.exclude_cols: frozenset[str] = frozenset(TABLE_EXCLUDE_COLUMNS.get(table, []))
         # Schema restricted to non-excluded columns; computed once here for reuse.
         self.active_schema: pl.Schema = pl.Schema(
             {
