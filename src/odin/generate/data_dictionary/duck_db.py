@@ -13,6 +13,7 @@ from odin.utils.locations import CUBIC_QLIK_DATA
 from odin.utils.locations import AFC_DATA
 from odin.utils.locations import AFC_RESTRICTED
 from odin.utils.locations import CUBIC_ODS_REPORTS
+from odin.utils.locations import MASABI_DATA
 from odin.utils.parquet import ds_from_path
 import odin.generate.data_dictionary.cubic_reports_sql as cubic_sql
 
@@ -50,6 +51,13 @@ dataset_views = [
     ViewBuilder(
         s3_prefix=os.path.join(DATA_SPRINGBOARD, CUBIC_ODS_FACT_DATA),
         schema="cubic_ods",
+        template=Template(
+            f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT $columns FROM {READ_PQ};"
+        ),
+    ),
+    ViewBuilder(
+        s3_prefix=os.path.join(DATA_SPRINGBOARD, MASABI_DATA),
+        schema="masabi",
         template=Template(
             f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT $columns FROM {READ_PQ};"
         ),
