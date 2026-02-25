@@ -639,27 +639,27 @@ class CubicODSFact(OdinJob):
             self.snapshot_check()
             if self.history_snapshot != self.fact_snapshot:
                 # New snapshot detected
-                snapshot_check_log = ProcessLog(
-                    "snapshot_check_log",
+                snapshot_compare_to_history = ProcessLog(
+                    "snapshot_compare_to_history",
                     table=self.table,
-                    action="new_snapshot_load",
+                    action="load_new_snapshot",
                     history_snapshot=self.history_snapshot,
                     fact_snapshot=self.fact_snapshot if self.fact_snapshot else "(empty)",
                     snapshots_match=False,
                 )
-                snapshot_check_log.complete()
+                snapshot_compare_to_history.complete()
                 self.load_new_snapshot()
             else:
                 # No new snapshot, update existing fact table
-                snapshot_check_log = ProcessLog(
-                    "snapshot_check_log",
+                snapshot_compare_to_history = ProcessLog(
+                    "snapshot_compare_to_history",
                     table=self.table,
                     action="cdc_update_only",
                     history_snapshot=self.history_snapshot,
                     fact_snapshot=self.fact_snapshot,
                     snapshots_match=True,
                 )
-                snapshot_check_log.complete()
+                snapshot_compare_to_history.complete()
             next_run_secs = self.load_cdc_records()
         # For development, other ODIN running...
         except pa.ArrowInvalid:
