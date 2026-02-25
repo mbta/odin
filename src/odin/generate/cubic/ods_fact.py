@@ -210,7 +210,9 @@ class CubicODSFact(OdinJob):
             snapshots_match=snapshot_match,
             new_snapshot_detected=not snapshot_match,
             history_snapshots_available=len(history_snapshots),
-            all_history_snapshots=str(history_snapshots[-5:]) if len(history_snapshots) > 5 else str(history_snapshots),
+            all_history_snapshots=str(history_snapshots[-5:])
+            if len(history_snapshots) > 5
+            else str(history_snapshots),
             history_ds_rows=history_ds_rows,
             history_ds_groups=history_ds_groups,
             batch_size=self.batch_size,
@@ -270,7 +272,7 @@ class CubicODSFact(OdinJob):
                 existing_seq_min, existing_seq_max = ds_metadata_min_max(
                     existing_ds, "header__change_seq"
                 )
-            except Exception as e:
+            except Exception:
                 existing_row_count = -1  # indicates error reading
 
         delete_log = ProcessLog(
@@ -282,7 +284,9 @@ class CubicODSFact(OdinJob):
             existing_row_count=existing_row_count,
             existing_seq_min=str(existing_seq_min) if existing_seq_min else None,
             existing_seq_max=str(existing_seq_max) if existing_seq_max else None,
-            deleted_paths=str(existing_paths[:10]) if len(existing_paths) > 10 else str(existing_paths),
+            deleted_paths=str(existing_paths[:10])
+            if len(existing_paths) > 10
+            else str(existing_paths),
             total_deleted_paths=len(existing_paths),
         )
         delete_log.complete()
