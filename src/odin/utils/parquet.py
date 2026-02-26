@@ -90,6 +90,8 @@ def pq_rows_per_mb(source: Union[str, Sequence[str]], num_rows: Optional[int] = 
     if isinstance(source, str):
         if not source.endswith(".parquet"):
             # assume S3 partition
+            if not source.endswith("/"):
+                source = f"{source}/"
             paths += [obj.path for obj in list_objects(source)]
         else:
             paths.append(source)
@@ -214,6 +216,8 @@ def ds_from_path(source: Union[str, Sequence[str]]) -> pd.UnionDataset:
             paths.append(source)
         # S3 partition path
         elif source.startswith("s3://"):
+            if not source.endswith("/"):
+                source = f"{source}/"
             paths = [o.path for o in list_objects(source, in_filter=".parquet")]
         # local partition path
         else:
@@ -338,6 +342,7 @@ def fast_last_mod_ds_max(partition: str, column: str) -> Any:
 
     :return: column max value
     """
+    partition = partition.rstrip("/") + "/"
     log = ProcessLog("fast_last_mod_ds_max", partition=partition, column=column)
     part_objs = list_objects(partition, in_filter=".parquet")
     if len(part_objs) == 0:
