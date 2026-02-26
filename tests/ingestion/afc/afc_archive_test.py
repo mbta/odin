@@ -10,10 +10,40 @@ from unittest.mock import call
 import polars as pl
 import pytest
 
+from odin.ingestion.afc.afc_archive import APICounts
 from odin.ingestion.afc.afc_archive import ArchiveAFCAPI
 from odin.ingestion.afc.afc_archive import make_pl_schema
 from odin.ingestion.afc.afc_archive import verify_downloads
 from odin.utils.aws.s3 import S3Object
+
+
+@patch.object(ArchiveAFCAPI, "make_request")
+@patch("shutil.copyfileobj")
+@patch("gzip.open")
+@patch("odin.ingestion.afc.afc_archive.verify_downloads")
+def test_download_json(
+    verify_downloads: MagicMock,
+    gzip_open: MagicMock,
+    copyfileobj: MagicMock,
+    make_request: MagicMock,
+):
+    """Test download_json method of ArchiveAFCAPI"""
+    job = ArchiveAFCAPI("test_table")
+    job.reset_tmpdir()
+    job.schema = None
+    mock_response = MagicMock()
+    mock_response.release_conn = lambda: None
+
+    # Require a single retry to succeed in the test.
+    make_request.side_effect = [IOError("Something happened!!"), mock_response]
+
+    test_download_jobs: APICounts = [{"jobId": 0, "dataCount": -1}, {"jobId": 10, "dataCount": -1}]
+
+    job.download_json(test_download_jobs)
+
+    gzip_open.assert_called()
+    copyfileobj.assert_called()
+    verify_downloads.assert_called()
 
 
 @patch.object(ArchiveAFCAPI, "api_job_ids")

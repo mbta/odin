@@ -4,12 +4,11 @@ import json
 import sched
 import shutil
 import urllib3
+import time
 from collections import ChainMap
 from operator import itemgetter
 from pathlib import Path
-from typing import Literal
-from typing import TypedDict
-from typing import Generator
+from typing import Literal, TypedDict, Generator
 
 
 from odin.job import OdinJob
@@ -80,6 +79,8 @@ if os.getenv("ECS_TASK_GROUP") == "family:odin-prod":
             "v_salestransaction": 10607904,
         }
     )
+
+REQUEST_RETRIES = 3
 
 APICounts = list[dict[Literal["jobId", "dataCount"], int]]
 
@@ -326,23 +327,43 @@ class ArchiveAFCAPI(OdinJob):
             "jobIdFrom": str(job_id_from),
             "jobIdTo": str(job_id_to),
         }
-        r = self.make_request(url, fields=fields, preload_content=False)
 
         json_path = os.path.join(self.tmpdir, f"{job_id_from}.json")
         gz_path = f"{json_path}.gz"
+        success = False
+        for retry_num in range(REQUEST_RETRIES):
+            try:
+                r = self.make_request(url, fields=fields, preload_content=False)
 
-        # download json.gz file (as stream)
-        with open(gz_path, mode="wb") as gz_write:
-            shutil.copyfileobj(r, gz_write)
-        r.release_conn()
+                # download json.gz file (as stream)
+                with open(gz_path, mode="wb") as gz_write:
+                    shutil.copyfileobj(r, gz_write)
+                r.release_conn()
 
-        # convert to json.gz to json, so polars can be used
-        # json file should also produce more consistent disk and memory usage profiles
-        with gzip.open(gz_path, mode="rb") as gz_read, open(json_path, mode="wb") as json_w:
-            shutil.copyfileobj(gz_read, json_w)
-        os.remove(gz_path)
+                # convert to json.gz to json, so polars can be used
+                # json file should also produce more consistent disk and memory usage profiles
+                with gzip.open(gz_path, mode="rb") as gz_read, open(json_path, mode="wb") as json_w:
+                    shutil.copyfileobj(gz_read, json_w)
 
-        log.complete()
+                os.remove(gz_path)
+                success = True
+                break
+            except Exception as e:
+                ProcessLog(
+                    "download_json",
+                    gz_path=gz_path,
+                    json_path=json_path,
+                    retrying=retry_num,
+                    exception=str(e),
+                )
+
+                time.sleep(10)
+                continue
+
+        if success:
+            log.complete()
+        else:
+            log.failed(IOError("Failed to download and convert JSON file."))
         verify_downloads(json_path, self.schema, download_jobs)
 
     def load_job_ids(self) -> None:
