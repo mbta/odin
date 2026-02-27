@@ -30,6 +30,10 @@ _API_PASSWORD = os.getenv("MASABI_DATA_API_PASSWORD", "")
 # dev environments where the dataset is small.
 API_PAGE_SIZE = int(os.getenv("MASABI_API_PAGE_SIZE", "1000"))
 
+# Maximum update size: Adjust to match the maximum size that can be safely handled
+# by the ECS environment's RAM and disk resources.
+MAXIMUM_ROWS_PER_RUN = 100000
+
 # Retry config for individual API page requests.
 # On a non-200 response or network error, the request is retried up to
 # API_MAX_RETRIES times, waiting API_RETRY_DELAY_S seconds between each attempt.
@@ -131,9 +135,7 @@ class ArchiveMasabi(OdinJob):
             "orderBy": "serverTimestamp:asc",
             "size": str(API_PAGE_SIZE),
         }
-        log = ProcessLog(
-            "masabi_api_pages", table=self.table, from_ts=from_ts, to_ts=to_ts
-        )
+        log = ProcessLog("masabi_api_pages", table=self.table, from_ts=from_ts, to_ts=to_ts)
         page_count = 0
         while True:
             r = self._make_request(pool, url, fields)
@@ -175,16 +177,17 @@ class ArchiveMasabi(OdinJob):
             from_ts=from_ts,
             to_ts=to_ts,
         )
-        ndjson_path = os.path.join(
-            self.tmpdir, f"{self.table.replace('.', '_')}.ndjson"
-        )
+        ndjson_path = os.path.join(self.tmpdir, f"{self.table.replace('.', '_')}.ndjson")
         total_rows = 0
         with open(ndjson_path, "w") as f:
             for page_hits in self.api_pages(pool, from_ts, to_ts):
                 # TODO Check schema
                 for hit in page_hits:
-                    f.write(json.dumps(hit)+"\n") # TODO Check JSON elements match schema
+                    f.write(json.dumps(hit) + "\n")  # TODO Check JSON elements match schema
                 total_rows += len(page_hits)
+                if total_rows >= MAXIMUM_ROWS_PER_RUN:
+                    break
+
         log.complete(total_rows=total_rows)
         return ndjson_path if total_rows > 0 else None
 
