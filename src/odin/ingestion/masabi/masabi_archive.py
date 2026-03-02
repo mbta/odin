@@ -98,6 +98,7 @@ class ArchiveMasabi(OdinJob):
         :raises urllib3.exceptions.RequestError: if all attempts fail with a network error
         """
         last_exc: Exception | None = None
+        log = None  # Only log from this if something fails
         for attempt in range(API_MAX_RETRIES + 1):
             try:
                 r = pool.request("GET", url, fields=fields)
@@ -106,11 +107,20 @@ class ArchiveMasabi(OdinJob):
                         f"Masabi API error: url={url!r} status={r.status} "
                         f"response={r.data.decode()!r}"
                     )
+                if log is not None:
+                    log.complete()
                 return r
             except (urllib3.exceptions.HTTPError, urllib3.exceptions.RequestError) as exc:
+                if log is None:
+                    log = ProcessLog("masabi_make_request", url=url)
                 last_exc = exc
+                log.add_metadata(attempt=attempt, retry_on_exception=str(exc))
                 if attempt < API_MAX_RETRIES:
                     time.sleep(API_RETRY_DELAY_S)
+                    continue
+
+        if log is not None:
+            log.failed(exception=last_exc)  # type: ignore[misc]
         raise last_exc  # type: ignore[misc]
 
     def api_pages(
@@ -137,6 +147,8 @@ class ArchiveMasabi(OdinJob):
         }
         log = ProcessLog("masabi_api_pages", table=self.table, from_ts=from_ts, to_ts=to_ts)
         page_count = 0
+        min_hits_per_page = 9999999999
+        max_hits_per_page = -1
         while True:
             r = self._make_request(pool, url, fields)
             data: dict[str, Any] = r.json()
@@ -144,6 +156,8 @@ class ArchiveMasabi(OdinJob):
             # Unwrap "doc" here so the rest of the pipeline sees flat records.
             hits: list[dict[str, Any]] = [h["doc"] for h in data.get("hits", [])]
             page_count += 1
+            min_hits_per_page = min(min_hits_per_page, len(hits))
+            max_hits_per_page = max(max_hits_per_page, len(hits))
             yield hits
             # Paginate only while the API signals more data and the page was non-empty.
             # Note: the reference example had a bug (`if nextPageId in resp_data` where
@@ -151,7 +165,11 @@ class ArchiveMasabi(OdinJob):
             if "nextPageId" not in data or not hits:
                 break
             fields["nextPageId"] = data["nextPageId"]
-        log.complete(page_count=page_count)
+        log.complete(
+            page_count=page_count,
+            min_hits_per_page=min_hits_per_page,
+            max_hits_per_page=max_hits_per_page,
+        )
 
     def fetch_and_write(
         self,
@@ -179,16 +197,27 @@ class ArchiveMasabi(OdinJob):
         )
         ndjson_path = os.path.join(self.tmpdir, f"{self.table.replace('.', '_')}.ndjson")
         total_rows = 0
+        maximum_rows = False
+        min_obs_ts = 99999999999
+        max_obs_ts = -1
         with open(ndjson_path, "w") as f:
             for page_hits in self.api_pages(pool, from_ts, to_ts):
                 # TODO Check schema
                 for hit in page_hits:
+                    min_obs_ts = min(min_obs_ts, hit["serverTimestamp"])
+                    max_obs_ts = max(max_obs_ts, hit["serverTimestamp"])
                     f.write(json.dumps(hit) + "\n")  # TODO Check JSON elements match schema
                 total_rows += len(page_hits)
                 if total_rows >= MAXIMUM_ROWS_PER_RUN:
+                    maximum_rows = True
                     break
 
-        log.complete(total_rows=total_rows)
+        log.complete(
+            total_rows=total_rows,
+            encountered_max_rows=maximum_rows,
+            min_obs_ts=min_obs_ts,
+            max_obs_ts=max_obs_ts,
+        )
         return ndjson_path if total_rows > 0 else None
 
     def setup_job(self):
