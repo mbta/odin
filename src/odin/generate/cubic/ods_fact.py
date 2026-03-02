@@ -21,7 +21,6 @@ from odin.utils.locations import DATA_ARCHIVE
 from odin.utils.locations import CUBIC_QLIK_PROCESSED
 from odin.utils.parquet import fast_last_mod_ds_max
 from odin.utils.parquet import ds_metadata_min_max
-from odin.utils.parquet import ds_column_min_max
 from odin.utils.parquet import ds_files
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_unique_values
@@ -381,7 +380,6 @@ class CubicODSFact(OdinJob):
         fact_files = ds_files(fact_ds)
         initial_row_count = fact_ds.count_rows()
         _, max_fact_seq = ds_metadata_min_max(fact_ds, "header__change_seq")
-        actual_min, actual_max = ds_column_min_max(fact_ds, "header__change_seq")
 
         # Log initial fact table state
         init_log = ProcessLog(
@@ -391,8 +389,6 @@ class CubicODSFact(OdinJob):
             fact_ds_file_count=len(fact_files),
             initial_row_count=initial_row_count,
             max_fact_seq_metadata=str(max_fact_seq),
-            max_fact_seq_actual=str(actual_max),
-            metadata_actual_match=str(max_fact_seq) == str(actual_max),
         )
         init_log.complete()
 
