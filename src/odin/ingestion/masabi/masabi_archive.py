@@ -32,13 +32,16 @@ API_PAGE_SIZE = int(os.getenv("MASABI_API_PAGE_SIZE", "1000"))
 
 # Maximum update size: Adjust to match the maximum size that can be safely handled
 # by the ECS environment's RAM and disk resources.
-MAXIMUM_ROWS_PER_RUN = 100000
+MAXIMUM_ROWS_PER_RUN = 100
 
 # Retry config for individual API page requests.
 # On a non-200 response or network error, the request is retried up to
 # API_MAX_RETRIES times, waiting API_RETRY_DELAY_S seconds between each attempt.
 API_MAX_RETRIES: int = 3
 API_RETRY_DELAY_S: float = 5.0
+
+# Minimum interval between consecutive API requests (seconds).
+API_MIN_REQUEST_INTERVAL_S: float = 1.0
 
 # Exclusive lower bound for the initial historical backfill: 2025-01-01 00:00:00 UTC (ms).
 MASABI_START_TIMESTAMP_MS: int = 1_735_689_600_000
@@ -60,6 +63,7 @@ class ArchiveMasabi(OdinJob):
         self.table = table
         self.start_kwargs = {"table": table}
         self.export_folder = os.path.join(DATA_SPRINGBOARD, MASABI_DATA, table)
+        self._last_request_time: float = 0.0
 
     def _make_request_pool(self) -> urllib3.PoolManager:
         """Build a urllib3 connection pool with Masabi basic-auth headers."""
@@ -97,6 +101,11 @@ class ArchiveMasabi(OdinJob):
         :raises urllib3.exceptions.HTTPError: if all attempts return a non-200 response
         :raises urllib3.exceptions.RequestError: if all attempts fail with a network error
         """
+        elapsed = time.monotonic() - self._last_request_time
+        if elapsed < API_MIN_REQUEST_INTERVAL_S:
+            time.sleep(API_MIN_REQUEST_INTERVAL_S - elapsed)
+        self._last_request_time = time.monotonic()
+
         last_exc: Exception | None = None
         log = None  # Only log from this if something fails
         for attempt in range(API_MAX_RETRIES + 1):
@@ -112,9 +121,11 @@ class ArchiveMasabi(OdinJob):
                 return r
             except (urllib3.exceptions.HTTPError, urllib3.exceptions.RequestError) as exc:
                 if log is None:
-                    log = ProcessLog("masabi_make_request", url=url)
+                    log = ProcessLog("masabi_make_request", url=url, attempt_number=attempt,
+                                     retry_on_exception=str(exc))
+                else:
+                    log.add_metadata(attempt=attempt, retry_on_exception=str(exc))
                 last_exc = exc
-                log.add_metadata(attempt=attempt, retry_on_exception=str(exc))
                 if attempt < API_MAX_RETRIES:
                     time.sleep(API_RETRY_DELAY_S)
                     continue
@@ -147,7 +158,7 @@ class ArchiveMasabi(OdinJob):
         }
         log = ProcessLog("masabi_api_pages", table=self.table, from_ts=from_ts, to_ts=to_ts)
         page_count = 0
-        min_hits_per_page = 9999999999
+        min_hits_per_page = float('inf')
         max_hits_per_page = -1
         while True:
             r = self._make_request(pool, url, fields)
@@ -198,7 +209,7 @@ class ArchiveMasabi(OdinJob):
         ndjson_path = os.path.join(self.tmpdir, f"{self.table.replace('.', '_')}.ndjson")
         total_rows = 0
         maximum_rows = False
-        min_obs_ts = 99999999999
+        min_obs_ts = float('inf')
         max_obs_ts = -1
         with open(ndjson_path, "w") as f:
             for page_hits in self.api_pages(pool, from_ts, to_ts):
