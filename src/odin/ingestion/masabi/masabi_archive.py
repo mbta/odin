@@ -121,8 +121,12 @@ class ArchiveMasabi(OdinJob):
                 return r
             except (urllib3.exceptions.HTTPError, urllib3.exceptions.RequestError) as exc:
                 if log is None:
-                    log = ProcessLog("masabi_make_request", url=url, attempt_number=attempt,
-                                     retry_on_exception=str(exc))
+                    log = ProcessLog(
+                        "masabi_make_request",
+                        url=url,
+                        attempt_number=attempt,
+                        retry_on_exception=str(exc),
+                    )
                 else:
                     log.add_metadata(attempt=attempt, retry_on_exception=str(exc))
                 last_exc = exc
@@ -158,7 +162,7 @@ class ArchiveMasabi(OdinJob):
         }
         log = ProcessLog("masabi_api_pages", table=self.table, from_ts=from_ts, to_ts=to_ts)
         page_count = 0
-        min_hits_per_page = float('inf')
+        min_hits_per_page = float("inf")
         max_hits_per_page = -1
         while True:
             r = self._make_request(pool, url, fields)
@@ -209,7 +213,7 @@ class ArchiveMasabi(OdinJob):
         ndjson_path = os.path.join(self.tmpdir, f"{self.table.replace('.', '_')}.ndjson")
         total_rows = 0
         maximum_rows = False
-        min_obs_ts = float('inf')
+        min_obs_ts = float("inf")
         max_obs_ts = -1
         with open(ndjson_path, "w") as f:
             for page_hits in self.api_pages(pool, from_ts, to_ts):
@@ -218,9 +222,11 @@ class ArchiveMasabi(OdinJob):
                     min_obs_ts = min(min_obs_ts, hit["serverTimestamp"])
                     max_obs_ts = max(max_obs_ts, hit["serverTimestamp"])
                     f.write(json.dumps(hit) + "\n")  # TODO Check JSON elements match schema
-                total_rows += len(page_hits)
-                if total_rows >= MAXIMUM_ROWS_PER_RUN:
-                    maximum_rows = True
+                    total_rows += 1
+                    if total_rows >= MAXIMUM_ROWS_PER_RUN:
+                        maximum_rows = True
+                        break
+                if maximum_rows:
                     break
 
         log.complete(
