@@ -217,6 +217,14 @@ class ArchiveMasabi(OdinJob):
         max_obs_ts = -1
         with open(ndjson_path, "w") as f:
             for page_hits in self.api_pages(pool, from_ts, to_ts):
+                if page_hits[0]["serverTimestamp"] < max_obs_ts:
+                    log.add_metadata(
+                        warning=(
+                            f"Initial page timeStamp {page_hits[0]['serverTimestamp']} "
+                            f"prior to previous page maximum, {max_obs_ts}"
+                        )
+                    )
+
                 # TODO Check schema
                 for hit in page_hits:
                     min_obs_ts = min(min_obs_ts, hit["serverTimestamp"])
