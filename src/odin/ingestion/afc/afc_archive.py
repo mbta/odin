@@ -241,7 +241,20 @@ class ArchiveAFCAPI(OdinJob):
         log = ProcessLog("setup_job", table=self.table)
         # set self.schema
         tableinfos_url = f"{API_ROOT}/tableinfos"
-        r = self.make_request(tableinfos_url)
+
+        r = None
+        last_exc: Exception = None  # type: ignore
+        for _ in range(REQUEST_RETRIES):
+            try:
+                r = self.make_request(tableinfos_url)
+                break
+            except Exception as exc:
+                last_exc = exc
+                time.sleep(10)
+        if r is None:
+            log.failed(exception=last_exc)
+            raise last_exc
+
         schemas_list: list[dict[str, APITableInfo]] = r.json()
         schemas_dict: dict[str, APITableInfo] = dict(ChainMap(*schemas_list))
         self.schema = make_pl_schema(schemas_dict[self.table])
