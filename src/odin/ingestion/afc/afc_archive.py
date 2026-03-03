@@ -68,6 +68,16 @@ API_TABLES = [
     "v_tsmstatus",
     "v_salesdetail",
     "v_salestransaction",
+    "v_lines",
+    "v_users",
+    "v_groups_roles",
+    "v_user_group_relations",
+    "v_cashtype",
+    "v_cashboxmovement",
+    "v_cashboxmovementdetails",
+    "v_moneycontainersum",
+    "v_moneycontainercontentsum",
+    "v_accesslevel",
 ]
 
 
