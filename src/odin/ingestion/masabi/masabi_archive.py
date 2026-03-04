@@ -217,8 +217,8 @@ class ArchiveMasabi(OdinJob):
         max_obs_ts = -1
         with open(ndjson_path, "w") as f:
             for page_hits in self.api_pages(pool, from_ts, to_ts):
-                min_page_ts = min([x['serverTimestamp'] for x in page_hits])
-                max_page_ts = max([x['serverTimestamp'] for x in page_hits])
+                min_page_ts = min([x["serverTimestamp"] for x in page_hits])
+                max_page_ts = max([x["serverTimestamp"] for x in page_hits])
                 if min_page_ts < max_obs_ts:
                     log.add_metadata(
                         warning=(
