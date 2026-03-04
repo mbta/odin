@@ -6,9 +6,10 @@ import os
 import sched
 import time
 from typing import Any, Generator
-
 import urllib3
 import json
+import yaml
+import polars as pl
 
 from odin.utils.logger import ProcessLog
 from odin.job import NEXT_RUN_DEFAULT, OdinJob, job_proc_schedule
@@ -20,7 +21,7 @@ from odin.utils.locations import DATA_SPRINGBOARD, MASABI_DATA
 # ---------------------------------------------------------------------------
 
 # API base URL
-API_ROOT = os.getenv("MASABI_API_ROOT", "")
+API_ROOT = os.getenv("MASABI_DATA_API_URL", "")
 
 # Basic-auth credentials (validated at startup by run.py)
 _API_USERNAME = os.getenv("MASABI_DATA_API_USERNAME", "")
@@ -29,6 +30,9 @@ _API_PASSWORD = os.getenv("MASABI_DATA_API_PASSWORD", "")
 # Page size: Masabi's maximum is 1000. Override with MASABI_API_PAGE_SIZE=100 for
 # dev environments where the dataset is small.
 API_PAGE_SIZE = int(os.getenv("MASABI_API_PAGE_SIZE", "1000"))
+
+# Public URL can be put in code???
+_SCHEMA_URL = os.getenv("MASABI_DATA_SCHEMA_URL", "")
 
 # Maximum update size: Adjust to match the maximum size that can be safely handled
 # by the ECS environment's RAM and disk resources.
@@ -46,13 +50,87 @@ API_MIN_REQUEST_INTERVAL_S: float = 1.0
 # Exclusive lower bound for the initial historical backfill: 2025-01-01 00:00:00 UTC (ms).
 MASABI_START_TIMESTAMP_MS: int = 1_735_689_600_000
 
-# ---------------------------------------------------------------------------
-# Tables
-# ---------------------------------------------------------------------------
-
 TABLES = [
     "retail.account_actions",
 ]
+
+_YAML_TYPE_MAP: dict[str, pl.DataType] = {
+    "string": pl.String(),
+    "boolean": pl.Boolean(),
+    "number": pl.Float64(),
+    "array": pl.String(),
+    "object": pl.String(),
+}
+_JSON_YAML_TYPES = frozenset({"array", "object"})
+
+
+# ---------------------------------------------------------------------------
+# Schema Retrieval
+# ---------------------------------------------------------------------------
+
+TABLE_SCHEMAS = None
+TABLE_JSON_COLS = None
+
+
+def _fetch_schema_spec(connection_pool: urllib3.PoolManager) -> dict[str, Any]:
+    """
+    Fetch the Masabi OpenAPI schema spec.
+
+    When _SCHEMA_URL is configured, fetches from that endpoint. Until then,
+    falls back to the local masabi_schema.yaml file. Remove the fallback
+    (and _SCHEMA_PATH) once the URL is confirmed working.
+
+    :return: parsed OpenAPI spec as a dict
+    :raises RuntimeError: if the remote fetch returns a non-200 status
+    """
+    schema_remote_path = os.path.join(_SCHEMA_URL, "ds-query-schema.yaml")
+
+    r = connection_pool.request("GET", schema_remote_path)
+    if r.status != 200:
+        raise RuntimeError(
+            f"Failed to fetch Masabi schema from {schema_remote_path!r}: status={r.status}"
+        )
+    return yaml.safe_load(r.data)
+
+
+def _load_schemas(
+    tables: list[str],
+    connection_pool: urllib3.PoolManager
+) -> tuple[dict[str, pl.Schema], dict[str, frozenset[str]]]:
+    """
+    Load per-table column schemas and JSON-column sets from the schema spec.
+
+    :param tables: table names to load (must all exist in the spec)
+    :return: (TABLE_SCHEMAS, TABLE_JSON_COLS)
+    :raises KeyError: if a table in *tables* is absent from the spec
+    """
+    log = ProcessLog(process="masabi_schema_download")
+    spec = _fetch_schema_spec(connection_pool)
+    all_schemas = spec["components"]["schemas"]
+    schemas: dict[str, pl.Schema] = {}
+    json_cols: dict[str, frozenset[str]] = {}
+
+    for table in tables:
+        if table not in all_schemas:
+            log.add_metadata(missing_table=table)
+            log.failed(exception=KeyError())
+            raise KeyError(
+                f"Table {table!r} not found in Masabi schema spec; "
+                "update the schema source or remove it from TABLES"
+            )
+        properties: dict[str, dict[str, Any]] = all_schemas[table]["properties"]
+        column_types: dict[str, pl.DataType] = {}
+        json_set: set[str] = set()
+        for col, col_def in properties.items():
+            yaml_type: str = col_def.get("type", "string")
+            column_types[col] = _YAML_TYPE_MAP.get(yaml_type, pl.String())
+            if yaml_type in _JSON_YAML_TYPES:
+                json_set.add(col)
+        schemas[table] = pl.Schema(column_types)
+        json_cols[table] = frozenset(json_set)
+
+    log.complete(schema_count=len(schemas), json_col_count=len(json_cols))
+    return schemas, json_cols
 
 
 class ArchiveMasabi(OdinJob):
@@ -257,15 +335,27 @@ class ArchiveMasabi(OdinJob):
 
     def run(self) -> int:
         """Execute the Masabi archive run loop."""
-        print(f"Ingest: {self.table}")
+        global TABLE_SCHEMAS
+        global TABLE_JSON_COLS
+
+        log = ProcessLog(process="masabi_run")
 
         pool = self._make_request_pool()
+
+        if TABLE_SCHEMAS is None or TABLE_JSON_COLS is None:
+            TABLE_SCHEMAS, TABLE_JSON_COLS = _load_schemas(TABLES, pool)
+
         from_ts = self.setup_job()
         to_ts = int(time.time() * 1000)
+
+        self.schema = TABLE_SCHEMAS.get(self.table, None)
+        assert self.schema is not None
+        log.add_metadata(schema_size=len(self.schema))
 
         ndjson_path = self.fetch_and_write(pool, from_ts, to_ts)
         print(ndjson_path)
 
+        log.complete()
         return NEXT_RUN_DEFAULT  # 6 hours
 
 
