@@ -20,7 +20,7 @@ from odin.utils.locations import DATA_SPRINGBOARD, MASABI_DATA
 # ---------------------------------------------------------------------------
 
 # API base URL
-API_ROOT = os.getenv("MASABI_API_ROOT", "")
+API_ROOT = os.getenv("MASABI_DATA_API_URL", "")
 
 # Basic-auth credentials (validated at startup by run.py)
 _API_USERNAME = os.getenv("MASABI_DATA_API_USERNAME", "")
