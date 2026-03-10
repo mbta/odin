@@ -20,6 +20,8 @@ dependencies = [
     "urllib3==2.3.0",
     "tableauhyperapi",
     "tableauserverclient",
+    "pyyaml",
+    "types-PyYAML"
 ]
 optional-dependencies.dev = [
     "ipykernel",
