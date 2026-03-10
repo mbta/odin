@@ -31,7 +31,6 @@ _API_PASSWORD = os.getenv("MASABI_DATA_API_PASSWORD", "")
 # dev environments where the dataset is small.
 API_PAGE_SIZE = int(os.getenv("MASABI_API_PAGE_SIZE", "1000"))
 
-# Public URL can be put in code???
 _SCHEMA_URL = os.getenv("MASABI_DATA_SCHEMA_URL", "")
 
 # Maximum update size: Adjust to match the maximum size that can be safely handled
@@ -94,8 +93,7 @@ def _fetch_schema_spec(connection_pool: urllib3.PoolManager) -> dict[str, Any]:
 
 
 def _load_schemas(
-    tables: list[str],
-    connection_pool: urllib3.PoolManager
+    tables: list[str], connection_pool: urllib3.PoolManager
 ) -> tuple[dict[str, pl.Schema], dict[str, frozenset[str]]]:
     """
     Load per-table column schemas and JSON-column sets from the schema spec.
