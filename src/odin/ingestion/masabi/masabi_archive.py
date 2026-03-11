@@ -230,7 +230,7 @@ class ArchiveMasabi(OdinJob):
         :param from_ts: exclusive lower bound (ms since UTC epoch)
         :param to_ts: inclusive upper bound (ms since UTC epoch)
         """
-        url = f"{API_ROOT}/{self.table}/"
+        url = os.path.join(API_ROOT, "data-store/query/v2/MBTA", self.table)
         fields: dict[str, str] = {
             "filter": f"and(gt(serverTimestamp:{from_ts}),lte(serverTimestamp:{to_ts}))",
             "orderBy": "serverTimestamp:asc",
