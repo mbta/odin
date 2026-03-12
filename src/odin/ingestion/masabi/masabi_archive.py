@@ -1,5 +1,3 @@
-"""Masabi archive job placeholder."""
-
 from __future__ import annotations
 
 import os
@@ -9,8 +7,6 @@ from typing import Any, Generator
 import urllib3
 import json
 import yaml
-
-
 import polars as pl
 
 from odin.utils.logger import ProcessLog
@@ -340,22 +336,21 @@ class ArchiveMasabi(OdinJob):
         with the newly-fetched data, and uploads the result. This keeps file
         count low while preserving the append-only invariant.
 
+        Rows at the maximum serverTimestamp are dropped before writing.
+        Rationale: serverTimestamp values are not strictly unique — Masabi may
+        write additional rows with the same timestamp after our run completes.
+        The next run uses an *exclusive* lower bound
+        (`gt(serverTimestamp:{from_ts})`), so any rows whose timestamp equals
+        `from_ts` would be silently skipped, causing data loss. By dropping
+        the boundary rows now, we guarantee that the next run's lower bound
+        sits below those rows and re-fetches them in full (along with any
+        late-arriving rows at that same timestamp).
+
         :param ndjson_path: local path to the NDJSON file from fetch_and_write
         """
         log = ProcessLog("masabi_sync_parquet", table=self.table)
         pq_path = ndjson_path.replace(".ndjson", ".parquet")
 
-        # Convert NDJSON → local parquet using the pre-computed active schema.
-        #
-        # Rows at the maximum serverTimestamp are dropped before writing.
-        # Rationale: serverTimestamp values are not strictly unique — Masabi may
-        # write additional rows with the same timestamp after our run completes.
-        # The next run uses an *exclusive* lower bound
-        # (`gt(serverTimestamp:{from_ts})`), so any rows whose timestamp equals
-        # `from_ts` would be silently skipped, causing data loss. By dropping
-        # the boundary rows now, we guarantee that the next run's lower bound
-        # sits below those rows and re-fetches them in full (along with any
-        # late-arriving rows at that same timestamp).
         lf = pl.scan_ndjson(ndjson_path)
         # TODO: Add argument "schema=self.schema"; currently hits type coercion errors.
         # Will fix alongside proper schema check implementation.
