@@ -307,8 +307,8 @@ class ArchiveMasabi(OdinJob):
                             f"prior to previous maximum timestamp, {max_obs_ts}"
                         )
                     )
-                min_obs_ts = min_page_ts
-                max_obs_ts = max_page_ts
+                min_obs_ts = min(min_obs_ts, min_page_ts)
+                max_obs_ts = max(max_obs_ts, max_page_ts)
 
                 # TODO Check schema
                 for hit in page_hits:
