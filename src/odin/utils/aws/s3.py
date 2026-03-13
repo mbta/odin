@@ -38,6 +38,28 @@ def get_client() -> BaseClient:
     return boto3.Session(profile_name=aws_profile).client("s3", config=client_config)
 
 
+def s3_folder(path: str) -> str:
+    """
+    Coerce a path string into a valid S3 folder path.
+
+    Specifically, ensure that there is a "s3://" prefix and trailing "/".
+    """
+    return (
+        ("s3://" if not path.startswith("s3://") else "")
+        + path
+        + ("/" if not path.endswith("/") else "")
+    )
+
+
+def s3_file(path: str) -> str:
+    """
+    Coerce a path string into a valid S3 folder path.
+
+    Specifically, ensure that there is a "s3://" prefix and NO trailing "/".
+    """
+    return ("s3://" if not path.startswith("s3://") else "") + path.rstrip("/")
+
+
 def split_object(object: str) -> Tuple[str, str]:
     """
     Split S3 object as "s3://bucket/object_key" into Tuple[bucket, key].

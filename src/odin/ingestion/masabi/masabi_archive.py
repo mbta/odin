@@ -1,5 +1,3 @@
-"""Masabi archive job placeholder."""
-
 from __future__ import annotations
 
 import os
@@ -14,7 +12,14 @@ import polars as pl
 from odin.utils.logger import ProcessLog
 from odin.job import NEXT_RUN_DEFAULT, OdinJob, job_proc_schedule
 from odin.utils.locations import DATA_SPRINGBOARD, MASABI_DATA
-
+from odin.utils.aws.s3 import s3_folder
+from odin.utils.aws.s3 import download_object
+from odin.utils.aws.s3 import list_objects
+from odin.utils.aws.s3 import upload_file
+from odin.utils.parquet import ds_from_path
+from odin.utils.parquet import ds_metadata_min_max
+from odin.utils.parquet import pq_dataset_writer
+from odin.utils.runtime import sigterm_check
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -138,7 +143,7 @@ class ArchiveMasabi(OdinJob):
         """Create Job instance."""
         self.table = table
         self.start_kwargs = {"table": table}
-        self.export_folder = os.path.join(DATA_SPRINGBOARD, MASABI_DATA, table)
+        self.export_folder = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_DATA, table))
         self._last_request_time: float = 0.0
 
     def _make_request_pool(self) -> urllib3.PoolManager:
@@ -302,8 +307,8 @@ class ArchiveMasabi(OdinJob):
                             f"prior to previous maximum timestamp, {max_obs_ts}"
                         )
                     )
-                min_obs_ts = min_page_ts
-                max_obs_ts = max_page_ts
+                min_obs_ts = min(min_obs_ts, min_page_ts)
+                max_obs_ts = max(max_obs_ts, max_page_ts)
 
                 # TODO Check schema
                 for hit in page_hits:
@@ -323,13 +328,83 @@ class ArchiveMasabi(OdinJob):
         )
         return ndjson_path if total_rows > 0 else None
 
-    def setup_job(self):
+    def sync_parquet(self, ndjson_path: str) -> None:
         """
-        TODO: This will read previous parquet file to get the actual starting time.
+        Convert the NDJSON file to parquet and sync with S3.
 
-        For now returns the hardcoded total database start time.
+        Downloads the most-recent existing S3 parquet file (if any), merges it
+        with the newly-fetched data, and uploads the result. This keeps file
+        count low while preserving the append-only invariant.
+
+        Rows at the maximum serverTimestamp are dropped before writing.
+        Rationale: serverTimestamp values are not strictly unique — Masabi may
+        write additional rows with the same timestamp after our run completes.
+        The next run uses an *exclusive* lower bound
+        (`gt(serverTimestamp:{from_ts})`), so any rows whose timestamp equals
+        `from_ts` would be silently skipped, causing data loss. By dropping
+        the boundary rows now, we guarantee that the next run's lower bound
+        sits below those rows and re-fetches them in full (along with any
+        late-arriving rows at that same timestamp).
+
+        :param ndjson_path: local path to the NDJSON file from fetch_and_write
         """
-        return MASABI_START_TIMESTAMP_MS
+        log = ProcessLog("masabi_sync_parquet", table=self.table)
+        pq_path = ndjson_path.replace(".ndjson", ".parquet")
+
+        lf = pl.scan_ndjson(ndjson_path)
+        # TODO: Add argument "schema=self.schema"; currently hits type coercion errors.
+        # Will fix alongside proper schema check implementation.
+
+        max_ts = lf.select(pl.col("serverTimestamp").max()).collect().item()
+        ts_filtered_lf = lf.filter(pl.col("serverTimestamp") < max_ts)
+        ts_filtered_lf.sink_parquet(
+            pq_path,
+            compression="zstd",
+            compression_level=3,
+        )
+        log.add_metadata(boundary_ts_dropped=max_ts)
+
+        # Download the last existing S3 file so we can merge into it.
+        found_objs = list_objects(self.export_folder, in_filter=".parquet")
+        sync_paths: list[str] = []
+        if found_objs:
+            last_s3 = found_objs[-1].path.replace("s3://", "")
+            local_last = os.path.join(self.tmpdir, last_s3.replace("/table_", "/temp_"))
+            download_object(found_objs[-1].path, local_last)
+            # TODO: parquet-side schema check will go here
+            sync_paths.append(local_last)
+        sync_paths.append(pq_path)
+
+        new_row_count = ds_from_path(pq_path).count_rows()
+        log.add_metadata(new_rows=new_row_count)
+
+        new_paths = pq_dataset_writer(
+            source=ds_from_path(sync_paths),
+            export_folder=os.path.join(self.tmpdir, self.export_folder),
+            export_file_prefix="table",
+        )
+
+        # Perform S3 upload after sigterm check — uploads cannot be rolled back.
+        sigterm_check()
+        for new_path in new_paths:
+            upload_path = new_path.replace(f"{self.tmpdir}/", "")
+            upload_file(new_path, upload_path)
+        log.complete(uploaded_files=",".join(new_paths))
+
+    def setup_job(self):
+        """Read the pre-existing parquet files to get the start time for data."""
+        log = ProcessLog("masabi_setup_job", table=self.table)
+
+        from_ts = MASABI_START_TIMESTAMP_MS
+        existing_ds = ds_from_path(self.export_folder)
+        existing_ds_rows = existing_ds.count_rows()
+        if existing_ds_rows:
+            _, max_ts = ds_metadata_min_max(existing_ds, "serverTimestamp")
+            if max_ts is not None:
+                from_ts = int(max_ts)
+
+        log.complete(from_ts=from_ts, existing_ds_size=existing_ds_rows)
+        return from_ts
 
     def run(self) -> int:
         """Execute the Masabi archive run loop."""
@@ -351,7 +426,8 @@ class ArchiveMasabi(OdinJob):
         log.add_metadata(schema_size=len(self.schema))
 
         ndjson_path = self.fetch_and_write(pool, from_ts, to_ts)
-        print(ndjson_path)
+        if ndjson_path is not None:
+            self.sync_parquet(ndjson_path)
 
         log.complete()
         return NEXT_RUN_DEFAULT  # 6 hours
