@@ -74,10 +74,15 @@ API_TABLES = [
     "v_user_group_relations",
     "v_cashtype",
     "v_cashboxmovement",
-    "v_cashboxmovementdetails",
+    "v_cashboxmovementmoneydetails",
     "v_moneycontainersum",
     "v_moneycontainercontentsum",
     "v_accesslevel",
+    "v_svw_balance_changes",
+    "v_transit_accounts",
+    "v_payment_methods",
+    "v_entitlements",
+    "v_payment_method_instances",
 ]
 
 
