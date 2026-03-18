@@ -18,7 +18,7 @@ from odin.ingestion.afc.afc_archive import schedule_afc_archive
 from odin.ingestion.afc.afc_restricted import schedule_restricted_afc_archive
 from odin.ingestion.masabi.masabi_archive import schedule_masabi_archive
 from odin.generate.data_dictionary.dictionary import schedule_dictionary
-# from odin.ingestion.tableau.tableau_upload import schedule_tableau_upload
+from odin.ingestion.tableau.tableau_upload import schedule_tableau_upload, schedule_tableau_view_upload
 
 
 def start():
@@ -48,6 +48,7 @@ def start():
             "AFC_API_CLIENT_SECRET",
             "TABLEAU_PERSONAL_ACCESS_TOKEN_NAME",
             "TABLEAU_PERSONAL_ACCESS_TOKEN_SECRET",
+            "TABLEAU_SITE_ID",
             "MASABI_DATA_API_USERNAME",
             "MASABI_DATA_API_PASSWORD",
         ],
@@ -80,5 +81,6 @@ def start():
     # Disabling temporarily until Odin can access on-prem Tableau server
     # if "tableau_upload" in config:
     #     schedule_tableau_upload(schedule)
+    #     schedule_tableau_view_upload(schedule)
 
     schedule.run()
