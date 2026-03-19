@@ -528,6 +528,7 @@ WA160 = """
         ut.facility_id,
         tap_id,
         rtd.ride_type_name,
+        calculated_fare,
         coalesce(fpd.rider_class_name, tad.rider_class_name) as rider_class_name,
         coalesce(emd.external_ref, emd.customer_member_id) as external_ref,
         coalesce(one_account_value, 0) as one_account_value,
