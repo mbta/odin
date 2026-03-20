@@ -80,7 +80,6 @@ cubic_report_views = [
     cubic_sql.WC231_CLEARING_HOUSE,
     cubic_sql.WA160,
     cubic_sql.AD_HOC_JOURNAL_ENTRIES,
-    cubic_sql.WC231_PASS_ID_ADHOC,
 ]
 
 
