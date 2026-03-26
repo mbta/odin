@@ -723,7 +723,8 @@ WC231_PASS_ID_ADHOC = """
 """
 
 
-COMP_A_TXN_A = """
+COMP_B_TXN_A = """
+    DROP VIEW IF EXISTS cubic_reports.farerev_payg_trip_txn_a;
     CREATE VIEW cubic_reports.farerev_payg_trip_txn_a AS
     WITH EDW_FAREREV_PAYG_TRIP_TXN AS
     (
@@ -937,7 +938,8 @@ COMP_A_TXN_A = """
     FROM farerev_payg_trip_txn_a;
 """
 
-COMP_A_TXN_C = """
+COMP_B_TXN_C = """
+    DROP VIEW IF EXISTS cubic_reports.farerev_payg_trip_txn_c;
     CREATE VIEW cubic_reports.farerev_payg_trip_txn_c AS
     WITH EDW_FAREREV_PAYG_TRIP_TXN AS
     (
@@ -1161,7 +1163,8 @@ COMP_A_TXN_C = """
     FROM farerev_payg_trip_txn_c;
 """
 
-COMP_B_TXN_A = """
+COMP_A_TXN_A = """
+    DROP VIEW IF EXISTS cubic_reports.farerev_prod_sales_txn_a;
     CREATE VIEW cubic_reports.farerev_prod_sales_txn_a
     AS
     with EDW_FAREREV_PROD_SALES_TXN AS (
@@ -1366,7 +1369,7 @@ COMP_B_TXN_A = """
         (((t.operating_day_key <= rs.adden_max_operating_day_key)
             AND (t.settlement_day_key BETWEEN rs.adden_min_settlement_day_key AND rs.adden_max_settlement_day_key)))),
     farerev_prod_sales_txn_a AS (
-    SELECT DISTINCT 
+    SELECT DISTINCT
         report_due_day_key,
         addendum,
         txn_channel_display,
@@ -1412,7 +1415,8 @@ COMP_B_TXN_A = """
     SELECT * FROM farerev_prod_sales_txn_a;
 """
 
-COMP_B_TXN_C = """
+COMP_A_TXN_C = """
+    DROP VIEW IF EXISTS cubic_reports.farerev_prod_sales_txn_c;
     CREATE VIEW cubic_reports.farerev_prod_sales_txn_c
     AS
     with EDW_FAREREV_PROD_SALES_TXN AS (
