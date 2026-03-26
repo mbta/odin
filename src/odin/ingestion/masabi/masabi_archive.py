@@ -626,8 +626,9 @@ class ArchiveMasabi(OdinJob):
         from_ts = self.setup_job()
         to_ts = int(time.time() * 1000)
 
-        self.schema = TABLE_SCHEMAS.get(self.table, None)
-        assert self.schema is not None
+        schema = TABLE_SCHEMAS.get(self.table)
+        assert schema is not None, f"No schema loaded for {self.table!r}"
+        self.schema: pl.Schema = schema
         self.json_cols = TABLE_JSON_COLS.get(self.table, frozenset())
         self.numeric_overrides = TABLE_NUMERIC_OVERRIDES.get(self.table, frozenset())
         log.add_metadata(schema_size=len(self.schema))
