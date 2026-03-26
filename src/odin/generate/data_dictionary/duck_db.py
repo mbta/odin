@@ -72,14 +72,19 @@ cubic_report_mat_views = [
 ]
 
 cubic_report_views = [
-    cubic_sql.COMP_A_VIEW,
-    cubic_sql.COMP_B_VIEW,
-    cubic_sql.COMP_C_VIEW,
-    cubic_sql.COMP_D_VIEW,
+    cubic_sql.WC700_COMP_A_VIEW,
+    cubic_sql.WC700_COMP_B_VIEW,
+    cubic_sql.WC700_COMP_C_VIEW,
+    cubic_sql.WC700_COMP_D_VIEW,
     cubic_sql.AD_HOC_VIEW,
     cubic_sql.WC231_CLEARING_HOUSE,
     cubic_sql.WA160,
     cubic_sql.AD_HOC_JOURNAL_ENTRIES,
+    cubic_sql.WC231_PASS_ID_ADHOC,
+    cubic_sql.COMP_A_TXN_A,
+    cubic_sql.COMP_A_TXN_C,
+    cubic_sql.COMP_B_TXN_A,
+    cubic_sql.COMP_B_TXN_C,
 ]
 
 
