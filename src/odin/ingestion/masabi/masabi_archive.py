@@ -629,9 +629,7 @@ class ArchiveMasabi(OdinJob):
         self.schema = TABLE_SCHEMAS.get(self.table, None)
         assert self.schema is not None
         self.json_cols = TABLE_JSON_COLS.get(self.table, frozenset())
-        self.numeric_overrides = TABLE_NUMERIC_OVERRIDES.get(
-            self.table, frozenset()
-        )
+        self.numeric_overrides = TABLE_NUMERIC_OVERRIDES.get(self.table, frozenset())
         log.add_metadata(schema_size=len(self.schema))
 
         ndjson_path = self.fetch_and_write(pool, from_ts, to_ts)
