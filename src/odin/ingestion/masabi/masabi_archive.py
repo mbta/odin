@@ -156,182 +156,241 @@ _POLARS_TO_ARROW_TYPE_NAME: dict[type[pl.DataType], str] = {
 }
 
 
-def _arrow_type_name(pl_dtype: pl.DataType) -> str:
-    """Return a comparable Arrow type-name string for a polars DataType."""
-    return _POLARS_TO_ARROW_TYPE_NAME.get(type(pl_dtype), "string")
-
-
-def _check_json_page(
-    hits: list[dict[str, Any]],
-    schema: pl.Schema,
-    json_cols: frozenset[str],
-    warned_columns: set[str],
-) -> None:
+class SchemaCheck:
     """
-    Validate a page of JSON hits against the expected schema.
+    Bundle per-table schema info and validation/coercion helpers.
 
-    Checks the first hit in the page for:
-      - Extra columns (in JSON but not in schema) -> warning
-      - Missing columns (in schema but not in JSON) -> tolerated (null-fill)
-      - JSON-typed columns whose values are not list/dict -> warning
-      - Number-typed columns whose values are not numeric -> warning
+    Groups the polars schema, JSON-typed column set, numeric-override
+    column set, and warned_columns together with the helper methods
+    that consume them.
 
-    Warnings are deduplicated across pages via warned_columns.
-
-    :param hits: list of JSON row dicts from a single API page
-    :param schema: expected polars schema (column name -> DataType)
-    :param json_cols: set of column names expected to carry array/object values
-    :param warned_columns: mutable set tracking which column warnings have been emitted
+    Call reset_warnings at the start of each run to clear this state.
     """
-    if not hits:
-        return
 
-    log = ProcessLog("masabi_check_json_page")
-    sample = hits[0]
-    schema_names = set(schema.names())
-    hit_keys = set(sample.keys())
+    def __init__(
+        self,
+        schema: pl.Schema,
+        json_cols: frozenset[str],
+        numeric_overrides: frozenset[str],
+    ) -> None:
+        """
+        Create a SchemaCheck for a single table.
 
-    extra = hit_keys - schema_names
-    if extra and "extra_columns" not in warned_columns:
-        log.add_metadata(extra_columns_in_json=sorted(extra))
-        warned_columns.add("extra_columns")
+        :param schema: polars schema derived from the YAML spec
+        :param json_cols: columns whose YAML type is array/object
+        :param numeric_overrides: columns to coerce from string to float
+        """
+        self.schema = schema
+        self.json_cols = json_cols
+        self.numeric_overrides = numeric_overrides
+        self.warned_columns: set[str] = set()
 
-    # Type spot-checks on the sample row
-    for col in hit_keys & schema_names:
-        val = sample[col]
-        if val is None:
-            continue
-        if col in json_cols:
-            if not isinstance(val, (list, dict)) and col not in warned_columns:
-                log.add_metadata(
-                    unexpected_type_column=col,
-                    unexpected_type_actual=type(val).__name__,
-                    unexpected_type_expected="list/dict",
-                )
-                warned_columns.add(col)
-        elif isinstance(schema[col], pl.Float64):
-            if not isinstance(val, (int, float)) and col not in warned_columns:
-                log.add_metadata(
-                    unexpected_type_column=col,
-                    unexpected_type_actual=type(val).__name__,
-                    unexpected_type_expected="number",
-                )
-                warned_columns.add(col)
+    @staticmethod
+    def _arrow_type_name(pl_dtype: pl.DataType) -> str:
+        """Return a comparable Arrow type-name string for a polars DataType."""
+        return _POLARS_TO_ARROW_TYPE_NAME.get(type(pl_dtype), "string")
 
-    log.complete()
+    def reset_warnings(self) -> None:
+        """Clear per-run warning deduplication state."""
+        self.warned_columns.clear()
 
+    # ------------------------------------------------------------------
+    # Page-level validation
+    # ------------------------------------------------------------------
 
-def _serialize_json_cols(hit: dict[str, Any], json_cols: frozenset[str]) -> dict[str, Any]:
-    """
-    Serialize array/object columns to JSON strings in-place.
+    def check_json_page(self, hits: list[dict[str, Any]]) -> None:
+        """
+        Validate a page of JSON hits against the expected schema.
 
-    The YAML schema maps array and object types to pl.String().
-    Raw list/dict values must be serialized before writing NDJSON so that
-    pl.scan_ndjson() can coerce them without error.
+        Checks the first hit in the page for:
+          - Extra columns (in JSON but not in schema) -> warning
+          - Missing columns (in schema but not in JSON) -> tolerated (null-fill)
+          - JSON-typed columns whose values are not list/dict -> warning
+          - Number-typed columns whose values are not numeric -> warning
 
-    :param hit: single JSON row dict (mutated in-place)
-    :param json_cols: set of column names whose values should be serialized
-    :return: the same dict, with list/dict values replaced by JSON strings
-    """
-    for col in json_cols:
-        val = hit.get(col)
-        if isinstance(val, (list, dict)):
-            hit[col] = json.dumps(val)
-    return hit
+        Warnings are deduplicated across pages via self.warned_columns.
 
+        :param hits: list of JSON row dicts from a single API page
+        """
+        if not hits:
+            return
 
-def _coerce_hit_numerics(
-    hit: dict[str, Any],
-    numeric_cols: frozenset[str],
-    warned_columns: set[str],
-) -> dict[str, Any]:
-    """
-    Coerce string-encoded numeric columns to float in-place.
+        log = ProcessLog("masabi_check_json_page")
+        sample = hits[0]
+        schema_names = set(self.schema.names())
+        hit_keys = set(sample.keys())
 
-    The Masabi pipeline uses strict schema validation, and when
-    there are type mismatches between the data and provided
-    schema, we should address these issues as minimally and
-    specifcally as possible.
+        extra = hit_keys - schema_names
+        if extra and "extra_columns" not in self.warned_columns:
+            log.add_metadata(extra_columns_in_json=sorted(extra))
+            self.warned_columns.add("extra_columns")
 
-    This function targets columns defined in the schema as numeric whose
-    values are arriving as JSON strings (e.g. "8" instead of 8).
-    Columns listed in the per-table TABLE_NUMERIC_OVERRIDES set
-    are coerced here so that the downstream strict schema checking
-    can still catch any unexpected behavior.
+        # Type spot-checks on the sample row
+        for col in hit_keys & schema_names:
+            val = sample[col]
+            # Null values are valid for any column type (the API may omit
+            # optional fields) and polars handles them as typed nulls, so
+            # only non-null values are checked for type mismatches.
+            if val is None:
+                continue
+            if col in self.json_cols:
+                if not isinstance(val, (list, dict)) and col not in self.warned_columns:
+                    log.add_metadata(
+                        unexpected_type_column=col,
+                        unexpected_type_actual=type(val).__name__,
+                        unexpected_type_expected="list/dict",
+                    )
+                    self.warned_columns.add(col)
+            elif isinstance(self.schema[col], pl.Float64) and col not in self.numeric_overrides:
+                if not isinstance(val, (int, float)) and col not in self.warned_columns:
+                    log.add_metadata(
+                        unexpected_type_column=col,
+                        unexpected_type_actual=type(val).__name__,
+                        unexpected_type_expected="number",
+                    )
+                    self.warned_columns.add(col)
 
-    Values that cannot be converted are replaced with None (which
-    polars reads as a typed null) and a warning is logged once per
-    column per run.
+        log.complete()
 
-    :param hit: single JSON row dict (mutated in-place)
-    :param numeric_cols: column names to attempt float coercion on
-    :param warned_columns: mutable set for deduplicating warnings
-    :return: the same dict, with coerced or null-filled values
-    """
-    for col in numeric_cols:
-        val = hit.get(col)
-        if val is None or isinstance(val, (int, float)):
-            continue
-        try:
-            hit[col] = float(val)
-        except (ValueError, TypeError):
-            hit[col] = None
-            warn_key = f"coerce_{col}"
-            if warn_key not in warned_columns:
-                log = ProcessLog("masabi_coerce_hit_numerics")
-                log.add_metadata(
-                    null_filled_column=col,
-                    null_filled_value=repr(val),
-                    null_filled_reason="not coercible to float",
-                )
-                log.complete()
-                warned_columns.add(warn_key)
-    return hit
+    # ------------------------------------------------------------------
+    # Row-level transforms
+    # ------------------------------------------------------------------
 
+    def serialize_json_cols(self, hit: dict[str, Any]) -> None:
+        """
+        Serialize array/object columns to JSON strings in-place.
 
-def _check_parquet_schema(parquet_path: str, expected_schema: pl.Schema) -> None:
-    """
-    Compare an existing parquet file's schema against the expected polars schema.
+        The YAML schema maps array and object types to pl.String().
+        Raw list/dict values must be serialized before writing NDJSON so that
+        pl.scan_ndjson() can coerce them without error.
 
-    - Extra columns in the parquet (not in expected schema): logged as warning.
-    - Missing columns in the parquet (in expected schema but absent): logged as warning.
-    - Type mismatch on a shared column: raises SchemaError.
+        Values that are neither list/dict nor None are left as-is (they
+        are already string-compatible) but a warning is logged once per
+        column per run, since they indicate an unexpected type from the API.
 
-    :param parquet_path: local path to the downloaded parquet file
-    :param expected_schema: the polars schema derived from the YAML spec
-    :raises pl.exceptions.SchemaError: on column type mismatch
-    """
-    log = ProcessLog("masabi_check_parquet_schema", path=parquet_path)
-    pq_schema = pq.read_schema(parquet_path)
-    pq_col_types: dict[str, str] = {field.name: str(field.type) for field in pq_schema}
-    expected_names = set(expected_schema.names())
-    pq_names = set(pq_col_types.keys())
+        :param hit: single JSON row dict (mutated in-place)
+        """
+        for col in self.json_cols:
+            val = hit.get(col)
+            if isinstance(val, (list, dict)):
+                hit[col] = json.dumps(val)
+            elif val is not None:
+                warn_key = f"json_type_{col}"
+                if warn_key not in self.warned_columns:
+                    log = ProcessLog("masabi_serialize_json_cols")
+                    log.add_metadata(
+                        unexpected_type_column=col,
+                        unexpected_type_actual=type(val).__name__,
+                        unexpected_type_expected="list/dict",
+                    )
+                    log.complete()
+                    self.warned_columns.add(warn_key)
 
-    extra_in_pq = pq_names - expected_names
-    if extra_in_pq:
-        log.add_metadata(extra_columns_in_parquet=sorted(extra_in_pq))
+    def coerce_hit_numerics(self, hit: dict[str, Any]) -> None:
+        """
+        Coerce string-encoded numeric columns to float in-place.
 
-    missing_in_pq = expected_names - pq_names
-    if missing_in_pq:
-        log.add_metadata(missing_columns_in_parquet=sorted(missing_in_pq))
+        The Masabi pipeline uses strict schema validation, and when
+        there are type mismatches between the data and provided
+        schema, we should address these issues as minimally and
+        specifcally as possible.
 
-    mismatches: list[str] = []
-    for col in pq_names & expected_names:
-        expected_arrow = _arrow_type_name(expected_schema[col])
-        actual_arrow = pq_col_types[col]
-        if expected_arrow == "string" and actual_arrow in ("string", "large_string", "utf8"):
-            continue
-        if expected_arrow != actual_arrow:
-            mismatches.append(f"{col}: parquet={actual_arrow}, expected={expected_arrow}")
+        This function targets columns defined in the schema as numeric whose
+        values are arriving as JSON strings (e.g. "8" instead of 8).
+        Columns listed in the per-table TABLE_NUMERIC_OVERRIDES set
+        are coerced here so that the downstream strict schema checking
+        can still catch any unexpected behavior.
 
-    if mismatches:
-        log.failed(exception=pl.exceptions.SchemaError(", ".join(mismatches)))
-        raise pl.exceptions.SchemaError(
-            f"Parquet schema type mismatch for {parquet_path}: {'; '.join(mismatches)}. "
-            "A schema migration may be required."
-        )
+        Values that cannot be converted are replaced with None (which
+        polars reads as a typed null) and a warning is logged once per
+        column per run.
 
-    log.complete()
+        :param hit: single JSON row dict (mutated in-place)
+        """
+        for col in self.numeric_overrides:
+            val = hit.get(col)
+            if val is None or isinstance(val, (int, float)):
+                continue
+            try:
+                hit[col] = float(val)
+            except (ValueError, TypeError):
+                hit[col] = None
+                warn_key = f"coerce_{col}"
+                if warn_key not in self.warned_columns:
+                    log = ProcessLog("masabi_coerce_hit_numerics")
+                    log.add_metadata(
+                        null_filled_column=col,
+                        null_filled_value=repr(val),
+                        null_filled_reason="not coercible to float",
+                    )
+                    log.complete()
+                    self.warned_columns.add(warn_key)
+
+    # ------------------------------------------------------------------
+    # Page-level processing
+    # ------------------------------------------------------------------
+
+    def process_page(self, hits: list[dict[str, Any]]) -> None:
+        """
+        Validate and transform a page of API hits in-place.
+
+        Runs schema validation on the page, then coerces numeric columns
+        and serializes JSON columns for each hit.  After this call the
+        hits are ready for NDJSON serialization.
+
+        :param hits: list of JSON row dicts (each mutated in-place)
+        """
+        self.check_json_page(hits)
+        for hit in hits:
+            self.coerce_hit_numerics(hit)
+            self.serialize_json_cols(hit)
+
+    # ------------------------------------------------------------------
+    # Parquet validation
+    # ------------------------------------------------------------------
+
+    def check_parquet_schema(self, parquet_path: str) -> None:
+        """
+        Compare an existing parquet file's schema against the expected polars schema.
+
+        - Extra columns in the parquet (not in expected schema): logged as warning.
+        - Missing columns in the parquet (in expected schema but absent): logged as warning.
+        - Type mismatch on a shared column: raises SchemaError.
+
+        :param parquet_path: local path to the downloaded parquet file
+        :raises pl.exceptions.SchemaError: on column type mismatch
+        """
+        log = ProcessLog("masabi_check_parquet_schema", path=parquet_path)
+        pq_schema = pq.read_schema(parquet_path)
+        pq_col_types: dict[str, str] = {field.name: str(field.type) for field in pq_schema}
+        expected_names = set(self.schema.names())
+        pq_names = set(pq_col_types.keys())
+
+        extra_in_pq = pq_names - expected_names
+        if extra_in_pq:
+            log.add_metadata(extra_columns_in_parquet=sorted(extra_in_pq))
+
+        missing_in_pq = expected_names - pq_names
+        if missing_in_pq:
+            log.add_metadata(missing_columns_in_parquet=sorted(missing_in_pq))
+
+        mismatches: list[str] = []
+        for col in pq_names & expected_names:
+            expected_arrow = self._arrow_type_name(self.schema[col])
+            actual_arrow = pq_col_types[col]
+            if expected_arrow == "string" and actual_arrow in ("string", "large_string", "utf8"):
+                continue
+            if expected_arrow != actual_arrow:
+                mismatches.append(f"{col}: parquet={actual_arrow}, expected={expected_arrow}")
+
+        if mismatches:
+            log.failed(exception=pl.exceptions.SchemaError(", ".join(mismatches)))
+            raise pl.exceptions.SchemaError(
+                f"Parquet schema type mismatch for {parquet_path}: {'; '.join(mismatches)}. "
+                "A schema migration may be required."
+            )
+
+        log.complete()
 
 
 class ArchiveMasabi(OdinJob):
@@ -478,11 +537,12 @@ class ArchiveMasabi(OdinJob):
         NDJSON file is written in ascending serverTimestamp order (enforced
         by the API `orderBy` parameter) so that partial writes are safe.
 
-        Each page is validated against self.schema (column presence and
-        value types) via _check_json_page(). Columns whose YAML type is
-        array or object are serialized to JSON strings before writing
-        so that the downstream pl.scan_ndjson(..., schema=self.schema) call
-        can coerce them without error.
+        Each page is validated against the schema (column presence and
+        value types) via :meth:`SchemaCheck.check_json_page`. Columns whose
+        YAML type is array or object are serialized to JSON strings before
+        writing so that the downstream
+        pl.scan_ndjson(..., schema=self.schema_check.schema) call can
+        coerce them without error.
 
         :param pool: urllib3 connection pool manager
         :param from_ts: exclusive lower bound (ms since epoch)
@@ -500,7 +560,7 @@ class ArchiveMasabi(OdinJob):
         maximum_rows = False
         min_obs_ts = float("inf")
         max_obs_ts = -1
-        warned_columns: set[str] = set()
+        self.schema_check.reset_warnings()
         with open(ndjson_path, "w") as f:
             for page_hits in self.api_pages(pool, from_ts, to_ts):
                 min_page_ts = min([x["serverTimestamp"] for x in page_hits])
@@ -515,10 +575,8 @@ class ArchiveMasabi(OdinJob):
                 min_obs_ts = min(min_obs_ts, min_page_ts)
                 max_obs_ts = max(max_obs_ts, max_page_ts)
 
-                _check_json_page(page_hits, self.schema, self.json_cols, warned_columns)
+                self.schema_check.process_page(page_hits)
                 for hit in page_hits:
-                    _coerce_hit_numerics(hit, self.numeric_overrides, warned_columns)
-                    _serialize_json_cols(hit, self.json_cols)
                     f.write(json.dumps(hit) + "\n")
                     total_rows += 1
                     if total_rows >= MAXIMUM_ROWS_PER_RUN:
@@ -558,7 +616,7 @@ class ArchiveMasabi(OdinJob):
         log = ProcessLog("masabi_sync_parquet", table=self.table)
         pq_path = ndjson_path.replace(".ndjson", ".parquet")
 
-        lf = pl.scan_ndjson(ndjson_path, schema=self.schema)
+        lf = pl.scan_ndjson(ndjson_path, schema=self.schema_check.schema)
 
         max_ts = lf.select(pl.col("serverTimestamp").max()).collect().item()
         ts_filtered_lf = lf.filter(pl.col("serverTimestamp") < max_ts)
@@ -576,7 +634,7 @@ class ArchiveMasabi(OdinJob):
             last_s3 = found_objs[-1].path.replace("s3://", "")
             local_last = os.path.join(self.tmpdir, last_s3.replace("/table_", "/temp_"))
             download_object(found_objs[-1].path, local_last)
-            _check_parquet_schema(local_last, self.schema)
+            self.schema_check.check_parquet_schema(local_last)
             sync_paths.append(local_last)
         sync_paths.append(pq_path)
 
@@ -628,10 +686,12 @@ class ArchiveMasabi(OdinJob):
 
         schema = TABLE_SCHEMAS.get(self.table)
         assert schema is not None, f"No schema loaded for {self.table!r}"
-        self.schema: pl.Schema = schema
-        self.json_cols = TABLE_JSON_COLS.get(self.table, frozenset())
-        self.numeric_overrides = TABLE_NUMERIC_OVERRIDES.get(self.table, frozenset())
-        log.add_metadata(schema_size=len(self.schema))
+        self.schema_check = SchemaCheck(
+            schema=schema,
+            json_cols=TABLE_JSON_COLS.get(self.table, frozenset()),
+            numeric_overrides=TABLE_NUMERIC_OVERRIDES.get(self.table, frozenset()),
+        )
+        log.add_metadata(schema_size=len(self.schema_check.schema))
 
         ndjson_path = self.fetch_and_write(pool, from_ts, to_ts)
         if ndjson_path is not None:
