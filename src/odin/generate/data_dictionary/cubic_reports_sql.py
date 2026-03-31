@@ -735,7 +735,7 @@ COMP_B_TXN_A = """
         ut.transaction_dtm,
         strptime(CAST(ut.posting_day_key AS VARCHAR), '%Y%m%d') AS posting_date,
         strptime(CAST(ut.settlement_day_key AS VARCHAR), '%Y%m%d') AS settlement_date,
-        th.transit_mode_name,
+        th.operator_name,
         ut.device_id,
         ut.dw_transaction_id,
         ut.transit_account_id,
@@ -805,8 +805,8 @@ COMP_B_TXN_A = """
                 AND (sales_channel_key = 8)
                     AND (payment_type_key = 2))) AS m ON
         ((1 = 1))
-    LEFT JOIN cubic_ods.edw_transaction_history AS th ON
-        ((th.dw_transaction_id = ut.dw_transaction_id))
+    LEFT JOIN cubic_ods.edw_operator_dimension AS th ON
+        ((th.operator_key = ut.operator_key))
     WHERE
         ((ut.bankcard_payment_value != 0)
             OR (ut.uncollectible_amount != 0)
@@ -814,7 +814,7 @@ COMP_B_TXN_A = """
     GROUP BY
         m.txn_channel_display,
         ut.transaction_dtm,
-        th.transit_mode_name,
+        th.operator_name,
         ut.device_id,
         ut.dw_transaction_id,
         ut.transit_account_id,
@@ -843,7 +843,7 @@ COMP_B_TXN_A = """
     s.transaction_dtm,
     strptime(CAST(s.posting_day_key AS VARCHAR), '%Y%m%d') AS posting_date,
     strptime(CAST(s.settlement_day_key AS VARCHAR), '%Y%m%d') AS settlement_date,
-    th.transit_mode_name,
+    th.operator_name,
     s.device_id,
     s.dw_transaction_id,
     s.transit_account_id,
@@ -878,8 +878,8 @@ COMP_B_TXN_A = """
     ((pt.payment_type_key = m.payment_type_key))
     LEFT JOIN cubic_ods.edw_read_transaction AS rt ON
     ((rt.tap_id = s.tap_id))
-    LEFT JOIN cubic_ods.edw_transaction_history AS th ON
-    ((th.dw_transaction_id = rt.dw_transaction_id))
+    LEFT JOIN cubic_ods.edw_operator_dimension AS th ON
+    ((th.operator_key = rt.operator_key))
     LEFT JOIN cubic_ods.edw_card_dimension AS cd ON
     ((cd.card_key = rt.card_key))
     WHERE
@@ -916,7 +916,7 @@ COMP_B_TXN_A = """
         transaction_dtm,
         posting_date,
         settlement_date,
-        transit_mode_name,
+        CASE WHEN ((operator_name = 'Subway')) THEN ('Transit') ELSE operator_name END AS transit_mode_name,
         device_id,
         dw_transaction_id,
         transit_account_id,
@@ -950,7 +950,7 @@ COMP_B_TXN_C = """
         ut.transaction_dtm,
         strptime(CAST(ut.posting_day_key AS VARCHAR), '%Y%m%d') AS posting_date,
         strptime(CAST(ut.settlement_day_key AS VARCHAR), '%Y%m%d') AS settlement_date,
-        th.transit_mode_name,
+        th.operator_name,
         ut.device_id,
         ut.dw_transaction_id,
         ut.transit_account_id,
@@ -1020,8 +1020,8 @@ COMP_B_TXN_C = """
                 AND (sales_channel_key = 8)
                     AND (payment_type_key = 2))) AS m ON
         ((1 = 1))
-    LEFT JOIN cubic_ods.edw_transaction_history AS th ON
-        ((th.dw_transaction_id = ut.dw_transaction_id))
+    LEFT JOIN cubic_ods.edw_operator_dimension AS th ON
+        ((th.operator_key = ut.operator_key))
     WHERE
         ((ut.bankcard_payment_value != 0)
             OR (ut.uncollectible_amount != 0)
@@ -1029,7 +1029,7 @@ COMP_B_TXN_C = """
     GROUP BY
         m.txn_channel_display,
         ut.transaction_dtm,
-        th.transit_mode_name,
+        th.operator_name,
         ut.device_id,
         ut.dw_transaction_id,
         ut.transit_account_id,
@@ -1058,7 +1058,7 @@ COMP_B_TXN_C = """
     s.transaction_dtm,
     strptime(CAST(s.posting_day_key AS VARCHAR), '%Y%m%d') AS posting_date,
     strptime(CAST(s.settlement_day_key AS VARCHAR), '%Y%m%d') AS settlement_date,
-    th.transit_mode_name,
+    th.operator_name,
     s.device_id,
     s.dw_transaction_id,
     s.transit_account_id,
@@ -1093,8 +1093,8 @@ COMP_B_TXN_C = """
     ((pt.payment_type_key = m.payment_type_key))
     LEFT JOIN cubic_ods.edw_read_transaction AS rt ON
     ((rt.tap_id = s.tap_id))
-    LEFT JOIN cubic_ods.edw_transaction_history AS th ON
-    ((th.dw_transaction_id = rt.dw_transaction_id))
+    LEFT JOIN cubic_ods.edw_operator_dimension AS th ON
+    ((th.operator_key = rt.operator_key))
     LEFT JOIN cubic_ods.edw_card_dimension AS cd ON
     ((cd.card_key = rt.card_key))
     WHERE
@@ -1141,7 +1141,7 @@ COMP_B_TXN_C = """
         transaction_dtm,
         posting_date,
         settlement_date,
-        transit_mode_name,
+        CASE WHEN ((operator_name = 'Subway')) THEN ('Transit') ELSE operator_name END AS transit_mode_name,
         device_id,
         dw_transaction_id,
         transit_account_id,
