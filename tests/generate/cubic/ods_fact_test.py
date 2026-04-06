@@ -1,21 +1,21 @@
 """
 Tests for CubicODSFact CDC handling logic.
 
-Two-tier structure:
+Integration tests for load_cdc_records():
+  Local parquet on disk; S3 boundary functions patched to local equivalents.
+  Validates the full apply-CDC-to-fact pipeline end-to-end.
 
-  Tier 1 — cdc_to_fact() unit tests
-    Pure DataFrame logic; no I/O, no mocking.  Fast and precise.
-    These are the primary spec for CDC operation semantics and directly
-    pin the Bug 1 regression (pure-delete batches being no-op'd).
-
-  Tier 2 — load_cdc_records() integration tests
-    Local parquet on disk; S3 boundary functions patched to local equivalents.
-    Validates the full apply-CDC-to-fact pipeline end-to-end.
+Coverage includes:
+  - Single-operation batches (pure I, U, D)
+  - Mixed-operation batches (different keys)
+  - Same-key conflict resolution (I→U, D→I, D→U, multi-U sparse merge)
+  - B-record filtering
+  - Null-means-no-change sparse update semantics
 
 Assumptions documented by the test suite (per Qlik CDC spec §2.4.2):
   - A NULL value in a "U" record means "no change to this column", NOT
     "set this column to NULL".  This assumption is implicit in the code's
-    null-skipping filter and is pinned by test_cdc_to_fact_null_update_not_applied.
+    null-skipping filter and is pinned by test_load_cdc_null_update_not_applied.
 """
 
 import datetime
@@ -30,7 +30,6 @@ from odin.generate.cubic.ods_fact import (
     NEXT_RUN_DEFAULT,
     NEXT_RUN_LONG,
     CubicODSFact,
-    cdc_to_fact,
 )
 from odin.utils.aws.s3 import S3Object
 from odin.utils.parquet import ds_from_path
@@ -223,262 +222,7 @@ def run_load_cdc(job, tmp_path) -> int:
 
 
 # ===========================================================================
-# TIER 1 — cdc_to_fact() unit tests
-# ===========================================================================
-
-
-def test_cdc_to_fact_pure_inserts():
-    """I records land in insert_df; update_df and delete_df are empty."""
-    cdc = make_cdc_df(
-        [
-            {"txn_id": 1, "amount": 100, "header__change_seq": "00001", "header__change_oper": "I"},
-            {"txn_id": 2, "amount": 200, "header__change_seq": "00002", "header__change_oper": "I"},
-        ]
-    )
-    ins, upd, dlt = cdc_to_fact(cdc, pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), KEYS)
-
-    assert ins.height == 2
-    assert set(ins["txn_id"].to_list()) == {1, 2}
-    assert upd.height == 0
-    assert dlt.height == 0
-
-
-def test_cdc_to_fact_pure_deletes():
-    """
-    D records land in delete_df; update_df must be EMPTY.
-
-    This is the direct regression test for Bug 1: before the fix, update_df
-    was seeded with all CDC keys regardless of operation, causing delete-only
-    batches to be silently no-op'd when applied to the fact table.
-    """
-    cdc = make_cdc_df(
-        [
-            {"txn_id": 1, "header__change_seq": "00001", "header__change_oper": "D"},
-            {"txn_id": 2, "header__change_seq": "00002", "header__change_oper": "D"},
-            {"txn_id": 3, "header__change_seq": "00003", "header__change_oper": "D"},
-        ]
-    )
-    ins, upd, dlt = cdc_to_fact(cdc, pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), KEYS)
-
-    assert ins.height == 0
-    assert upd.height == 0, (
-        f"update_df should be empty for pure-delete batch but has {upd.height} rows. "
-        "This indicates the Bug 1 fix is not applied: delete keys must not seed update_df."
-    )
-    assert dlt.height == 3
-    assert set(dlt["txn_id"].to_list()) == {1, 2, 3}
-
-
-def test_cdc_to_fact_pure_updates():
-    """U records build update_df with correct key + column values; others empty."""
-    cdc = make_cdc_df(
-        [
-            {
-                "txn_id": 1,
-                "amount": 999,
-                "status": "active",
-                "header__change_seq": "00001",
-                "header__change_oper": "U",
-            },
-        ]
-    )
-    ins, upd, dlt = cdc_to_fact(cdc, pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), KEYS)
-
-    assert ins.height == 0
-    assert dlt.height == 0
-    assert upd.height == 1
-    assert upd["txn_id"][0] == 1
-    assert upd["amount"][0] == 999
-    assert upd["status"][0] == "active"
-
-
-def test_cdc_to_fact_before_images_ignored():
-    """B records are fully ignored; all output DataFrames are empty."""
-    cdc = make_cdc_df(
-        [
-            {"txn_id": 1, "amount": 100, "header__change_seq": "00001", "header__change_oper": "B"},
-            {"txn_id": 2, "amount": 200, "header__change_seq": "00002", "header__change_oper": "B"},
-        ]
-    )
-    ins, upd, dlt = cdc_to_fact(cdc, pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), KEYS)
-
-    assert ins.height == 0
-    assert upd.height == 0
-    assert dlt.height == 0
-
-
-def test_cdc_to_fact_update_latest_seq_wins():
-    """
-    When two U records target the same key, the one with the higher
-    header__change_seq wins per column (spec §2.4.3).
-    """
-    cdc = make_cdc_df(
-        [
-            {
-                "txn_id": 1,
-                "amount": 111,
-                "status": "old",
-                "header__change_seq": "00001",
-                "header__change_oper": "U",
-            },
-            {
-                "txn_id": 1,
-                "amount": 999,
-                "status": "new",
-                "header__change_seq": "00002",
-                "header__change_oper": "U",
-            },
-        ]
-    )
-    _, upd, _ = cdc_to_fact(cdc, pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), KEYS)
-
-    row = upd.filter(pl.col("txn_id") == 1)
-    assert row.height == 1
-    assert row["amount"][0] == 999
-    assert row["status"][0] == "new"
-
-
-def test_cdc_to_fact_null_update_not_applied():
-    """
-    A NULL value in a U record is treated as 'no change', not 'set to NULL'.
-
-    This pins the implicit assumption in the code (spec §2.4.2 note): the
-    pipeline lacks a change_mask and assumes the source never uses NULL to
-    mean 'set-to-NULL'.  If that assumption breaks, this test will need
-    revisiting alongside the apply logic.
-    """
-    cdc = make_cdc_df(
-        [
-            # amount is null — should not overwrite; status has a new value.
-            {
-                "txn_id": 1,
-                "amount": None,
-                "status": "changed",
-                "header__change_seq": "00001",
-                "header__change_oper": "U",
-            },
-        ]
-    )
-    _, upd, _ = cdc_to_fact(cdc, pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), KEYS)
-
-    assert upd.height == 1
-    assert upd["txn_id"][0] == 1
-    # amount column should not appear in update_df (null value was skipped)
-    assert "amount" not in upd.columns or upd["amount"][0] is None
-    assert upd["status"][0] == "changed"
-
-
-def test_cdc_to_fact_mixed_operations():
-    """I / U / D / B records in one batch each route to the correct DataFrame."""
-    cdc = make_cdc_df(
-        [
-            {
-                "txn_id": 10,
-                "amount": 100,
-                "header__change_seq": "00001",
-                "header__change_oper": "I",
-            },
-            {
-                "txn_id": 20,
-                "amount": 200,
-                "header__change_seq": "00002",
-                "header__change_oper": "U",
-            },
-            {"txn_id": 30, "header__change_seq": "00003", "header__change_oper": "D"},
-            {
-                "txn_id": 40,
-                "amount": 400,
-                "header__change_seq": "00004",
-                "header__change_oper": "B",
-            },
-        ]
-    )
-    ins, upd, dlt = cdc_to_fact(cdc, pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), KEYS)
-
-    assert set(ins["txn_id"].to_list()) == {10}
-    assert set(upd["txn_id"].to_list()) == {20}
-    assert set(dlt["txn_id"].to_list()) == {30}
-    # B record (txn_id=40) must not appear anywhere
-    for df in (ins, upd, dlt):
-        if df.height > 0:
-            assert 40 not in df["txn_id"].to_list()
-
-
-def test_cdc_to_fact_delete_then_insert_same_key():
-    """
-    A D followed by an I for the same key lands in delete_df AND insert_df.
-    update_df must not contain the key (no U records).
-    """
-    cdc = make_cdc_df(
-        [
-            {"txn_id": 1, "header__change_seq": "00001", "header__change_oper": "D"},
-            {"txn_id": 1, "amount": 999, "header__change_seq": "00002", "header__change_oper": "I"},
-        ]
-    )
-    ins, upd, dlt = cdc_to_fact(cdc, pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), KEYS)
-
-    assert 1 in ins["txn_id"].to_list()
-    assert 1 in dlt["txn_id"].to_list()
-    assert upd.height == 0
-
-
-def test_cdc_to_fact_accumulation_across_batches():
-    """
-    Calling cdc_to_fact multiple times (simulating the fetch loop) accumulates
-    results correctly without double-counting.
-    """
-    batch1 = make_cdc_df(
-        [
-            {"txn_id": 1, "amount": 100, "header__change_seq": "00001", "header__change_oper": "I"},
-            {"txn_id": 2, "amount": 200, "header__change_seq": "00002", "header__change_oper": "U"},
-        ]
-    )
-    batch2 = make_cdc_df(
-        [
-            {"txn_id": 3, "header__change_seq": "00003", "header__change_oper": "D"},
-            {"txn_id": 4, "amount": 400, "header__change_seq": "00004", "header__change_oper": "I"},
-        ]
-    )
-
-    ins, upd, dlt = cdc_to_fact(batch1, pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), KEYS)
-    ins, upd, dlt = cdc_to_fact(batch2, ins, upd, dlt, KEYS)
-
-    assert set(ins["txn_id"].to_list()) == {1, 4}
-    # update_df accumulates keys from U records only
-    assert set(upd["txn_id"].to_list()) == {2}
-    assert set(dlt["txn_id"].to_list()) == {3}
-
-
-def test_cdc_to_fact_accumulation_deletes_do_not_pollute_updates():
-    """
-    Across multiple batches, D records in a subsequent batch must not add
-    keys to update_df (the specific multi-batch form of Bug 1).
-    """
-    batch1 = make_cdc_df(
-        [
-            {"txn_id": 1, "amount": 100, "header__change_seq": "00001", "header__change_oper": "U"},
-        ]
-    )
-    batch2 = make_cdc_df(
-        [
-            {"txn_id": 2, "header__change_seq": "00002", "header__change_oper": "D"},
-            {"txn_id": 3, "header__change_seq": "00003", "header__change_oper": "D"},
-        ]
-    )
-
-    ins, upd, dlt = cdc_to_fact(batch1, pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), KEYS)
-    ins, upd, dlt = cdc_to_fact(batch2, ins, upd, dlt, KEYS)
-
-    # update_df should only contain txn_id=1 (from the U in batch 1)
-    assert set(upd["txn_id"].to_list()) == {1}, (
-        f"update_df contains unexpected keys {upd['txn_id'].to_list()}. "
-        "Delete keys from batch2 must not be merged into update_df."
-    )
-    assert set(dlt["txn_id"].to_list()) == {2, 3}
-
-
-# ===========================================================================
-# TIER 2 — load_cdc_records() integration tests
+# load_cdc_records() integration tests
 # ===========================================================================
 
 
@@ -718,3 +462,383 @@ def test_load_cdc_mixed_operations(cdc_integration, tmp_path):
     assert set(fact["txn_id"].to_list()) == {1, 2, 4}
     assert fact.filter(pl.col("txn_id") == 2)["amount"][0] == 999
     assert fact.filter(pl.col("txn_id") == 1)["amount"][0] == 100  # unchanged
+
+
+# ===========================================================================
+# Same-key conflict resolution tests
+# ===========================================================================
+
+
+def test_load_cdc_insert_then_update_same_key(cdc_integration, tmp_path):
+    """
+    I→U for the same key in one batch: the row must survive with the I record
+    as the base and the U columns applied on top.
+
+    This is the I→U bug regression test.  Before the fix, the update path
+    looked for an existing fact row (which doesn't exist — the key was just
+    inserted), found nothing, and silently dropped the row.
+    """
+    job, write_fact, write_history, read_fact = cdc_integration
+
+    write_fact(
+        make_fact_df(
+            [
+                {"txn_id": 1, "amount": 100, "header__change_seq": "00001", "odin_index": 0},
+            ]
+        )
+    )
+    write_history(
+        make_cdc_df(
+            [
+                {
+                    "txn_id": 5,
+                    "amount": 500,
+                    "status": "initial",
+                    "header__change_seq": "00010",
+                    "header__change_oper": "I",
+                },
+                {
+                    "txn_id": 5,
+                    "amount": 555,
+                    "header__change_seq": "00011",
+                    "header__change_oper": "U",
+                },
+            ]
+        )
+    )
+
+    run_load_cdc(job, tmp_path)
+
+    fact = read_fact()
+    assert fact.height == 2, (
+        f"Expected 2 rows (original + I→U), got {fact.height}. "
+        "If 1, the I→U row was silently dropped."
+    )
+    assert set(fact["txn_id"].to_list()) == {1, 5}
+    row5 = fact.filter(pl.col("txn_id") == 5)
+    assert row5["amount"][0] == 555, "U column should overwrite I base value"
+    assert row5["status"][0] == "initial", "Non-updated columns should retain I base value"
+
+
+def test_load_cdc_insert_then_multiple_updates_same_key(cdc_integration, tmp_path):
+    """
+    I→U→U for the same key: both sparse U records contribute column values
+    on top of the I base row.
+    """
+    job, write_fact, write_history, read_fact = cdc_integration
+
+    write_fact(
+        make_fact_df(
+            [
+                {"txn_id": 1, "amount": 100, "header__change_seq": "00001", "odin_index": 0},
+            ]
+        )
+    )
+    write_history(
+        make_cdc_df(
+            [
+                {
+                    "txn_id": 5,
+                    "amount": 500,
+                    "status": "initial",
+                    "header__change_seq": "00010",
+                    "header__change_oper": "I",
+                },
+                {
+                    "txn_id": 5,
+                    "amount": 555,
+                    "header__change_seq": "00011",
+                    "header__change_oper": "U",
+                },
+                {
+                    "txn_id": 5,
+                    "status": "final",
+                    "header__change_seq": "00012",
+                    "header__change_oper": "U",
+                },
+            ]
+        )
+    )
+
+    run_load_cdc(job, tmp_path)
+
+    fact = read_fact()
+    assert fact.height == 2
+    row5 = fact.filter(pl.col("txn_id") == 5)
+    assert row5["amount"][0] == 555, "Latest U for amount should win"
+    assert row5["status"][0] == "final", "Latest U for status should win"
+
+
+def test_load_cdc_delete_then_insert_same_key(cdc_integration, tmp_path):
+    """
+    D→I for the same key: the old row is removed and the new I row is inserted.
+    Final op is I, so the insert record is used directly.
+    """
+    job, write_fact, write_history, read_fact = cdc_integration
+
+    write_fact(
+        make_fact_df(
+            [
+                {
+                    "txn_id": 1,
+                    "amount": 100,
+                    "status": "old",
+                    "header__change_seq": "00001",
+                    "odin_index": 0,
+                },
+                {"txn_id": 2, "amount": 200, "header__change_seq": "00002", "odin_index": 1},
+            ]
+        )
+    )
+    write_history(
+        make_cdc_df(
+            [
+                {"txn_id": 1, "header__change_seq": "00010", "header__change_oper": "D"},
+                {
+                    "txn_id": 1,
+                    "amount": 999,
+                    "status": "reinserted",
+                    "header__change_seq": "00011",
+                    "header__change_oper": "I",
+                },
+            ]
+        )
+    )
+
+    run_load_cdc(job, tmp_path)
+
+    fact = read_fact()
+    assert fact.height == 2
+    assert set(fact["txn_id"].to_list()) == {1, 2}
+    row1 = fact.filter(pl.col("txn_id") == 1)
+    assert row1["amount"][0] == 999
+    assert row1["status"][0] == "reinserted"
+
+
+def test_load_cdc_delete_then_update_same_key(cdc_integration, tmp_path):
+    """
+    D→U for the same key (key exists in fact): final op is U, so the existing
+    fact row is fetched and the sparse U columns applied.  The intermediate D
+    is effectively overridden.
+    """
+    job, write_fact, write_history, read_fact = cdc_integration
+
+    write_fact(
+        make_fact_df(
+            [
+                {
+                    "txn_id": 1,
+                    "amount": 100,
+                    "status": "old",
+                    "header__change_seq": "00001",
+                    "odin_index": 0,
+                },
+                {"txn_id": 2, "amount": 200, "header__change_seq": "00002", "odin_index": 1},
+            ]
+        )
+    )
+    write_history(
+        make_cdc_df(
+            [
+                {"txn_id": 1, "header__change_seq": "00010", "header__change_oper": "D"},
+                {
+                    "txn_id": 1,
+                    "status": "updated",
+                    "header__change_seq": "00011",
+                    "header__change_oper": "U",
+                },
+            ]
+        )
+    )
+
+    run_load_cdc(job, tmp_path)
+
+    fact = read_fact()
+    assert fact.height == 2
+    assert set(fact["txn_id"].to_list()) == {1, 2}
+    row1 = fact.filter(pl.col("txn_id") == 1)
+    assert row1["amount"][0] == 100, "Non-updated columns retain original value"
+    assert row1["status"][0] == "updated"
+
+
+def test_load_cdc_multiple_updates_sparse_columns(cdc_integration, tmp_path):
+    """
+    Two U records for the same key updating different columns: both column
+    values are applied (latest non-null per column wins).
+    """
+    job, write_fact, write_history, read_fact = cdc_integration
+
+    write_fact(
+        make_fact_df(
+            [
+                {
+                    "txn_id": 1,
+                    "amount": 100,
+                    "status": "old",
+                    "header__change_seq": "00001",
+                    "odin_index": 0,
+                },
+            ]
+        )
+    )
+    write_history(
+        make_cdc_df(
+            [
+                {
+                    "txn_id": 1,
+                    "amount": 999,
+                    "header__change_seq": "00010",
+                    "header__change_oper": "U",
+                },
+                {
+                    "txn_id": 1,
+                    "status": "new",
+                    "header__change_seq": "00011",
+                    "header__change_oper": "U",
+                },
+            ]
+        )
+    )
+
+    run_load_cdc(job, tmp_path)
+
+    fact = read_fact()
+    assert fact.height == 1
+    row1 = fact.filter(pl.col("txn_id") == 1)
+    assert row1["amount"][0] == 999, "amount from first U should be applied"
+    assert row1["status"][0] == "new", "status from second U should be applied"
+
+
+def test_load_cdc_null_update_not_applied(cdc_integration, tmp_path):
+    """
+    A NULL value in a U record means 'no change', not 'set to NULL'.
+
+    Pins the implicit assumption (Qlik CDC spec §2.4.2): the pipeline lacks a
+    change_mask and treats NULL in U records as 'column not touched'.
+    """
+    job, write_fact, write_history, read_fact = cdc_integration
+
+    write_fact(
+        make_fact_df(
+            [
+                {
+                    "txn_id": 1,
+                    "amount": 100,
+                    "status": "original",
+                    "header__change_seq": "00001",
+                    "odin_index": 0,
+                },
+            ]
+        )
+    )
+    write_history(
+        make_cdc_df(
+            [
+                {
+                    "txn_id": 1,
+                    "amount": None,
+                    "status": "changed",
+                    "header__change_seq": "00010",
+                    "header__change_oper": "U",
+                },
+            ]
+        )
+    )
+
+    run_load_cdc(job, tmp_path)
+
+    fact = read_fact()
+    assert fact.height == 1
+    row1 = fact.filter(pl.col("txn_id") == 1)
+    assert row1["amount"][0] == 100, "NULL in U record should not overwrite existing value"
+    assert row1["status"][0] == "changed"
+
+
+def test_load_cdc_before_images_filtered(cdc_integration, tmp_path):
+    """
+    B (before-image) records in the history are filtered out by the CDC filter
+    and do not affect the fact table.
+    """
+    job, write_fact, write_history, read_fact = cdc_integration
+
+    write_fact(
+        make_fact_df(
+            [
+                {"txn_id": 1, "amount": 100, "header__change_seq": "00001", "odin_index": 0},
+            ]
+        )
+    )
+    write_history(
+        make_cdc_df(
+            [
+                {
+                    "txn_id": 2,
+                    "amount": 200,
+                    "header__change_seq": "00010",
+                    "header__change_oper": "B",
+                },
+                {
+                    "txn_id": 3,
+                    "amount": 300,
+                    "header__change_seq": "00011",
+                    "header__change_oper": "I",
+                },
+            ]
+        )
+    )
+
+    run_load_cdc(job, tmp_path)
+
+    fact = read_fact()
+    assert fact.height == 2
+    assert set(fact["txn_id"].to_list()) == {1, 3}, "B record (txn_id=2) must not appear"
+
+
+def test_load_cdc_update_latest_seq_wins(cdc_integration, tmp_path):
+    """
+    When two U records target the same key and same column, the one with the
+    higher header__change_seq wins (spec §2.4.3).
+    """
+    job, write_fact, write_history, read_fact = cdc_integration
+
+    write_fact(
+        make_fact_df(
+            [
+                {
+                    "txn_id": 1,
+                    "amount": 100,
+                    "status": "old",
+                    "header__change_seq": "00001",
+                    "odin_index": 0,
+                },
+            ]
+        )
+    )
+    write_history(
+        make_cdc_df(
+            [
+                {
+                    "txn_id": 1,
+                    "amount": 111,
+                    "status": "first",
+                    "header__change_seq": "00010",
+                    "header__change_oper": "U",
+                },
+                {
+                    "txn_id": 1,
+                    "amount": 999,
+                    "status": "second",
+                    "header__change_seq": "00011",
+                    "header__change_oper": "U",
+                },
+            ]
+        )
+    )
+
+    run_load_cdc(job, tmp_path)
+
+    fact = read_fact()
+    assert fact.height == 1
+    row1 = fact.filter(pl.col("txn_id") == 1)
+    assert row1["amount"][0] == 999
+    assert row1["status"][0] == "second"
