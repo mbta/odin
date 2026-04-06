@@ -41,7 +41,7 @@ _SCHEMA_URL = os.getenv("MASABI_DATA_SCHEMA_URL", "")
 
 # Maximum update size: Adjust to match the maximum size that can be safely handled
 # by the ECS environment's RAM and disk resources.
-MAXIMUM_ROWS_PER_RUN = 100
+MAXIMUM_ROWS_PER_RUN = 10001
 
 # Retry config for individual API page requests.
 # On a non-200 response or network error, the request is retried up to
