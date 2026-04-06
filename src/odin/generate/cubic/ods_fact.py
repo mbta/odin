@@ -295,7 +295,6 @@ class CubicODSFact(OdinJob):
         )
         load_complete_log.complete()
 
-
     def load_cdc_records(self) -> int:
         """
         Load CDC records and apply to fact table.
@@ -426,9 +425,7 @@ class CubicODSFact(OdinJob):
             # existing fact row exists. Fall back to the I record as the base.
             if existing_rows.height < update_keys.height:
                 found_keys = existing_rows.select(keys).cast(mod_cast)
-                missing_keys = update_keys.join(
-                    found_keys, on=keys, how="anti", nulls_equal=True
-                )
+                missing_keys = update_keys.join(found_keys, on=keys, how="anti", nulls_equal=True)
                 if missing_keys.height > 0:
                     insert_base = (
                         cdc_df.cast(mod_cast)
