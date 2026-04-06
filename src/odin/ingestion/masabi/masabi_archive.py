@@ -11,7 +11,7 @@ import polars as pl
 import pyarrow.parquet as pq
 
 from odin.utils.logger import ProcessLog
-from odin.job import NEXT_RUN_DEFAULT, OdinJob, job_proc_schedule
+from odin.job import OdinJob, job_proc_schedule
 from odin.utils.locations import DATA_SPRINGBOARD, MASABI_DATA
 from odin.utils.aws.s3 import s3_folder
 from odin.utils.aws.s3 import download_object
@@ -51,6 +51,11 @@ API_RETRY_DELAY_S: float = 5.0
 
 # Minimum interval between consecutive API requests (seconds).
 API_MIN_REQUEST_INTERVAL_S: float = 1.0
+
+# Rescheduling time intervals
+NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
+NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
+NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
 # Exclusive lower bound for the initial historical backfill: 2025-01-01 00:00:00 UTC (ms).
 MASABI_START_TIMESTAMP_MS: int = 1_735_689_600_000
@@ -529,7 +534,7 @@ class ArchiveMasabi(OdinJob):
         pool: urllib3.PoolManager,
         from_ts: int,
         to_ts: int,
-    ) -> str | None:
+    ) -> tuple[str | None, bool]:
         """
         Fetch all records in (from_ts, to_ts] from the API and write as NDJSON.
 
@@ -591,7 +596,7 @@ class ArchiveMasabi(OdinJob):
             min_obs_ts=min_obs_ts,
             max_obs_ts=max_obs_ts,
         )
-        return ndjson_path if total_rows > 0 else None
+        return ndjson_path if total_rows > 0 else None, maximum_rows
 
     def sync_parquet(self, ndjson_path: str) -> None:
         """
@@ -693,12 +698,16 @@ class ArchiveMasabi(OdinJob):
         )
         log.add_metadata(schema_size=len(self.schema_check.schema))
 
-        ndjson_path = self.fetch_and_write(pool, from_ts, to_ts)
+        ndjson_path, hit_row_limit = self.fetch_and_write(pool, from_ts, to_ts)
         if ndjson_path is not None:
             self.sync_parquet(ndjson_path)
 
-        log.complete()
-        return NEXT_RUN_DEFAULT  # 6 hours
+        if hit_row_limit:
+            log.complete(next_run_interval="short")
+            return NEXT_RUN_IMMEDIATE
+        else:
+            log.complete(next_run_interval="normal")
+            return NEXT_RUN_DEFAULT
 
 
 def schedule_masabi_archive(schedule: sched.scheduler) -> None:
