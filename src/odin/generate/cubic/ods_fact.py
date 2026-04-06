@@ -74,71 +74,6 @@ def pl_pipe_update(left: pl.DataFrame, right: pl.DataFrame, keys: List[str]) -> 
     )
 
 
-def cdc_to_fact(
-    cdc_df: pl.DataFrame,
-    insert_df: pl.DataFrame,
-    update_df: pl.DataFrame,
-    delete_df: pl.DataFrame,
-    keys: List[str],
-) -> Tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    """
-    Convert Qlik CDC records to fact dataframes.
-
-    :param cdc_df: Dataframe of CDC records from qlik history dataset
-    :param insert_df: Dataframe of CDC INSERT records
-    :param update_df: Dataframe of CDC UPDATE records
-    :param delete_df: Dataframe of CDC DELETE records
-    :param keys: ODS Table Keys (for unique operations)
-
-    :return: Tuple[new INSERT df, new UPDATE df, new DELETE df]
-    """
-    insert_df = pl.concat(
-        [insert_df, cdc_df.filter(pl.col("header__change_oper").eq("I"))],
-        how="diagonal",
-    )
-    delete_df = pl.concat(
-        [delete_df, cdc_df.filter(pl.col("header__change_oper").eq("D"))],
-        how="diagonal",
-    )
-
-    mod_cast, orig_cast = polars_decimal_as_string(cdc_df.select(keys))
-    cdc_df = cdc_df.cast(mod_cast)
-
-    # add keys from cdc to update, if not present
-    if update_df.shape[0] == 0:
-        update_df = cdc_df.select(keys).unique()
-    else:
-        update_df = update_df.cast(mod_cast).join(
-            cdc_df.select(keys).unique(),
-            on=keys,
-            how="full",
-            nulls_equal=True,
-            coalesce=True,
-        )
-
-    # perform per-column cdc -> fact update
-    for col in cdc_df.columns:
-        if col in keys:
-            continue
-        _df = (
-            cdc_df.filter(
-                pl.col("header__change_oper").eq("U"),
-                pl.col(col).is_not_null(),
-            )
-            .sort(by="header__change_seq", descending=True)
-            .unique(keys, keep="first")
-            .select(keys + [col])
-        )
-        if _df.shape[0] == 0:
-            continue
-        if col in update_df.columns:
-            update_df = update_df.pipe(pl_pipe_update, _df, keys)
-        else:
-            update_df = update_df.join(_df, on=keys, how="left", nulls_equal=True, coalesce=True)
-
-    return (insert_df, update_df.cast(orig_cast), delete_df)
-
-
 def dfm_from_cdc_records(cdc_df: pl.DataFrame) -> QlikDFM:
     """
     Produce Qlik DFM record from CDC Dataframe.
@@ -361,123 +296,244 @@ class CubicODSFact(OdinJob):
         )
         load_complete_log.complete()
 
+
     def load_cdc_records(self) -> int:
         """
-        Load change records from history files.
+        Load CDC records and apply to fact table.
 
-        Qlik CDC Records consists of 5 potential header__change_seq values:
-        - I (Insert records)
-        - D (Delete records)
-        - U (After Update records)
-        - B (Before Update records)
-        - Null (Initial snapshot load records (same as Insert but from LOAD.. files))
+        Simplified CDC pipeline that resolves each key to a single final operation
+        before touching the fact table. This avoids the interleaving issues of
+        building separate insert/update/delete dataframes simultaneously.
 
-        "B" Records are ignored for this process as they do not contain any relevant information.
+        Order of operations:
+          1. Read the current fact table and its max header__change_seq.
+          2. Pull CDC records (I/U/D) from history with seq > max_fact_seq.
+             Repeat in a loop to accumulate enough work.
+          3. For every key touched by CDC, determine the FINAL operation:
+             sort all CDC records by header__change_seq descending, deduplicate
+             by key keeping the latest. The latest oper wins.
+          4. Build a single "new_rows" dataframe:
+             - For keys whose final op is I: use the I record directly.
+             - For keys whose final op is U: fetch the existing fact row, apply
+               the sparse column updates, produce an updated row.  If no fact
+               row exists (I→U in same batch), use the I record as the base.
+             - For keys whose final op is D: no new row (just drop the old one).
+          5. Collect odin_index values of all fact rows being replaced or deleted
+             (any key in the CDC batch that already exists in fact_ds).
+          6. Write: filter old dataset to exclude touched rows, union with new_rows,
+             upload to S3.
         """
-        # Load fact dataset and get current max sequence
-        s3_objects = list_objects(f"s3://{self.s3_export}/", in_filter=".parquet")
+        # --- Step 1: Load current fact table state ---
         fact_ds = ds_from_path(f"s3://{self.s3_export}/")
-        fact_files = ds_files(fact_ds)
         initial_row_count = fact_ds.count_rows()
         _, max_fact_seq = ds_metadata_min_max(fact_ds, "header__change_seq")
+        _, max_odin_index = ds_metadata_min_max(fact_ds, "odin_index")
 
-        # Log initial fact table state
         init_log = ProcessLog(
             "load_cdc_initial_state",
             table=self.table,
-            s3_file_count=len(s3_objects),
-            fact_ds_file_count=len(fact_files),
             initial_row_count=initial_row_count,
-            max_fact_seq_metadata=str(max_fact_seq),
+            max_fact_seq=str(max_fact_seq),
+            max_odin_index=str(max_odin_index),
         )
         init_log.complete()
 
+        # --- Step 2: Accumulate CDC records ---
         cdc_filter = (
             (pc.field("header__change_oper") == "I")
             | (pc.field("header__change_oper") == "D")
             | (pc.field("header__change_oper") == "U")
         )
-        cdc_df = ds_metadata_limit_k_sorted(
-            ds=self.history_ds,
-            sort_column="header__change_seq",
-            min_sort_value=max_fact_seq,
-            ds_filter=cdc_filter,
-            ds_filter_columns=["header__change_oper"],
-        )
-
-        # Log CDC fetch result
-        cdc_log = ProcessLog(
-            "load_cdc_fetch",
-            table=self.table,
-            cdc_df_height=cdc_df.height,
-            max_fact_seq_used=str(max_fact_seq),
-        )
-        if cdc_df.height == 0:
-            hist_min, hist_max = ds_metadata_min_max(self.history_ds, "header__change_seq")
-            cdc_log.add_metadata(
-                history_min_seq=str(hist_min),
-                history_max_seq=str(hist_max),
+        all_cdc_frames: list[pl.DataFrame] = []
+        current_min_seq = max_fact_seq
+        max_load_records = 10_000
+        for _ in range(11):
+            batch_df = ds_metadata_limit_k_sorted(
+                ds=self.history_ds,
+                sort_column="header__change_seq",
+                min_sort_value=current_min_seq,
+                ds_filter=cdc_filter,
+                ds_filter_columns=["header__change_oper"],
             )
-        else:
-            cdc_log.add_metadata(
-                cdc_seq_min=str(cdc_df.get_column("header__change_seq").min()),
-                cdc_seq_max=str(cdc_df.get_column("header__change_seq").max()),
-            )
-        cdc_log.complete()
+            if batch_df.height == 0:
+                break
+            all_cdc_frames.append(batch_df)
+            current_min_seq = batch_df.get_column("header__change_seq").max()
+            max_load_records = max(max_load_records, batch_df.height)
+            total_cdc = sum(f.height for f in all_cdc_frames)
+            if total_cdc > max_load_records:
+                break
 
-        max_load_records = max(10_000, cdc_df.height)
-
-        if cdc_df.height == 0:
+        if not all_cdc_frames:
+            ProcessLog("load_cdc_no_records", table=self.table).complete()
             return NEXT_RUN_LONG
 
+        cdc_df = pl.concat(all_cdc_frames, how="diagonal")
+        del all_cdc_frames
+
+        # Get table keys from DFM
         dfm = dfm_from_cdc_records(cdc_df)
         keys = [
             col["name"].lower() for col in dfm["dataInfo"]["columns"] if col["primaryKeyPos"] > 0
         ]
 
-        insert_df, update_df, delete_df = cdc_to_fact(
-            cdc_df, pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), keys
+        # --- Step 3: Resolve each key to its FINAL operation ---
+        # Sort by seq descending, deduplicate by key keeping the latest record.
+        # The header__change_oper of this record is the "winning" operation.
+        mod_cast, orig_cast = polars_decimal_as_string(cdc_df.select(keys))
+        resolved = (
+            cdc_df.cast(mod_cast)
+            .sort(by="header__change_seq", descending=True)
+            .unique(keys, keep="first")
+        )
+        resolved_deletes = resolved.filter(pl.col("header__change_oper").eq("D"))
+        resolved_inserts = resolved.filter(pl.col("header__change_oper").eq("I"))
+        resolved_updates = resolved.filter(pl.col("header__change_oper").eq("U"))
+
+        # --- Step 4: Build new_rows ---
+
+        # 4a. For updates: build sparse column values from ALL U records for these keys,
+        # then fetch existing fact rows and apply the updates.
+        update_keys = resolved_updates.select(keys)
+        new_update_rows = pl.DataFrame()
+        if update_keys.height > 0:
+            # Build per-column update values from all U records matching update keys
+            u_records = cdc_df.cast(mod_cast).filter(pl.col("header__change_oper").eq("U"))
+            update_values = update_keys.clone()
+            for col in u_records.columns:
+                if col in keys:
+                    continue
+                col_df = (
+                    u_records.filter(pl.col(col).is_not_null())
+                    .sort(by="header__change_seq", descending=True)
+                    .unique(keys, keep="first")
+                    .select(keys + [col])
+                )
+                if col_df.height == 0:
+                    continue
+                if col in update_values.columns:
+                    update_values = update_values.pipe(pl_pipe_update, col_df, keys)
+                else:
+                    update_values = update_values.join(
+                        col_df, on=keys, how="left", nulls_equal=True, coalesce=True
+                    )
+
+            # Fetch existing fact rows for these keys and apply updates
+            existing_rows = ds_batched_join(
+                fact_ds, update_values.cast(orig_cast), keys, self.batch_size
+            )
+
+            # I→U in same batch: key was inserted and then updated, so no
+            # existing fact row exists. Fall back to the I record as the base.
+            if existing_rows.height < update_keys.height:
+                found_keys = existing_rows.select(keys).cast(mod_cast)
+                missing_keys = update_keys.join(
+                    found_keys, on=keys, how="anti", nulls_equal=True
+                )
+                if missing_keys.height > 0:
+                    insert_base = (
+                        cdc_df.cast(mod_cast)
+                        .filter(pl.col("header__change_oper").eq("I"))
+                        .sort(by="header__change_seq", descending=True)
+                        .unique(keys, keep="first")
+                        .join(missing_keys, on=keys, how="inner", nulls_equal=True)
+                    )
+                    if insert_base.height > 0:
+                        existing_rows = pl.concat(
+                            [existing_rows.cast(mod_cast), insert_base],
+                            how="diagonal",
+                        ).cast(orig_cast)
+
+            if existing_rows.height > 0:
+                if "odin_year" in existing_rows.columns:
+                    existing_rows = existing_rows.cast({"odin_year": pl.Int32()})
+                new_update_rows = (
+                    existing_rows.cast(mod_cast)
+                    .pipe(
+                        pl_pipe_update,
+                        update_values.drop(self.history_drop_columns, strict=False),
+                        keys,
+                    )
+                    .cast(orig_cast)
+                )
+
+        # 4b. For inserts: use the I records directly (drop CDC header columns)
+        new_insert_rows = resolved_inserts.cast(orig_cast)
+
+        # Combine new rows and assign odin_index / odin_snapshot
+        new_rows_parts = [df for df in [new_update_rows, new_insert_rows] if df.height > 0]
+        if new_rows_parts:
+            new_rows = pl.concat(new_rows_parts, how="diagonal")
+        else:
+            new_rows = pl.DataFrame()
+
+        if new_rows.height > 0:
+            start_odin_index = max_odin_index + 1
+            new_rows = new_rows.with_columns(
+                pl.arange(
+                    start_odin_index, start_odin_index + new_rows.height, dtype=pl.Int64()
+                ).alias("odin_index"),
+                pl.lit(self.history_snapshot, dtype=pl.String()).alias("odin_snapshot"),
+            ).drop(self.history_drop_columns, strict=False)
+            if "edw_inserted_dtm" in new_rows.columns:
+                new_rows = new_rows.with_columns(
+                    pl.coalesce(pl.col("edw_inserted_dtm").dt.strftime("%Y"), 0)
+                    .cast(pl.Int32())
+                    .alias("odin_year")
+                )
+
+        # --- Step 5: Find odin_index values to drop from fact_ds ---
+        # Any key that appears in CDC (regardless of operation) and exists in the
+        # fact table must have its old row removed. Updates get a replacement row
+        # in new_rows; deletes do not.
+        all_touched_keys = resolved.select(keys).cast(orig_cast)
+        existing_touched = ds_batched_join(fact_ds, all_touched_keys, keys, self.batch_size)
+        drop_indices = existing_touched.get_column("odin_index")
+
+        # --- Step 6: Write merged result to S3 ---
+        sync_filter = ~pc.field("odin_index").isin(drop_indices.to_arrow())
+        part_columns = self.part_columns if self.part_columns else None
+
+        # Write new_rows to temp file
+        insert_path = os.path.join(self.tmpdir, "temp_insert.parquet")
+        if new_rows.height > 0:
+            new_rows.write_parquet(insert_path)
+
+        # Write filtered fact_ds (old rows minus touched keys)
+        sync_paths = pq_dataset_writer(
+            fact_ds.filter(sync_filter),
+            partition_columns=part_columns,
+            export_folder=self.tmpdir,
+            export_file_prefix="temp_sync",
+        )
+        if new_rows.height > 0:
+            sync_paths.append(insert_path)
+
+        # Merge into final parquet files
+        new_paths = pq_dataset_writer(
+            source=ds_from_path(sync_paths),
+            partition_columns=part_columns,
+            export_folder=os.path.join(self.tmpdir, self.s3_export),
+            export_file_prefix="year",
         )
 
-        # many CDC records often impact the same FACT row.
-        # After cdc_to_fact colapses CDC records to FACT format, pull more CDC records until
-        # expected number of FACT records are available for merging
-        loop_iterations = 0
-        for loop_idx in range(10):
-            num_load_records = insert_df.height + delete_df.height + update_df.height
-            if cdc_df.height == 0 or num_load_records > max_load_records:
-                loop_iterations = loop_idx
-                break
-            max_fact_seq = cdc_df.get_column("header__change_seq").max()
-            cdc_df = ds_metadata_limit_k_sorted(
-                ds=self.history_ds,
-                sort_column="header__change_seq",
-                min_sort_value=max_fact_seq,
-                ds_filter=cdc_filter,
-                ds_filter_columns=["header__change_oper"],
-            )
-            insert_df, update_df, delete_df = cdc_to_fact(
-                cdc_df, insert_df, update_df, delete_df, keys
-            )
+        # Upload
+        sigterm_check()
+        for new_path in new_paths:
+            move_path = new_path.replace(f"{self.tmpdir}/", "")
+            upload_file(new_path, move_path)
 
-        # Log CDC processing summary after loop
-        cdc_final_seq = cdc_df.get_column("header__change_seq").max() if cdc_df.height > 0 else None
-        process_log = ProcessLog(
-            "load_cdc_processing",
-            table=self.table,
-            loop_iterations=loop_iterations,
-            insert_df_height=insert_df.height,
-            update_df_height=update_df.height,
-            delete_df_height=delete_df.height,
-            final_cdc_seq_max=str(cdc_final_seq) if cdc_final_seq else None,
-        )
-        process_log.complete()
+        # --- Verify and log ---
+        verify_ds = ds_from_path(f"s3://{self.s3_export}/")
+        verify_min, verify_max = ds_metadata_min_max(verify_ds, "header__change_seq")
+        final_row_count = verify_ds.count_rows()
 
-        # Track counts for row validation (before insert_df is modified by update merge)
-        delete_count = delete_df.height
-        original_insert_count = insert_df.height
+        rows_dropped = drop_indices.n_unique()
+        rows_inserted = new_rows.height
+        expected_row_count = initial_row_count - rows_dropped + rows_inserted
+        row_count_mismatch = final_row_count != expected_row_count
 
-        # Determine if next run should be immediate
+        # Check if more CDC records are available
         ds_available_count = 0
         if cdc_df.height > 0:
             ds_available_count = ds_metadata_limit_k_sorted(
@@ -489,117 +545,23 @@ class CubicODSFact(OdinJob):
                 max_rows=max_load_records,
             ).height
 
-        if insert_df.height > 0:
-            _, max_odin_index = ds_metadata_min_max(fact_ds, "odin_index")
-            start_odin_index = max_odin_index + 1
-            insert_df = insert_df.with_columns(
-                pl.arange(
-                    start_odin_index, start_odin_index + insert_df.height, dtype=pl.Int64()
-                ).alias("odin_index"),
-                pl.lit(self.history_snapshot, dtype=pl.String()).alias("odin_snapshot"),
-            ).drop(self.history_drop_columns, strict=False)
-            if "edw_inserted_dtm" in insert_df.columns:
-                insert_df = insert_df.with_columns(
-                    pl.coalesce(pl.col("edw_inserted_dtm").dt.strftime("%Y"), 0)
-                    .cast(pl.Int32())
-                    .alias("odin_year")
-                )
-
-        drop_indices = pl.Series("odin_index", [], pl.Int64())
-        if update_df.height > 0:
-            update_df = update_df.drop(self.history_drop_columns, strict=False)
-            mod_cast, orig_cast = polars_decimal_as_string(update_df.select(keys))
-            s3_update_df = ds_batched_join(fact_ds, update_df, keys, self.batch_size)
-            if "odin_year" in s3_update_df.columns:
-                s3_update_df = s3_update_df.cast({"odin_year": pl.Int32()})
-            insert_df = pl.concat([s3_update_df, insert_df], how="diagonal")
-            insert_df = (
-                insert_df.cast(mod_cast)
-                .pipe(pl_pipe_update, update_df.cast(mod_cast), keys)
-                .cast(orig_cast)
-            )
-            del update_df
-            del s3_update_df
-            drop_indices = pl.concat([drop_indices, insert_df.get_column("odin_index")])
-
-        if delete_df.height > 0:
-            s3_delete_df = ds_batched_join(fact_ds, delete_df, keys, self.batch_size)
-            drop_indices = pl.concat([drop_indices, s3_delete_df.get_column("odin_index")])
-            del s3_delete_df
-
-        sync_filter = ~pc.field("odin_index").isin(drop_indices.to_arrow())
-        if self.part_columns:
-            part_columns = self.part_columns
-        else:
-            part_columns = None
-        insert_path = os.path.join(self.tmpdir, "temp_insert.parquet")
-        insert_df.write_parquet(insert_path)
-        # TODO: This process creates an entire new copy of all `fact_ds` parquet files with all
-        # UPDATE and DELETE Records removed. This could be done much more efficiently by only
-        # re-writing parquet files that contain `odin_index` records being touched.
-        # This would probably require a re-writing of the `ds_batch_join` function to also return
-        # a list of parquet files with matching JOIN records.
-        # If a single parquet dataset grows larger than the disk space available in the ECS, this
-        # process will also likely begin to fail.
-        sync_paths = pq_dataset_writer(
-            fact_ds.filter(sync_filter),
-            partition_columns=part_columns,
-            export_folder=self.tmpdir,
-            export_file_prefix="temp_sync",
-        )
-        sync_paths.append(insert_path)
-
-        # Create new merged parquet file(s)
-        new_paths = pq_dataset_writer(
-            source=ds_from_path(sync_paths),
-            partition_columns=part_columns,
-            export_folder=os.path.join(self.tmpdir, self.s3_export),
-            export_file_prefix="year",
-        )
-
-        # Get final seq max before upload for logging
-        final_insert_seq_max = (
-            insert_df.get_column("header__change_seq").max()
-            if "header__change_seq" in insert_df.columns
-            else None
-        )
-
-        # Check for sigterm before upload (can't be un-done)
-        sigterm_check()
-        for new_path in new_paths:
-            move_path = new_path.replace(f"{self.tmpdir}/", "")
-            upload_file(new_path, move_path)
-
-        # Verify uploads and log final state
-        verify_ds = ds_from_path(f"s3://{self.s3_export}/")
-        verify_min, verify_max = ds_metadata_min_max(verify_ds, "header__change_seq")
-        verify_objects = list_objects(f"s3://{self.s3_export}/", in_filter=".parquet")
-        final_row_count = verify_ds.count_rows()
-
-        # Row count validation: original inserts add rows, deletes remove rows, updates are net-zero
-        # Note: insert_df.height includes updated rows (which are re-added after being dropped),
-        # so we use original_insert_count captured before update merge
-        expected_row_count = initial_row_count + original_insert_count - delete_count
-        row_count_mismatch = final_row_count != expected_row_count
-
-        upload_log = ProcessLog(
-            "load_cdc_upload_complete",
+        ProcessLog(
+            "load_cdc_complete",
             table=self.table,
-            files_uploaded=len(new_paths),
-            original_insert_count=original_insert_count,
-            final_insert_df_height=insert_df.height,
-            final_insert_seq_max=str(final_insert_seq_max) if final_insert_seq_max else None,
-            s3_verify_seq_min=str(verify_min),
-            s3_verify_seq_max=str(verify_max),
-            s3_verify_file_count=len(verify_objects),
+            cdc_records_processed=cdc_df.height,
+            resolved_inserts=resolved_inserts.height,
+            resolved_updates=resolved_updates.height,
+            resolved_deletes=resolved_deletes.height,
+            rows_dropped=rows_dropped,
+            rows_inserted=rows_inserted,
             initial_row_count=initial_row_count,
             final_row_count=final_row_count,
             expected_row_count=expected_row_count,
-            delete_count=delete_count,
             row_count_mismatch=row_count_mismatch,
+            s3_verify_seq_min=str(verify_min),
+            s3_verify_seq_max=str(verify_max),
             ds_available_count=ds_available_count,
-        )
-        upload_log.complete()
+        ).complete()
 
         if ds_available_count > int(0.9 * max_load_records):
             return NEXT_RUN_IMMEDIATE
