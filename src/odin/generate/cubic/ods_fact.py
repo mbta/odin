@@ -21,7 +21,6 @@ from odin.utils.locations import DATA_ARCHIVE
 from odin.utils.locations import CUBIC_QLIK_PROCESSED
 from odin.utils.parquet import fast_last_mod_ds_max
 from odin.utils.parquet import ds_metadata_min_max
-from odin.utils.parquet import ds_files
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_unique_values
 from odin.utils.parquet import pq_dataset_writer
