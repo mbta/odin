@@ -324,19 +324,16 @@ class CubicODSFact(OdinJob):
              upload to S3.
         """
         # --- Step 1: Load current fact table state ---
+        logger = ProcessLog("load_cdc_records", table=self.table)
         fact_ds = ds_from_path(s3_folder(self.s3_export))
         initial_row_count = fact_ds.count_rows()
         _, max_fact_seq = ds_metadata_min_max(fact_ds, "header__change_seq")
         _, max_odin_index = ds_metadata_min_max(fact_ds, "odin_index")
-
-        init_log = ProcessLog(
-            "load_cdc_initial_state",
-            table=self.table,
+        logger.add_metadata(
             initial_row_count=initial_row_count,
             max_fact_seq=str(max_fact_seq),
             max_odin_index=str(max_odin_index),
         )
-        init_log.complete()
 
         # --- Step 2: Accumulate CDC records ---
         cdc_filter = (
@@ -365,7 +362,7 @@ class CubicODSFact(OdinJob):
                 break
 
         if not all_cdc_frames:
-            ProcessLog("load_cdc_no_records", table=self.table).complete()
+            logger.complete(cdc_records_found=0)
             return NEXT_RUN_LONG
 
         cdc_df = pl.concat(all_cdc_frames, how="diagonal")
@@ -545,23 +542,20 @@ class CubicODSFact(OdinJob):
                 max_rows=max_load_records,
             ).height
 
-        ProcessLog(
-            "load_cdc_complete",
-            table=self.table,
+        logger.complete(
             cdc_records_processed=cdc_df.height,
             resolved_inserts=resolved_inserts.height,
             resolved_updates=resolved_updates.height,
             resolved_deletes=resolved_deletes.height,
             rows_dropped=rows_dropped,
             rows_inserted=rows_inserted,
-            initial_row_count=initial_row_count,
             final_row_count=final_row_count,
             expected_row_count=expected_row_count,
             row_count_mismatch=row_count_mismatch,
             s3_verify_seq_min=str(verify_min),
             s3_verify_seq_max=str(verify_max),
             ds_available_count=ds_available_count,
-        ).complete()
+        )
 
         if ds_available_count > int(0.9 * max_load_records):
             return NEXT_RUN_IMMEDIATE
