@@ -32,6 +32,7 @@ from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import delete_objects
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import upload_file
+from odin.utils.aws.s3 import s3_folder
 from odin.ingestion.qlik.dfm import dfm_from_s3
 from odin.ingestion.qlik.dfm import QlikDFM
 from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES
@@ -39,6 +40,7 @@ from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
 NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
+MAX_LOAD_RECORDS = 10_000
 
 
 class NoQlikHistoryError(Exception):
@@ -191,7 +193,7 @@ class CubicODSFact(OdinJob):
     def load_new_snapshot(self) -> None:
         """Load new snapshot from history tables"""
         # Log what will be deleted before the destructive operation
-        existing_objects = list_objects(f"{self.s3_export}/", in_filter=".parquet")
+        existing_objects = list_objects(s3_folder(self.s3_export), in_filter=".parquet")
         existing_paths = [o.path for o in existing_objects]
 
         # Get row count of existing data before deletion
@@ -200,7 +202,7 @@ class CubicODSFact(OdinJob):
         existing_seq_max = None
         if existing_paths:
             try:
-                existing_ds = ds_from_path(f"s3://{self.s3_export}/")
+                existing_ds = ds_from_path(s3_folder(self.s3_export))
                 existing_row_count = existing_ds.count_rows()
                 existing_seq_min, existing_seq_max = ds_metadata_min_max(
                     existing_ds, "header__change_seq"
@@ -279,9 +281,9 @@ class CubicODSFact(OdinJob):
         self.reset_tmpdir()
 
         # Log completion of new snapshot load
-        verify_ds = ds_from_path(f"s3://{self.s3_export}/")
+        verify_ds = ds_from_path(s3_folder(self.s3_export))
         verify_row_count = verify_ds.count_rows()
-        verify_objects = list_objects(f"{self.s3_export}/", in_filter=".parquet")
+        verify_objects = list_objects(s3_folder(self.s3_export), in_filter=".parquet")
         verify_seq_min, verify_seq_max = ds_metadata_min_max(verify_ds, "header__change_seq")
         load_complete_log = ProcessLog(
             "load_new_snapshot_complete",
@@ -322,7 +324,7 @@ class CubicODSFact(OdinJob):
              upload to S3.
         """
         # --- Step 1: Load current fact table state ---
-        fact_ds = ds_from_path(f"s3://{self.s3_export}/")
+        fact_ds = ds_from_path(s3_folder(self.s3_export))
         initial_row_count = fact_ds.count_rows()
         _, max_fact_seq = ds_metadata_min_max(fact_ds, "header__change_seq")
         _, max_odin_index = ds_metadata_min_max(fact_ds, "odin_index")
@@ -344,7 +346,7 @@ class CubicODSFact(OdinJob):
         )
         all_cdc_frames: list[pl.DataFrame] = []
         current_min_seq = max_fact_seq
-        max_load_records = 10_000
+        max_load_records = MAX_LOAD_RECORDS
         for _ in range(11):
             batch_df = ds_metadata_limit_k_sorted(
                 ds=self.history_ds,
@@ -393,7 +395,6 @@ class CubicODSFact(OdinJob):
         # 4a. For updates: build sparse column values from ALL U records for these keys,
         # then fetch existing fact rows and apply the updates.
         update_keys = resolved_updates.select(keys)
-        new_update_rows = pl.DataFrame()
         if update_keys.height > 0:
             # Build per-column update values from all U records matching update keys
             u_records = cdc_df.cast(mod_cast).filter(pl.col("header__change_oper").eq("U"))
@@ -443,21 +444,24 @@ class CubicODSFact(OdinJob):
             if existing_rows.height > 0:
                 if "odin_year" in existing_rows.columns:
                     existing_rows = existing_rows.cast({"odin_year": pl.Int32()})
-                new_update_rows = (
-                    existing_rows.cast(mod_cast)
-                    .pipe(
-                        pl_pipe_update,
-                        update_values.drop(self.history_drop_columns, strict=False),
-                        keys,
-                    )
-                    .cast(orig_cast)
+            new_update_rows = (
+                existing_rows.cast(mod_cast)
+                .pipe(
+                    pl_pipe_update,
+                    update_values.drop(self.history_drop_columns, strict=False),
+                    keys,
                 )
+                .cast(orig_cast)
+            )
 
         # 4b. For inserts: use the I records directly (drop CDC header columns)
         new_insert_rows = resolved_inserts.cast(orig_cast)
 
         # Combine new rows and assign odin_index / odin_snapshot
-        new_rows_parts = [df for df in [new_update_rows, new_insert_rows] if df.height > 0]
+        new_rows_parts = [new_insert_rows]
+        if update_keys.height > 0:
+            new_rows_parts.append(new_update_rows)
+        new_rows_parts = [df for df in new_rows_parts if df.height > 0]
         if new_rows_parts:
             new_rows = pl.concat(new_rows_parts, how="diagonal")
         else:
@@ -520,7 +524,7 @@ class CubicODSFact(OdinJob):
             upload_file(new_path, move_path)
 
         # --- Verify and log ---
-        verify_ds = ds_from_path(f"s3://{self.s3_export}/")
+        verify_ds = ds_from_path(s3_folder(self.s3_export))
         verify_min, verify_max = ds_metadata_min_max(verify_ds, "header__change_seq")
         final_row_count = verify_ds.count_rows()
 
