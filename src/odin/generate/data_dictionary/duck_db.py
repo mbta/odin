@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from importlib.resources import files, as_file
 from string import Template
 
 import duckdb
@@ -15,7 +16,6 @@ from odin.utils.locations import AFC_RESTRICTED
 from odin.utils.locations import CUBIC_ODS_REPORTS
 from odin.utils.locations import MASABI_DATA
 from odin.utils.parquet import ds_from_path
-import odin.generate.data_dictionary.cubic_reports_sql as cubic_sql
 
 
 DB_FILE = "fares_data_repository.db"
@@ -74,27 +74,6 @@ dataset_views = [
     ),
 ]
 
-cubic_report_mat_views = [
-    {"name": "comp_b_addendum", "query": cubic_sql.COMP_B_ADDENDUM},
-    {"name": "wc320_late_tap_adjustment", "query": cubic_sql.WC320_LATE_TAP_ADJUSTMENT},
-]
-
-cubic_report_views = [
-    cubic_sql.WC700_COMP_A_VIEW,
-    cubic_sql.WC700_COMP_B_VIEW,
-    cubic_sql.WC700_COMP_C_VIEW,
-    cubic_sql.WC700_COMP_D_VIEW,
-    cubic_sql.AD_HOC_VIEW,
-    cubic_sql.WC231_CLEARING_HOUSE,
-    cubic_sql.WA160,
-    cubic_sql.AD_HOC_JOURNAL_ENTRIES,
-    cubic_sql.WC231_PASS_ID_ADHOC,
-    cubic_sql.COMP_A_TXN_A,
-    cubic_sql.COMP_A_TXN_C,
-    cubic_sql.COMP_B_TXN_A,
-    cubic_sql.COMP_B_TXN_C,
-]
-
 
 def create_fares_db(folder: str) -> str:
     """
@@ -112,10 +91,10 @@ def create_fares_db(folder: str) -> str:
         for view in dataset_views:
             con.execute(f"CREATE SCHEMA IF NOT EXISTS {view.schema};")
             for view_table in list_partitions(view.s3_prefix):
+                view_log = ProcessLog(
+                    "create_table_views", schema=view.schema, view_table=view_table
+                )
                 try:
-                    view_log = ProcessLog(
-                        "create_table_views", schema=view.schema, view_table=view_table
-                    )
                     s3_path = f"s3://{os.path.join(view.s3_prefix, view_table)}"
                     ds_columns = list(ds_from_path(s3_path + "/").schema.names)
                     view_query = view.template.substitute(
@@ -129,27 +108,37 @@ def create_fares_db(folder: str) -> str:
                     view_log.failed(exception=exception)
 
         con.execute("CREATE SCHEMA IF NOT EXISTS cubic_reports;")
-        for view_dict in cubic_report_mat_views:
+        for view_file in files("odin.generate.data_dictionary.sql.mat_views").iterdir():
+            if not view_file.name.endswith('.sql'):
+                continue
+            view_log = ProcessLog("create_report_mat_views", view_name=view_file.stem)
             try:
-                view_log = ProcessLog("create_report_mat_views", view_name=view_dict["name"])
+                view_name = view_file.stem
+                view_query = view_file.read_text()
+
                 mat_view_path = os.path.join(folder, "table.parquet")
                 mat_view_query = (
-                    f"COPY ({view_dict['query']}) TO '{mat_view_path}' (FORMAT parquet);"
+                    f"COPY ({view_query}) TO '{mat_view_path}' (FORMAT parquet);"
                 )
                 con.execute(mat_view_query)
                 upload_path = os.path.join(
-                    DATA_SPRINGBOARD, CUBIC_ODS_REPORTS, view_dict["name"], "table.parquet"
+                    DATA_SPRINGBOARD, CUBIC_ODS_REPORTS, view_name, "table.parquet"
                 )
                 upload_file(mat_view_path, upload_path)
-                view_query = f"CREATE VIEW cubic_reports.{view_dict['name']} AS SELECT * FROM read_parquet('s3://{upload_path}')"
+                view_query = f"CREATE VIEW cubic_reports.{view_name} AS SELECT * FROM read_parquet('s3://{upload_path}')"
                 con.execute(view_query)
 
             except Exception as exception:
                 view_log.failed(exception=exception)
-        for view in cubic_report_views:
+        for view_file in files("odin.generate.data_dictionary.sql.views").iterdir():
+            if not view_file.name.endswith('.sql'):
+                continue
+            view_log = ProcessLog("create_report_views",
+                                  view_type="cubic_report",
+                                  view_name=view_file.stem)
             try:
-                view_log = ProcessLog("create_report_views", view_type="cubic_report")
-                con.execute(view)
+                view_query = view_file.read_text()
+                con.execute(view_query)
             except Exception as exception:
                 view_log.failed(exception=exception)
 
