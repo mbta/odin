@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from importlib.resources import files, as_file
+from importlib.resources import files
 from string import Template
 
 import duckdb
@@ -109,17 +109,15 @@ def create_fares_db(folder: str) -> str:
 
         con.execute("CREATE SCHEMA IF NOT EXISTS cubic_reports;")
         for view_file in files("odin.generate.data_dictionary.sql.mat_views").iterdir():
-            if not view_file.name.endswith('.sql'):
+            if not view_file.name.endswith(".sql"):
                 continue
-            view_log = ProcessLog("create_report_mat_views", view_name=view_file.stem)
+            view_log = ProcessLog("create_report_mat_views", view_name=view_file.stem)  # type: ignore[attr-defined]
             try:
-                view_name = view_file.stem
+                view_name = view_file.stem  # type: ignore[attr-defined]
                 view_query = view_file.read_text()
 
                 mat_view_path = os.path.join(folder, "table.parquet")
-                mat_view_query = (
-                    f"COPY ({view_query}) TO '{mat_view_path}' (FORMAT parquet);"
-                )
+                mat_view_query = f"COPY ({view_query}) TO '{mat_view_path}' (FORMAT parquet);"
                 con.execute(mat_view_query)
                 upload_path = os.path.join(
                     DATA_SPRINGBOARD, CUBIC_ODS_REPORTS, view_name, "table.parquet"
@@ -131,11 +129,13 @@ def create_fares_db(folder: str) -> str:
             except Exception as exception:
                 view_log.failed(exception=exception)
         for view_file in files("odin.generate.data_dictionary.sql.views").iterdir():
-            if not view_file.name.endswith('.sql'):
+            if not view_file.name.endswith(".sql"):
                 continue
-            view_log = ProcessLog("create_report_views",
-                                  view_type="cubic_report",
-                                  view_name=view_file.stem)
+            view_log = ProcessLog(
+                "create_report_views",
+                view_type="cubic_report",
+                view_name=view_file.stem,  # type: ignore[attr-defined]
+            )
             try:
                 view_query = view_file.read_text()
                 con.execute(view_query)
