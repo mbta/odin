@@ -402,12 +402,16 @@ class ArchiveAFCAPI(OdinJob):
 
         API data will be downloaded in batches to limit API reponse time.
         """
+        log = ProcessLog("load_job_ids", table=self.table, pq_job_id=self.pq_job_id)
         # assume 12 bytes per column to ballbark 50mb per request
         min_disk_free_pct = 60
         target_rows = int(50 * 1024 * 1024 / (12 * self.schema.len()))
         download_jobs: APICounts = []
         download_rows = 0
+        api_max_job_id = 0
+        stopped_early = False
         for job_ids in self.api_job_ids(self.pq_job_id):
+            api_max_job_id = max(api_max_job_id, job_ids[-1]["jobId"])
             for api_job in job_ids:
                 # extra check to make certain jobId should be processed
                 if int(api_job["jobId"]) <= int(self.pq_job_id):
@@ -421,13 +425,20 @@ class ArchiveAFCAPI(OdinJob):
                     download_rows = 0
                 # stop if disk is getting too full
                 if disk_free_pct() < min_disk_free_pct:
+                    stopped_early = True
                     break
             if len(download_jobs) > 0:
                 self.download_json(download_jobs)
 
             # This is ugly, but should work for now...
             if disk_free_pct() < min_disk_free_pct:
+                stopped_early = True
                 break
+        log.complete(
+            api_max_job_id=api_max_job_id,
+            max_job_id=self.max_job_id,
+            stopped_early=stopped_early,
+        )
 
     def sync_parquet(self) -> None:
         """Convert json to parquet and sync with S3 files."""
@@ -490,7 +501,7 @@ class ArchiveAFCAPI(OdinJob):
 
     def re_run_check(self) -> int:
         """
-        Determine when job should be ru-run.
+        Determine when job should be re-run.
 
         If `count` returning more than 1 job, based on self.max_job_id, more jobs available.
         """
@@ -501,8 +512,15 @@ class ArchiveAFCAPI(OdinJob):
                 url=f"{API_ROOT}/count",
                 fields={"table_name": self.table, "jobIdFrom": str(self.max_job_id)},
             )
-            if len(r.json()) > 1:
+            remaining_jobs: APICounts = r.json()
+            remaining_count = len(remaining_jobs)
+            if remaining_count > 1:
                 return_duration = 60 * 5
+            api_latest_job_id = max((j["jobId"] for j in remaining_jobs), default=0)
+            log.add_metadata(
+                remaining_job_count=remaining_count,
+                api_latest_job_id=api_latest_job_id,
+            )
         log.complete(return_duration=return_duration)
         return return_duration
 

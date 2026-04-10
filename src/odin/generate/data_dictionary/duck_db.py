@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from importlib.resources import files, as_file
+from importlib.resources import files
 from string import Template
 
 import duckdb
@@ -111,9 +111,9 @@ def create_fares_db(folder: str) -> str:
         for view_file in files("odin.generate.data_dictionary.sql.mat_views").iterdir():
             if not view_file.name.endswith(".sql"):
                 continue
-            view_log = ProcessLog("create_report_mat_views", view_name=view_file.stem)
+            view_log = ProcessLog("create_report_mat_views", view_name=view_file.stem)  # type: ignore[attr-defined]
             try:
-                view_name = view_file.stem
+                view_name = view_file.stem  # type: ignore[attr-defined]
                 view_query = view_file.read_text()
 
                 mat_view_path = os.path.join(folder, "table.parquet")
@@ -132,7 +132,9 @@ def create_fares_db(folder: str) -> str:
             if not view_file.name.endswith(".sql"):
                 continue
             view_log = ProcessLog(
-                "create_report_views", view_type="cubic_report", view_name=view_file.stem
+                "create_report_views",
+                view_type="cubic_report",
+                view_name=view_file.stem,  # type: ignore[attr-defined]
             )
             try:
                 view_query = view_file.read_text()
