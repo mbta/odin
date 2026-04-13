@@ -393,50 +393,45 @@ class CubicODSFact(OdinJob):
         # then fetch existing fact rows and apply the updates.
         update_keys = resolved_updates.select(keys)
         if update_keys.height > 0:
-            # Build per-column update values from all U records matching update keys
-            u_records = cdc_df.cast(mod_cast).filter(pl.col("header__change_oper").eq("U"))
-            update_values = update_keys.clone()
-            for col in u_records.columns:
-                if col in keys:
-                    continue
-                col_df = (
-                    u_records.filter(pl.col(col).is_not_null())
-                    .sort(by="header__change_seq", descending=True)
-                    .unique(keys, keep="first")
-                    .select(keys + [col])
-                )
-                if col_df.height == 0:
-                    continue
-                if col in update_values.columns:
-                    update_values = update_values.pipe(pl_pipe_update, col_df, keys)
-                else:
-                    update_values = update_values.join(
-                        col_df, on=keys, how="left", nulls_equal=True, coalesce=True
-                    )
+            # Build per-key sparse update values: for each non-key column, take
+            # the latest non-null value across all U records for that key.
+            # Pre-sorting by seq desc means group_by().agg(drop_nulls().first())
+            # picks the highest-seq non-null value per column per key.
+            u_records = (
+                cdc_df.cast(mod_cast)
+                .filter(pl.col("header__change_oper").eq("U"))
+                .join(update_keys, on=keys, how="semi", nulls_equal=True)
+                .sort(by="header__change_seq", descending=True)
+            )
+            non_key_cols = [c for c in u_records.columns if c not in keys]
+            update_values = u_records.group_by(keys).agg(
+                [pl.col(c).drop_nulls().first() for c in non_key_cols]
+            )
 
-            # Fetch existing fact rows for these keys and apply updates
+            # Fetch existing fact rows for these keys
             existing_rows = ds_batched_join(
                 fact_ds, update_values.cast(orig_cast), keys, self.batch_size
             )
 
             # I→U in same batch: key was inserted and then updated, so no
             # existing fact row exists. Fall back to the I record as the base.
-            if existing_rows.height < update_keys.height:
-                found_keys = existing_rows.select(keys).cast(mod_cast)
-                missing_keys = update_keys.join(found_keys, on=keys, how="anti", nulls_equal=True)
-                if missing_keys.height > 0:
-                    insert_base = (
-                        cdc_df.cast(mod_cast)
-                        .filter(pl.col("header__change_oper").eq("I"))
-                        .sort(by="header__change_seq", descending=True)
-                        .unique(keys, keep="first")
-                        .join(missing_keys, on=keys, how="inner", nulls_equal=True)
-                    )
-                    if insert_base.height > 0:
-                        existing_rows = pl.concat(
-                            [existing_rows.cast(mod_cast), insert_base],
-                            how="diagonal",
-                        ).cast(orig_cast)
+            # Note: resolved_inserts cannot be used here because it only contains
+            # keys whose FINAL operation is I. For I→U keys the final op is U,
+            # so the I record only exists in the raw cdc_df.
+            found_keys = existing_rows.select(keys).cast(mod_cast)
+            missing_keys = update_keys.join(found_keys, on=keys, how="anti", nulls_equal=True)
+            if missing_keys.height > 0:
+                insert_base = (
+                    cdc_df.cast(mod_cast)
+                    .filter(pl.col("header__change_oper").eq("I"))
+                    .sort(by="header__change_seq", descending=True)
+                    .unique(keys, keep="first")
+                    .join(missing_keys, on=keys, how="inner", nulls_equal=True)
+                )
+                if insert_base.height > 0:
+                    existing_rows = pl.concat(
+                        [existing_rows.cast(mod_cast), insert_base], how="diagonal"
+                    ).cast(orig_cast)
 
             if existing_rows.height > 0:
                 if "odin_year" in existing_rows.columns:
