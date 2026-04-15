@@ -23,7 +23,7 @@ def migration() -> None:
     s3://<springboard>/odin/data/cubic/ods/<table>/
     for each table in TABLES_TO_DELETE.
     """
-    log = ProcessLog("migration_0011")
+    log = ProcessLog("odin_migration", migration="dev_0010")
     failures: dict[str, int] = {}
 
     for table in TABLES_TO_DELETE:
