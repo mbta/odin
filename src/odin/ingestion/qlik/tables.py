@@ -20,7 +20,7 @@ CUBIC_ODS_TABLES = [
     "EDW.TRIP_PAYMENT",
     "EDW.SALE_TRANSACTION",
     "EDW.PAYMENT_TYPE_DIMENSION",
-    "EDW.TRANSACTION_HISTORY",
+    # "EDW.TRANSACTION_HISTORY", # high memory usage, not used in current reports
     "EDW.FARE_REVENUE_REPORT_SCHEDULE",  # addendum support
     # FMIS
     "EDW.FNP_GENERAL_JRNL_ACCOUNT_ENTRY",
