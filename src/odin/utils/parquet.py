@@ -423,7 +423,7 @@ def ds_metadata_limit_k_sorted(
     min_sort_value: Any | None = None,
     ds_filter: pc.Expression | None = None,
     ds_filter_columns: List[str] | None = None,
-    max_nbytes: int = 256 * 1024 * 1024,
+    max_nbytes: int = int(256 * 1024 * 1024 * 1.5),
     max_rows: int = 0,
 ) -> pl.DataFrame:
     """
