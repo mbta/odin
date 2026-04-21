@@ -57,8 +57,8 @@ NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
 NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
-# Exclusive lower bound for the initial historical backfill: 2025-01-01 00:00:00 UTC (ms).
-MASABI_START_TIMESTAMP_MS: int = 1_735_689_600_000
+# Exclusive lower bound for the initial historical backfill: 2024-01-01 00:00:00 UTC (ms).
+MASABI_START_TIMESTAMP_MS: int = 1_704_067_200_000
 
 TABLES = [
     "retail.account_actions",
