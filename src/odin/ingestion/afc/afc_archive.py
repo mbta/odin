@@ -83,6 +83,7 @@ API_TABLES = [
     "v_payment_methods",
     "v_entitlements",
     "v_payment_method_instances",
+    "v_products",
 ]
 
 
