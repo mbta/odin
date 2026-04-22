@@ -342,8 +342,7 @@ class CubicODSFact(OdinJob):
             | (pc.field("header__change_oper") == "U")
         )
         all_cdc_frames: list[pl.DataFrame] = []
-        current_min_seq = max_fact_seq
-        max_load_records = MAX_LOAD_RECORDS
+        current_min_seq = max_fact_seq if max_fact_seq else 0
         for _ in range(11):
             batch_df = ds_metadata_limit_k_sorted(
                 ds=self.history_ds,
@@ -352,21 +351,19 @@ class CubicODSFact(OdinJob):
                 ds_filter=cdc_filter,
                 ds_filter_columns=["header__change_oper"],
             )
-            if batch_df.height == 0:
-                break
             all_cdc_frames.append(batch_df)
-            current_min_seq = batch_df.get_column("header__change_seq").max()
-            max_load_records = max(max_load_records, batch_df.height)
-            total_cdc = sum(f.height for f in all_cdc_frames)
-            if total_cdc > max_load_records:
+            if (batch_df.height == 0 or
+                sum(f.height for f in all_cdc_frames) >= MAX_LOAD_RECORDS):
                 break
-
-        if not all_cdc_frames:
-            logger.complete(cdc_records_found=0)
-            return NEXT_RUN_LONG
+            current_min_seq = max(current_min_seq,
+                                  batch_df.get_column("header__change_seq").max())
 
         cdc_df = pl.concat(all_cdc_frames, how="diagonal")
         del all_cdc_frames
+
+        if cdc_df.height == 0:
+            logger.complete(cdc_records_found=0)
+            return NEXT_RUN_LONG
 
         # Get table keys from DFM
         dfm = dfm_from_cdc_records(cdc_df)
