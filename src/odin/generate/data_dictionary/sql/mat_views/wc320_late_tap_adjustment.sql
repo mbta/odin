@@ -26,13 +26,13 @@ JOIN
         u.patron_trip_id = tp.patron_trip_id
         AND u.trip_price_count = tp.trip_price_count
 LEFT JOIN
-    cubic_ods.edw_transaction_history en
+    cubic_ods.edw_operator_dimension eod
     ON
-        en.dw_transaction_id = t.dw_entry_txn_id
+        eod.operator_key = u.operator_key
 LEFT JOIN
     cubic_ods.edw_travel_mode_dimension tm
     ON
-        tm.travel_mode_id = en.travel_mode_id
+        tm.travel_mode_id = eod.travel_mode_id
 WHERE
     s.sale_type_key = 26
     AND u.value_changed <> 0
