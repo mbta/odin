@@ -410,18 +410,10 @@ class ArchiveMasabi(OdinJob):
 
     def _make_request_pool(self) -> urllib3.PoolManager:
         """Build a urllib3 connection pool with Masabi basic-auth headers."""
-        # TODO: REMOVE 'cert_reqs="CERT_NONE"' BEFORE PRODUCTION RELEASE.
-        # SSL certificate verification is disabled here solely to support local
-        # development and testing against UAT endpoints. Leaving this in place
-        # for a production deployment is a serious security risk — it makes the
-        # connection vulnerable to man-in-the-middle attacks. Remove this flag
-        # (and the disable_warnings call below) once proper certs are in place.
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         return urllib3.PoolManager(
             headers=urllib3.make_headers(basic_auth=f"{_API_USERNAME}:{_API_PASSWORD}"),
             timeout=urllib3.Timeout(total=60 * 10),
             retries=False,
-            cert_reqs="CERT_NONE",
         )
 
     def _make_request(
