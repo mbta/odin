@@ -86,6 +86,15 @@ API_TABLES = [
     "v_products",
 ]
 
+# Per-table list of columns to remove before parquet sync/upload.
+# Populate this mapping with any identified PII fields for public AFC datasets.
+API_TABLE_PII_DROP_COLUMNS: dict[str, list[str]] = {
+    # "v_table_name": [
+    #     "PII_column_1",
+    #     "PII_column_2",
+    # ]
+}
+
 
 API_TABLE_START_JOBID = {}
 if os.getenv("ECS_TASK_GROUP") == "family:odin-prod":
@@ -210,6 +219,7 @@ class ArchiveAFCAPI(OdinJob):
         self.table = table
         self.start_kwargs = {"table": table}
         self.export_folder = os.path.join(DATA_SPRINGBOARD, AFC_DATA, table)
+        self.pii_drop_columns: list[str] = []
         self.headers = {
             "client_id": os.getenv("AFC_API_CLIENT_ID", ""),
             "client_secret": os.getenv("AFC_API_CLIENT_SECRET", ""),
@@ -274,6 +284,12 @@ class ArchiveAFCAPI(OdinJob):
         schemas_list: list[dict[str, APITableInfo]] = r.json()
         schemas_dict: dict[str, APITableInfo] = dict(ChainMap(*schemas_list))
         self.schema = make_pl_schema(schemas_dict[self.table])
+        schema_cols = set(self.schema.names())
+
+        # keep only configured columns that exist in API schema for this table
+        # and deduplicate in case config values repeat.
+        table_drop_cols = API_TABLE_PII_DROP_COLUMNS.get(self.table, [])
+        self.pii_drop_columns = sorted({col for col in table_drop_cols if col in schema_cols})
 
         # columns to be converted to datetime types
         # default polars datetime parser can not understand S&B timestamp string format
@@ -453,6 +469,8 @@ class ArchiveAFCAPI(OdinJob):
                 json_file.absolute(),
                 schema=self.schema,
             ).with_columns(pl.col(self.ts_cols).str.head(19).str.to_datetime("%Y-%m-%d %H:%M:%S"))
+            if self.pii_drop_columns:
+                lf = lf.drop(self.pii_drop_columns)
             lf.sink_parquet(
                 pq_path,
                 compression="zstd",

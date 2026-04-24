@@ -264,6 +264,9 @@ def test_sync_parquet_bad_type(
 @patch("odin.ingestion.afc.afc_archive.delete_objects")
 @patch("odin.ingestion.afc.afc_archive.upload_file")
 @patch("odin.ingestion.afc.afc_archive.download_object")
+@patch.dict(
+    "odin.ingestion.afc.afc_archive.API_TABLE_PII_DROP_COLUMNS", {"test_table": ["pii_value"]}
+)
 def test_sync_parquet_static(
     dl_obj: MagicMock, mock_upload: MagicMock, del_obj: MagicMock, ls_obj: MagicMock, tmpdir
 ):
@@ -342,6 +345,45 @@ def test_sync_parquet_transactional(
     dl_obj.assert_called_once_with("temp_.parquet", f"{tmpdir}/temp_.parquet")
     mock_upload.assert_called_once_with(export_file, f"{export}/table_001.parquet")
     del_obj.assert_called_once_with([])
+
+
+@patch("odin.ingestion.afc.afc_archive.list_objects")
+@patch("odin.ingestion.afc.afc_archive.delete_objects")
+@patch("odin.ingestion.afc.afc_archive.upload_file")
+@patch("odin.ingestion.afc.afc_archive.download_object")
+@patch.dict(
+    "odin.ingestion.afc.afc_archive.API_TABLE_PII_DROP_COLUMNS", {"test_table": ["pii_value"]}
+)
+def test_sync_parquet_drops_pii_columns(
+    dl_obj: MagicMock, mock_upload: MagicMock, del_obj: MagicMock, ls_obj: MagicMock, tmpdir
+):
+    """Configured table columns should be removed before parquet upload."""
+    export = "bucket"
+    data = [
+        {"job_id": 1, "value": "sid_1", "pii_value": "secret"},
+        {"job_id": 1, "value": "sid_1", "pii_value": "secret"},
+    ]
+    pl.DataFrame(data).write_ndjson(os.path.join(tmpdir, "1.json"))
+
+    job = ArchiveAFCAPI("test_table")
+    job.tmpdir = tmpdir
+    job.schema = pl.Schema({"job_id": pl.Int64(), "value": pl.String(), "pii_value": pl.String()})
+    job.pii_drop_columns = ["pii_value"]
+    job.table_type = "static"
+    job.ts_cols = []
+    job.export_folder = export
+    ls_obj.return_value = []
+
+    job.sync_parquet()
+
+    export_file = os.path.join(tmpdir, export, "table_001.parquet")
+    out_cols = pl.scan_parquet(export_file).collect_schema().names()
+    assert "pii_value" not in out_cols
+    assert set(out_cols) == {"job_id", "value"}
+
+    mock_upload.assert_called_once_with(export_file, f"{export}/table_001.parquet")
+    del_obj.assert_called_once_with([])
+    dl_obj.assert_not_called()
 
 
 _FakeRequestResponse = MagicMock()
