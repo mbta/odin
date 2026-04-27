@@ -45,10 +45,13 @@ def start():
             # "MASABI_DATA_SCHEMA_URL",  ## Uncomment when this variable is added to ECS environment
         ],
         private=[
+            "AFC_ROOT",
             "AFC_API_CLIENT_ID",
             "AFC_API_CLIENT_SECRET",
+            "TABLEAU_SERVER_URL",
             "TABLEAU_PERSONAL_ACCESS_TOKEN_NAME",
             "TABLEAU_PERSONAL_ACCESS_TOKEN_SECRET",
+            "MASABI_DATA_API_URL",
             "MASABI_DATA_API_USERNAME",
             "MASABI_DATA_API_PASSWORD",
         ],
