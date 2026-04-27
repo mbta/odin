@@ -22,8 +22,8 @@ CREATE OR REPLACE VIEW cubic_reports.wc232_use AS (SELECT DISTINCT
   euu.RETRIEVAL_REF_NBR,
   COALESCE(euu.REFUNDABLE_PURSE_VALUE,0)/100 AS refundable_purse_value,
   COALESCE(euu.PREPAID_BANKCARD_VALUE/100,0) AS prepaid_bankcard_value
-FROM fares_data_repository.cubic_ods.edw_unsettled_use euu
-	LEFT JOIN fares_data_repository.cubic_ods.edw_operator_dimension eod ON euu.operator_id = eod.operator_id
-	LEFT JOIN fares_data_repository.cubic_ods.edw_fare_product_dimension efpd ON euu.fare_prod_key = efpd.fare_prod_key 
-	LEFT JOIN fares_data_repository.cubic_ods.edw_purse_type_dimension eptd ON euu.purse_sku = eptd.purse_sku
+FROM cubic_ods.edw_unsettled_use euu
+	LEFT JOIN cubic_ods.edw_operator_dimension eod ON euu.operator_id = eod.operator_id
+	LEFT JOIN cubic_ods.edw_fare_product_dimension efpd ON euu.fare_prod_key = efpd.fare_prod_key 
+	LEFT JOIN cubic_ods.edw_purse_type_dimension eptd ON euu.purse_sku = eptd.purse_sku
 	)

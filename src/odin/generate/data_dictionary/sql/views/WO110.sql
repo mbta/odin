@@ -91,7 +91,7 @@ WITH CSR_PATRON_ORDER_DETAIL AS (SELECT o.order_dtm AS order_date,
        CASE WHEN o.order_type = 'Refund' THEN COALESCE(o.refund_reason_key, li.reason_key) ELSE o.reason_key END AS reason_key,
        o.order_day_key AS order_date_key,
        ftd.fee_type_key,
-       (SELECT SUM(payment_amount) FROM fares_data_repository.cubic_ods.edw_patron_order_payment
+       (SELECT SUM(payment_amount) FROM cubic_ods.edw_patron_order_payment
          WHERE dw_patron_order_id=o.dw_patron_order_id ) AS cr_db_amount, --AND payment_type_key=c_payment_type_credit)
        o.collection_status,
        o.collection_date,
@@ -168,25 +168,25 @@ WITH CSR_PATRON_ORDER_DETAIL AS (SELECT o.order_dtm AS order_date,
        o.staging_updated_dtm,
        o.edw_inserted_dtm,
        o.edw_updated_dtm
-  FROM fares_data_repository.cubic_ods.edw_patron_order o
-       LEFT JOIN fares_data_repository.cubic_ods.edw_patron_order_line_item li ON o.dw_patron_order_id = li.dw_patron_order_id
-       LEFT JOIN fares_data_repository.cubic_ods.edw_patron_order_payment py ON li.dw_patron_order_line_item_id = py.dw_patron_order_line_item_id AND li.dw_patron_order_id = py.dw_patron_order_id
-       LEFT JOIN fares_data_repository.cubic_ods.edw_operator_dimension od ON o.operator_key = od.operator_key
-       LEFT JOIN fares_data_repository.cubic_ods.edw_operator_dimension odli ON li.responsible_operator_key = odli.operator_key
-       LEFT JOIN fares_data_repository.cubic_ods.edw_fare_product_dimension fpd ON li.fare_prod_key = fpd.fare_prod_key
-       LEFT JOIN fares_data_repository.cubic_ods.edw_fare_prod_users_list_dimension fpuld ON fpd.fare_prod_users_list_key = fpuld.fare_prod_users_list_key
-       LEFT JOIN fares_data_repository.cubic_ods.edw_reason_dimension rd ON o.reason_key = rd.reason_key
-       LEFT JOIN fares_data_repository.cubic_ods.edw_reason_dimension rr ON COALESCE(o.refund_reason_key, li.reason_key) = rr.reason_key
-       LEFT JOIN fares_data_repository.cubic_ods.edw_payment_type_dimension ptd ON py.payment_type_key = ptd.payment_type_key
-       LEFT JOIN fares_data_repository.cubic_ods.edw_card_dimension cd ON li.card_key = cd.card_key
-       LEFT JOIN fares_data_repository.cubic_ods.edw_transit_account_dimension tad ON cd.transit_account_key = tad.transit_account_key
-       LEFT JOIN fares_data_repository.cubic_ods.edw_fee_type_dimension ftd ON li.fee_type_key = ftd.fee_type_key
-       LEFT JOIN fares_data_repository.cubic_ods.edw_patron_order_status_dimension os ON os.source = o.source AND os.order_status_name = o.order_status
-       LEFT JOIN fares_data_repository.cubic_ods.edw_patron_order_type_dimension ot ON ot.source = o.source AND ot.order_type_name = o.order_type
-       LEFT JOIN fares_data_repository.cubic_ods.edw_contact_dimension bill ON bill.contact_key = o.bill_to_contact_key
-       LEFT JOIN fares_data_repository.cubic_ods.edw_rider_class_dimension rc ON rc.rider_class_id = li.account_rider_class_id
-       LEFT JOIN fares_data_repository.cubic_ods.edw_purse_type_dimension prstd ON prstd.purse_sku = li.purse_sku
-       LEFT JOIN fares_data_repository.cubic_ods.edw_business_entity_dimension be ON be.business_entity_key = CAST(o.location_id AS INT) AND TRANSLATE(o.location_id, 'x0123456789', 'x') IS NULL
+  FROM cubic_ods.edw_patron_order o
+       LEFT JOIN cubic_ods.edw_patron_order_line_item li ON o.dw_patron_order_id = li.dw_patron_order_id
+       LEFT JOIN cubic_ods.edw_patron_order_payment py ON li.dw_patron_order_line_item_id = py.dw_patron_order_line_item_id AND li.dw_patron_order_id = py.dw_patron_order_id
+       LEFT JOIN cubic_ods.edw_operator_dimension od ON o.operator_key = od.operator_key
+       LEFT JOIN cubic_ods.edw_operator_dimension odli ON li.responsible_operator_key = odli.operator_key
+       LEFT JOIN cubic_ods.edw_fare_product_dimension fpd ON li.fare_prod_key = fpd.fare_prod_key
+       LEFT JOIN cubic_ods.edw_fare_prod_users_list_dimension fpuld ON fpd.fare_prod_users_list_key = fpuld.fare_prod_users_list_key
+       LEFT JOIN cubic_ods.edw_reason_dimension rd ON o.reason_key = rd.reason_key
+       LEFT JOIN cubic_ods.edw_reason_dimension rr ON COALESCE(o.refund_reason_key, li.reason_key) = rr.reason_key
+       LEFT JOIN cubic_ods.edw_payment_type_dimension ptd ON py.payment_type_key = ptd.payment_type_key
+       LEFT JOIN cubic_ods.edw_card_dimension cd ON li.card_key = cd.card_key
+       LEFT JOIN cubic_ods.edw_transit_account_dimension tad ON cd.transit_account_key = tad.transit_account_key
+       LEFT JOIN cubic_ods.edw_fee_type_dimension ftd ON li.fee_type_key = ftd.fee_type_key
+       LEFT JOIN cubic_ods.edw_patron_order_status_dimension os ON os.source = o.source AND os.order_status_name = o.order_status
+       LEFT JOIN cubic_ods.edw_patron_order_type_dimension ot ON ot.source = o.source AND ot.order_type_name = o.order_type
+       LEFT JOIN cubic_ods.edw_contact_dimension bill ON bill.contact_key = o.bill_to_contact_key
+       LEFT JOIN cubic_ods.edw_rider_class_dimension rc ON rc.rider_class_id = li.account_rider_class_id
+       LEFT JOIN cubic_ods.edw_purse_type_dimension prstd ON prstd.purse_sku = li.purse_sku
+       LEFT JOIN cubic_ods.edw_business_entity_dimension be ON be.business_entity_key = CAST(o.location_id AS INT) AND TRANSLATE(o.location_id, 'x0123456789', 'x') IS NULL
  WHERE (ot.include_on_reports_flag = 1 OR ot.send_to_cch_flag = 1)
    AND (   (NOT (o.order_type = 'Refund' AND o.source = 'PIVOTAL'))
         OR (o.review_approved_rejected = 'Approved' AND COALESCE(o.refund_is_opt_out,0) = 0)
@@ -257,10 +257,10 @@ END AS LINE_ITEM_TYPE,
   CSR_PATRON_ORDER_DETAIL.RETRIEVAL_REF_NBR
 FROM
   CSR_PATRON_ORDER_DETAIL--,
- -- ( SELECT * FROM fares_data_repository.cubic_ods.edw_employee_dimension)  DT_EMPLOYEE_DIMENSION,
- -- fares_data_repository.cubic_ods.edw_operator_dimension od
- LEFT JOIN ( SELECT * FROM fares_data_repository.cubic_ods.edw_employee_dimension) DT_EMPLOYEE_DIMENSION ON CSR_PATRON_ORDER_DETAIL.EMPLOYEE_KEY=DT_EMPLOYEE_DIMENSION.EMPLOYEE_KEY
- JOIN fares_data_repository.cubic_ods.edw_operator_dimension od ON CSR_PATRON_ORDER_DETAIL.OPERATOR_ID=od.OPERATOR_ID
+ -- ( SELECT * FROM cubic_ods.edw_employee_dimension)  DT_EMPLOYEE_DIMENSION,
+ -- cubic_ods.edw_operator_dimension od
+ LEFT JOIN ( SELECT * FROM cubic_ods.edw_employee_dimension) DT_EMPLOYEE_DIMENSION ON CSR_PATRON_ORDER_DETAIL.EMPLOYEE_KEY=DT_EMPLOYEE_DIMENSION.EMPLOYEE_KEY
+ JOIN cubic_ods.edw_operator_dimension od ON CSR_PATRON_ORDER_DETAIL.OPERATOR_ID=od.OPERATOR_ID
 --WHERE
   --( CSR_PATRON_ORDER_DETAIL.OPERATOR_ID=OPERATOR_DIMENSION.OPERATOR_ID  )
  -- AND  ( CSR_PATRON_ORDER_DETAIL.EMPLOYEE_KEY=DT_EMPLOYEE_DIMENSION.EMPLOYEE_KEY(+)  )
