@@ -31,10 +31,10 @@ CREATE OR REPLACE VIEW cubic_reports.wc232_patron_order AS (SELECT
   COALESCE(eupo.REFUNDABLE_PURSE_VALUE,0)/100 AS refundable_purse_value,
   COALESCE(eupo.PREPAID_BANKCARD_VALUE/100,0) AS prepaid_bankcard_value,
   eupo.PAYMENT_TRANSIT_ACCOUNT_ID
-FROM fares_data_repository.cubic_ods.edw_unsettled_patron_order eupo
-	LEFT JOIN fares_data_repository.cubic_ods.edw_reason_dimension erd ON eupo.reason_key = erd.reason_key 
-	LEFT JOIN fares_data_repository.cubic_ods.edw_operator_dimension eod ON eupo.operator_key = eod.operator_key 
-	LEFT JOIN fares_data_repository.cubic_ods.edw_fare_product_dimension efpd ON eupo.fare_prod_key = efpd.fare_prod_key 
-	LEFT JOIN fares_data_repository.cubic_ods.edw_purse_type_dimension eptd ON eupo.purse_sku = eptd.purse_sku
-	LEFT JOIN fares_data_repository.cubic_ods.edw_payment_type_dimension pt ON eupo.payment_type_key = pt.payment_type_id 
+FROM cubic_ods.edw_unsettled_patron_order eupo
+	LEFT JOIN cubic_ods.edw_reason_dimension erd ON eupo.reason_key = erd.reason_key
+	LEFT JOIN cubic_ods.edw_operator_dimension eod ON eupo.operator_key = eod.operator_key
+	LEFT JOIN cubic_ods.edw_fare_product_dimension efpd ON eupo.fare_prod_key = efpd.fare_prod_key
+	LEFT JOIN cubic_ods.edw_purse_type_dimension eptd ON eupo.purse_sku = eptd.purse_sku
+	LEFT JOIN cubic_ods.edw_payment_type_dimension pt ON eupo.payment_type_key = pt.payment_type_id
 )

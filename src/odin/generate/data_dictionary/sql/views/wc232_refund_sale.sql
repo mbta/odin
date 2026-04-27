@@ -36,12 +36,12 @@ SELECT s.settlement_state,
        s.refund_fee,
        s.retrieval_ref_nbr,
        s.payment_transit_account_id
-  FROM fares_data_repository.cubic_ods.edw_unsettled_sale s
-       LEFT JOIN fares_data_repository.cubic_ods.edw_operator_dimension op ON op.operator_id = s.operator_id
-       LEFT JOIN fares_data_repository.cubic_ods.edw_fare_product_dimension fp ON fp.fare_prod_key = s.fare_prod_key
-       LEFT JOIN fares_data_repository.cubic_ods.edw_payment_type_dimension pt ON pt.payment_type_key = s.payment_type_key
-       LEFT JOIN fares_data_repository.cubic_ods.edw_reason_dimension r ON r.reason_key = s.reason_key
-       LEFT JOIN fares_data_repository.cubic_ods.edw_purse_type_dimension prstd ON prstd.purse_sku = s.purse_sku
+  FROM cubic_ods.edw_unsettled_sale s
+       LEFT JOIN cubic_ods.edw_operator_dimension op ON op.operator_id = s.operator_id
+       LEFT JOIN cubic_ods.edw_fare_product_dimension fp ON fp.fare_prod_key = s.fare_prod_key
+       LEFT JOIN cubic_ods.edw_payment_type_dimension pt ON pt.payment_type_key = s.payment_type_key
+       LEFT JOIN cubic_ods.edw_reason_dimension r ON r.reason_key = s.reason_key
+       LEFT JOIN cubic_ods.edw_purse_type_dimension prstd ON prstd.purse_sku = s.purse_sku
  WHERE s.sale_type_key = 24)
 SELECT
   UNSETTLED_REFUND_SALE.SETTLEMENT_STATE,
