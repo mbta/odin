@@ -5,7 +5,6 @@ SELECT
     ,ut.posting_day_key as posting_date
     ,ut.settlement_day_key as settlement_date
     ,ut.transaction_dtm
-    ,th.transit_mode_name
     ,ut.patron_trip_id
     ,tr.fare_rule_description
     ,ut.transfer_sequence_nbr
@@ -30,8 +29,6 @@ JOIN cubic_ods.edw_card_dimension cd
     ON cd.card_key = ut.card_key
 LEFT JOIN cubic_ods.edw_sale_transaction s
     ON s.purse_load_id = tp.purse_load_id
-LEFT JOIN cubic_ods.edw_transaction_history th
-    ON th.dw_transaction_id = ut.dw_transaction_id
 WHERE
     s.sale_type_key = 26
     and (
