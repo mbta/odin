@@ -57,15 +57,24 @@ NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
 NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
-# Exclusive lower bound for the initial historical backfill: 2025-01-01 00:00:00 UTC (ms).
-MASABI_START_TIMESTAMP_MS: int = 1_735_689_600_000
+# Exclusive lower bound for the initial historical backfill: 2020-01-01 00:00:00 UTC (ms).
+MASABI_START_TIMESTAMP_MS: int = 1_577_836_800_000
 
 TABLES = [
+    "data.external_rider_data",
+    "partner.rider_association_events",
     "retail.account_actions",
     "retail.activations",
+    "retail.rider_entitlement_events",
     "retail.ticket_purchases",
     "retail.tickets",
-    "retail.rider_entitlement_events",
+    "validation.scans",
+    "validation.telemetry",
+    "view.hub_search_account",
+    "view.hub_search_guest_account",
+    "view.hub_search_token",
+    "view.hub_search_vendor_sale",
+    "view.validators",
 ]
 
 _YAML_TYPE_MAP: dict[str, pl.DataType] = {
