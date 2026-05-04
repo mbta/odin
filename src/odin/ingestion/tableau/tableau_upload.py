@@ -1,5 +1,6 @@
 import os
 import boto3
+import duckdb
 import pyarrow
 from pyarrow import parquet as pq
 from pyarrow import fs
@@ -38,7 +39,7 @@ BATCH_SIZE = 500_000  # Number of rows per Hyper file batch
 # Tables to sync
 TABLES_TO_SYNC = [
     "EDW.ABP_TAP",
-    "EDW.JOURNAL_ENTRY",
+    # "EDW.JOURNAL_ENTRY",
 ]
 
 
@@ -71,6 +72,47 @@ TABLE_CONFIG: Dict[str, TableConfig] = {
         "index_column": "journal_entry_key",
     },
 }
+
+
+class ViewConfig(TypedDict):
+    """Configuration for a materialized view to sync to Tableau."""
+
+    name: str
+    query: str
+    source_tables: List[str]
+
+
+# All views require:
+# - a unique name for the view in Tableau
+# - a DuckDB-compatible SQL query to create the view
+# - a list of source tables used in the query
+VIEWS_TO_SYNC: List[ViewConfig] = [
+    {
+        "name": "wc700_comp_b",
+        "query": """
+            SELECT
+                ps.settlement_day_key
+                ,ps.operating_day_key
+                ,ps.payment_type_key
+                ,tcm.txn_channel_display
+                ,tcm.sales_channel_display
+                ,SUM(COALESCE(payment_value,0))/100 AS total_fare_revenue
+            FROM cubic_ods.edw_payment_summary ps
+            JOIN cubic_ods.edw_txn_channel_map tcm
+                ON tcm.txn_source = ps.txn_source
+                AND tcm.sales_channel_key = ps.sales_channel_key
+                AND tcm.payment_type_key = ps.payment_type_key
+            WHERE tcm.txn_group = 'Open Payment Trips'
+            GROUP BY
+                ps.settlement_day_key
+                ,ps.operating_day_key
+                ,ps.payment_type_key
+                ,tcm.txn_channel_display
+                ,tcm.sales_channel_display
+        """,
+        "source_tables": ["EDW.PAYMENT_SUMMARY", "EDW.TXN_CHANNEL_MAP"],
+    },
+]
 
 
 def convert_parquet_dtype(dtype: pyarrow.DataType) -> SqlType:
@@ -180,7 +222,120 @@ def resolve_project_id(server: TSC.Server, path: str) -> str:
     return parent.id
 
 
-class TableauUpload(OdinJob):
+class TableauSyncBase(OdinJob):
+    """
+    Base class for Tableau sync jobs (TableauUpload and TableauViewUpload).
+
+    Defines publishing logic (used by both TableauUpload and TableauViewUpload),
+    and common methods for managing watermarks and logging.
+    """
+
+    def get_latest_watermark(self) -> Any | None:
+        """
+        Retrieve the max value of the index column from S3 state store.
+
+        :return: Watermark value or None if not found
+        """
+        log = ProcessLog(
+            "get_latest_watermark",
+            table=self.table,
+            s3_path=f"s3://{DATA_SPRINGBOARD}/{CHECKPOINT_FILE_KEY}",
+        )
+        s3 = boto3.client("s3")
+        try:
+            response = s3.get_object(Bucket=DATA_SPRINGBOARD, Key=CHECKPOINT_FILE_KEY)
+            state = json.loads(response["Body"].read().decode("utf-8"))
+            watermark = state.get(self.table)
+            log.complete(watermark=str(watermark) if watermark is not None else "None")
+            return watermark
+        except s3.exceptions.NoSuchKey:
+            log.complete(result="no_checkpoint_file")
+            return None
+        except Exception as e:
+            log.failed(e)
+            return None
+
+    def update_watermark(self, new_value: Any) -> None:
+        """
+        Update the max value for a table in the S3 state store.
+
+        :param new_value: New watermark value
+        """
+        log = ProcessLog(
+            "update_watermark",
+            table=self.table,
+            new_value=str(new_value) if new_value is not None else "None",
+        )
+
+        if new_value is None:
+            log.complete(result="skipped_null_value")
+            return
+
+        s3 = boto3.client("s3")
+        try:
+            # Read current state first to preserve other entries
+            try:
+                response = s3.get_object(Bucket=DATA_SPRINGBOARD, Key=CHECKPOINT_FILE_KEY)
+                state = json.loads(response["Body"].read().decode("utf-8"))
+            except s3.exceptions.NoSuchKey:
+                state = {}
+
+            state[self.table] = new_value
+
+            s3.put_object(
+                Bucket=DATA_SPRINGBOARD,
+                Key=CHECKPOINT_FILE_KEY,
+                Body=json.dumps(state, default=str),
+            )
+            log.complete(result="success")
+        except Exception as e:
+            log.failed(e)
+
+    def publish_hyper_to_tableau(
+        self,
+        hyper_filepath: str,
+        datasource_name: str,
+        project_name: str,
+        server_url: str,
+        publish_mode: str = TSC.Server.PublishMode.Overwrite,
+    ) -> None:
+        """
+        Publish Tableau Hyper extract to Tableau Server.
+
+        :param hyper_filepath: Path to the hyper file
+        :param datasource_name: Name for the datasource in Tableau
+        :param project_name: Tableau project path
+        :param server_url: Tableau server URL
+        :param publish_mode: Publish mode (Overwrite or Append)
+        """
+        log = ProcessLog(
+            "publish_hyper_to_tableau",
+            datasource_name=datasource_name,
+            project_name=project_name,
+            server_url=server_url,
+            publish_mode=str(publish_mode),
+        )
+
+        try:
+            tableau_auth = TSC.PersonalAccessTokenAuth(
+                os.environ["TABLEAU_PERSONAL_ACCESS_TOKEN_NAME"],
+                os.environ["TABLEAU_PERSONAL_ACCESS_TOKEN_SECRET"],
+                site_id=os.environ.get("TABLEAU_SITE_ID", ""),
+            )
+
+            server = TSC.Server(server_url, use_server_version=True, http_options={"verify": False})
+            with server.auth.sign_in(tableau_auth):
+                project_id = resolve_project_id(server, project_name)
+                datasource_item = TSC.DatasourceItem(project_id=project_id, name=datasource_name)
+                server.datasources.publish(datasource_item, hyper_filepath, mode=publish_mode)
+
+            log.complete(result="success")
+        except Exception as e:
+            log.failed(e)
+            raise
+
+
+class TableauUpload(TableauSyncBase):
     """
     Sync Parquet data to Tableau Server via Hyper extracts.
 
@@ -376,109 +531,6 @@ class TableauUpload(OdinJob):
         log.complete(watermark_filter_applied=str(watermark_filter_applied))
         return lf
 
-    def get_latest_watermark(self) -> Any | None:
-        """
-        Retrieve the max value of the index column from S3 state store.
-
-        :return: Watermark value or None if not found
-        """
-        log = ProcessLog(
-            "get_latest_watermark",
-            table=self.table,
-            s3_path=f"s3://{DATA_SPRINGBOARD}/{CHECKPOINT_FILE_KEY}",
-        )
-        s3 = boto3.client("s3")
-        try:
-            response = s3.get_object(Bucket=DATA_SPRINGBOARD, Key=CHECKPOINT_FILE_KEY)
-            state = json.loads(response["Body"].read().decode("utf-8"))
-            watermark = state.get(self.table)
-            log.complete(watermark=str(watermark) if watermark is not None else "None")
-            return watermark
-        except s3.exceptions.NoSuchKey:
-            log.complete(result="no_checkpoint_file")
-            return None
-        except Exception as e:
-            log.failed(e)
-            return None
-
-    def update_watermark(self, new_value: Any) -> None:
-        """
-        Update the max value for a table in the S3 state store.
-
-        :param new_value: New watermark value
-        """
-        log = ProcessLog(
-            "update_watermark",
-            table=self.table,
-            new_value=str(new_value) if new_value is not None else "None",
-        )
-
-        if new_value is None:
-            log.complete(result="skipped_null_value")
-            return
-
-        s3 = boto3.client("s3")
-        try:
-            # Read current state first to preserve other tables
-            try:
-                response = s3.get_object(Bucket=DATA_SPRINGBOARD, Key=CHECKPOINT_FILE_KEY)
-                state = json.loads(response["Body"].read().decode("utf-8"))
-            except s3.exceptions.NoSuchKey:
-                state = {}
-
-            state[self.table] = new_value
-
-            s3.put_object(
-                Bucket=DATA_SPRINGBOARD,
-                Key=CHECKPOINT_FILE_KEY,
-                Body=json.dumps(state, default=str),
-            )
-            log.complete(result="success")
-        except Exception as e:
-            log.failed(e)
-
-    def publish_hyper_to_tableau(
-        self,
-        hyper_filepath: str,
-        datasource_name: str,
-        project_name: str,
-        server_url: str,
-        publish_mode: str = TSC.Server.PublishMode.Overwrite,
-    ) -> None:
-        """
-        Publish Tableau Hyper extract to Tableau Server.
-
-        :param hyper_filepath: Path to the hyper file
-        :param datasource_name: Name for the datasource in Tableau
-        :param project_name: Tableau project path
-        :param server_url: Tableau server URL
-        :param publish_mode: Publish mode (Overwrite or Append)
-        """
-        log = ProcessLog(
-            "publish_hyper_to_tableau",
-            datasource_name=datasource_name,
-            project_name=project_name,
-            server_url=server_url,
-            publish_mode=str(publish_mode),
-        )
-
-        try:
-            tableau_auth = TSC.PersonalAccessTokenAuth(
-                os.environ["TABLEAU_PERSONAL_ACCESS_TOKEN_NAME"],
-                os.environ["TABLEAU_PERSONAL_ACCESS_TOKEN_SECRET"],
-            )
-
-            server = TSC.Server(server_url, use_server_version=True, http_options={"verify": False})
-            with server.auth.sign_in(tableau_auth):
-                project_id = resolve_project_id(server, project_name)
-                datasource_item = TSC.DatasourceItem(project_id=project_id, name=datasource_name)
-                server.datasources.publish(datasource_item, hyper_filepath, mode=publish_mode)
-
-            log.complete(result="success")
-        except Exception as e:
-            log.failed(e)
-            raise
-
     def run(self) -> int:
         """
         Run the Tableau upload job.
@@ -625,4 +677,191 @@ def schedule_tableau_upload(schedule: sched.scheduler) -> None:
     """
     for table in TABLES_TO_SYNC:
         job = TableauUpload(table)
+        schedule.enter(0, 1, job_proc_schedule, (job, schedule))
+
+
+class TableauViewUpload(TableauSyncBase):
+    """
+    Pre-compute SQL views and sync to Tableau Server via Hyper extracts.
+
+    This job always performs a full refresh to ensure correctness with joined/aggregated data.
+
+    Pipeline:
+    1. Sets up DuckDB with S3 access to source parquet files
+    2. Executes view query to materialize the result
+    3. Exports to parquet, converts to Hyper, publishes to Tableau (starting in overwrite mode)
+    """
+
+    def __init__(self, view_config: ViewConfig) -> None:
+        """
+        Create TableauViewUpload instance.
+
+        :param view_config: Configuration dict with name, query, source_tables
+        """
+        self.view_name = view_config["name"]
+        self.view_query = view_config["query"]
+        self.source_tables = view_config["source_tables"]
+        self.start_kwargs = {"view": self.view_name}
+
+    def setup_duckdb_sources(self, con: duckdb.DuckDBPyConnection) -> None:
+        """
+        Create DuckDB views pointing to S3 parquet sources.
+
+        This mirrors what duck_db.py does, but only for the tables needed by this view.
+
+        :param con: DuckDB connection
+        """
+        log = ProcessLog("setup_duckdb_sources", view=self.view_name)
+
+        # Setup S3 credentials
+        con.execute("CREATE OR REPLACE SECRET secret (TYPE s3, PROVIDER credential_chain);")
+
+        # Create schema for source tables
+        con.execute("CREATE SCHEMA IF NOT EXISTS cubic_ods;")
+
+        # Create views for each source table
+        for table in self.source_tables:
+            # Table format is like "EDW.PAYMENT_SUMMARY" -> path uses this directly
+            s3_path = f"s3://{DATA_SPRINGBOARD}/odin/data/cubic/ods/{table}/"
+            # View name format: edw_payment_summary (lowercase with underscore)
+            view_name = table.replace(".", "_").lower()
+            view_sql = f"""
+                CREATE OR REPLACE VIEW cubic_ods.{view_name} AS
+                SELECT * FROM read_parquet('{s3_path}**/*.parquet', union_by_name = true);
+            """
+            con.execute(view_sql)
+            log.add_metadata(**{f"created_view_{view_name}": s3_path})
+
+        log.complete()
+
+    def materialize_view(self, output_path: str) -> int:
+        """
+        Execute view query and write results to parquet.
+
+        :param output_path: Path for output parquet file
+        :return: Number of rows materialized
+        """
+        log = ProcessLog(
+            "materialize_view",
+            view=self.view_name,
+            output_path=output_path,
+        )
+
+        with duckdb.connect(":memory:") as con:
+            # Setup source table views
+            self.setup_duckdb_sources(con)
+
+            # Execute and export to parquet
+            export_query = f"COPY ({self.view_query}) TO '{output_path}' (FORMAT PARQUET);"
+            con.execute(export_query)
+
+        # Get row count from parquet metadata
+        row_count = pq.read_metadata(output_path).num_rows
+
+        log.complete(row_count=row_count)
+        return row_count
+
+    def run(self) -> int:
+        """
+        Run the view materialization and Tableau upload job.
+
+        Always performs a full refresh (overwrite) to ensure data correctness.
+
+        :return: Seconds until next run
+        """
+        self.start_kwargs = {"view": self.view_name}
+        log = ProcessLog("run", view=self.view_name)
+
+        # Step 1: Materialize the view to parquet
+        parquet_path = os.path.join(self.tmpdir, f"{self.view_name}.parquet")
+        try:
+            row_count = self.materialize_view(parquet_path)
+        except Exception as e:
+            log.failed(exception=e)
+            return NEXT_RUN_LONG
+
+        if row_count == 0:
+            log.complete(result="no_data")
+            return NEXT_RUN_LONG
+
+        log.add_metadata(row_count=row_count, batch_size=BATCH_SIZE)
+
+        # Setup Tableau Environment
+        server_url = os.environ.get("TABLEAU_SERVER_URL", "")
+        project_name = os.environ.get("TABLEAU_WORKBOOK_PROJECT", "")
+
+        # Step 2: Process in batches (handles large view results)
+        total_batches = (row_count + BATCH_SIZE - 1) // BATCH_SIZE
+        lf = pl.scan_parquet(parquet_path)
+
+        for offset in range(0, row_count, BATCH_SIZE):
+            batch_num = offset // BATCH_SIZE + 1
+            batch_log = ProcessLog(
+                "process_batch",
+                view=self.view_name,
+                batch_num=batch_num,
+                total_batches=total_batches,
+                offset=offset,
+                batch_end=min(offset + BATCH_SIZE, row_count),
+            )
+
+            # Slice the LazyFrame and materialize the batch
+            chunk_df = lf.slice(offset, BATCH_SIZE).collect()
+
+            chunk_parquet_path = os.path.join(
+                self.tmpdir, f"chunk_{offset}_{self.view_name}.parquet"
+            )
+            chunk_hyper_path = os.path.join(
+                self.tmpdir, f"chunk_{offset}_{self.view_name}.hyper"
+            )
+
+            # Write temp parquet for this batch
+            chunk_df.write_parquet(chunk_parquet_path, compression="snappy")
+
+            # Create Tableau Hyper table definition and build extract
+            table_def = parquet_schema_to_hyper_definition(chunk_parquet_path, self.view_name)
+            hyper_row_count = build_hyper_from_parquet(
+                chunk_parquet_path, chunk_hyper_path, table_def
+            )
+            batch_log.add_metadata(hyper_row_count=hyper_row_count)
+
+            # First batch overwrites (full refresh), subsequent batches append
+            mode = (
+                TSC.Server.PublishMode.Overwrite if offset == 0
+                else TSC.Server.PublishMode.Append
+            )
+            batch_log.add_metadata(publish_mode=str(mode))
+
+            self.publish_hyper_to_tableau(
+                chunk_hyper_path,
+                self.view_name,
+                project_name,
+                server_url,
+                publish_mode=mode,
+            )
+
+            # Cleanup batch files
+            if os.path.exists(chunk_parquet_path):
+                os.remove(chunk_parquet_path)
+            if os.path.exists(chunk_hyper_path):
+                os.remove(chunk_hyper_path)
+
+            batch_log.complete()
+
+        # Cleanup source parquet
+        if os.path.exists(parquet_path):
+            os.remove(parquet_path)
+
+        log.complete(rows_synced=row_count, batches_processed=total_batches)
+        return NEXT_RUN_DEFAULT
+
+
+def schedule_tableau_view_upload(schedule: sched.scheduler) -> None:
+    """
+    Schedule All Jobs for Tableau view upload process.
+
+    :param schedule: application scheduler
+    """
+    for view_config in VIEWS_TO_SYNC:
+        job = TableauViewUpload(view_config)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))
