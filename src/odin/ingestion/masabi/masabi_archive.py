@@ -95,6 +95,7 @@ TABLE_NUMERIC_OVERRIDES: dict[str, frozenset[str]] = {
     "retail.ticket_purchases": frozenset({"hourOfDay"}),
     "retail.tickets": frozenset({"hourOfDay"}),
     "retail.rider_entitlement_events": frozenset({"hourOfDay"}),
+    "validation.scans": frozenset({"hourOfDay"}),
 }
 
 TABLE_TIMESTAMP_OVERRIDES: dict[str, str] = {
@@ -699,7 +700,7 @@ class ArchiveMasabi(OdinJob):
         if TABLE_SCHEMAS is None or TABLE_JSON_COLS is None:
             TABLE_SCHEMAS, TABLE_JSON_COLS = _load_schemas(TABLES, pool)
 
-        ts_key = TABLE_TIMESTAMP_OVERRIDES.get(self.table, 'serverTimestamp')
+        ts_key = TABLE_TIMESTAMP_OVERRIDES.get(self.table, "serverTimestamp")
         from_ts = self.setup_job(ts_key)
         to_ts = int(time.time() * 1000)
 
