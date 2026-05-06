@@ -95,6 +95,15 @@ TABLE_NUMERIC_OVERRIDES: dict[str, frozenset[str]] = {
     "retail.ticket_purchases": frozenset({"hourOfDay"}),
     "retail.tickets": frozenset({"hourOfDay"}),
     "retail.rider_entitlement_events": frozenset({"hourOfDay"}),
+    "validation.scans": frozenset({"hourOfDay"}),
+}
+
+TABLE_TIMESTAMP_OVERRIDES: dict[str, str] = {
+    "view.hub_search_account": "latestIngestTimestamp",
+    "view.hub_search_guest_account": "latestIngestTimestamp",
+    "view.hub_search_token": "latestIngestTimestamp",
+    "view.hub_search_vendor_sale": "latestIngestTimestamp",
+    "view.validators": "latestIngestTimestamp",
 }
 
 # ---------------------------------------------------------------------------
@@ -487,11 +496,12 @@ class ArchiveMasabi(OdinJob):
         pool: urllib3.PoolManager,
         from_ts: int,
         to_ts: int,
+        ts_key: str,
     ) -> Generator[list[dict[str, Any]], None, None]:
         """
-        Yield pages of API hits for the given serverTimestamp range.
+        Yield pages of API hits for the given time key range.
 
-        Results are requested in ascending serverTimestamp order. Pagination is
+        Results are requested in ascending key order. Pagination is
         handled via the `nextPageId` cursor returned in each response.
 
         :param pool: urllib3 connection pool manager
@@ -500,8 +510,8 @@ class ArchiveMasabi(OdinJob):
         """
         url = "/".join([API_ROOT.rstrip("/"), "data-store/query/v2/MBTA", self.table]) + "/"
         fields: dict[str, str] = {
-            "filter": f"and(gt(serverTimestamp:{from_ts}),lte(serverTimestamp:{to_ts}))",
-            "orderBy": "serverTimestamp:asc",
+            "filter": f"and(gt({ts_key}:{from_ts}),lte({ts_key}:{to_ts}))",
+            "orderBy": f"{ts_key}:asc",
             "size": str(API_PAGE_SIZE),
         }
         log = ProcessLog("masabi_api_pages", table=self.table, from_ts=from_ts, to_ts=to_ts)
@@ -535,12 +545,13 @@ class ArchiveMasabi(OdinJob):
         pool: urllib3.PoolManager,
         from_ts: int,
         to_ts: int,
+        ts_key: str,
     ) -> tuple[str | None, bool]:
         """
         Fetch all records in (from_ts, to_ts] from the API and write as NDJSON.
 
         Records are written one page at a time for memory efficiency. The
-        NDJSON file is written in ascending serverTimestamp order (enforced
+        NDJSON file is written in ascending timestamp key order (enforced
         by the API `orderBy` parameter) so that partial writes are safe.
 
         Each page is validated against the schema (column presence and
@@ -568,9 +579,11 @@ class ArchiveMasabi(OdinJob):
         max_obs_ts = -1
         self.schema_check.reset_warnings()
         with open(ndjson_path, "w") as f:
-            for page_hits in self.api_pages(pool, from_ts, to_ts):
-                min_page_ts = min([x["serverTimestamp"] for x in page_hits])
-                max_page_ts = max([x["serverTimestamp"] for x in page_hits])
+            for page_hits in self.api_pages(pool, from_ts, to_ts, ts_key):
+                if not page_hits:
+                    break
+                min_page_ts = min([x[ts_key] for x in page_hits])
+                max_page_ts = max([x[ts_key] for x in page_hits])
                 if min_page_ts < max_obs_ts:
                     log.add_metadata(
                         warning=(
@@ -599,7 +612,7 @@ class ArchiveMasabi(OdinJob):
         )
         return ndjson_path if total_rows > 0 else None, maximum_rows
 
-    def sync_parquet(self, ndjson_path: str) -> None:
+    def sync_parquet(self, ndjson_path: str, ts_key: str) -> None:
         """
         Convert the NDJSON file to parquet and sync with S3.
 
@@ -607,11 +620,11 @@ class ArchiveMasabi(OdinJob):
         with the newly-fetched data, and uploads the result. This keeps file
         count low while preserving the append-only invariant.
 
-        Rows at the maximum serverTimestamp are dropped before writing.
-        Rationale: serverTimestamp values are not strictly unique — Masabi may
+        Rows at the maximum timestamp are dropped before writing.
+        Rationale: key values are not always strictly unique — Masabi may
         write additional rows with the same timestamp after our run completes.
         The next run uses an *exclusive* lower bound
-        (`gt(serverTimestamp:{from_ts})`), so any rows whose timestamp equals
+        (`gt({ts_key}:{from_ts})`), so any rows whose timestamp equals
         `from_ts` would be silently skipped, causing data loss. By dropping
         the boundary rows now, we guarantee that the next run's lower bound
         sits below those rows and re-fetches them in full (along with any
@@ -624,8 +637,8 @@ class ArchiveMasabi(OdinJob):
 
         lf = pl.scan_ndjson(ndjson_path, schema=self.schema_check.schema)
 
-        max_ts = lf.select(pl.col("serverTimestamp").max()).collect().item()
-        ts_filtered_lf = lf.filter(pl.col("serverTimestamp") < max_ts)
+        max_ts = lf.select(pl.col(ts_key).max()).collect().item()
+        ts_filtered_lf = lf.filter(pl.col(ts_key) < max_ts)
         ts_filtered_lf.sink_parquet(
             pq_path,
             compression="zstd",
@@ -660,7 +673,7 @@ class ArchiveMasabi(OdinJob):
             upload_file(new_path, upload_path)
         log.complete(uploaded_files=",".join(new_paths))
 
-    def setup_job(self):
+    def setup_job(self, ts_key):
         """Read the pre-existing parquet files to get the start time for data."""
         log = ProcessLog("masabi_setup_job", table=self.table)
 
@@ -668,7 +681,7 @@ class ArchiveMasabi(OdinJob):
         existing_ds = ds_from_path(self.export_folder)
         existing_ds_rows = existing_ds.count_rows()
         if existing_ds_rows:
-            _, max_ts = ds_metadata_min_max(existing_ds, "serverTimestamp")
+            _, max_ts = ds_metadata_min_max(existing_ds, ts_key)
             if max_ts is not None:
                 from_ts = int(max_ts)
 
@@ -687,7 +700,8 @@ class ArchiveMasabi(OdinJob):
         if TABLE_SCHEMAS is None or TABLE_JSON_COLS is None:
             TABLE_SCHEMAS, TABLE_JSON_COLS = _load_schemas(TABLES, pool)
 
-        from_ts = self.setup_job()
+        ts_key = TABLE_TIMESTAMP_OVERRIDES.get(self.table, "serverTimestamp")
+        from_ts = self.setup_job(ts_key)
         to_ts = int(time.time() * 1000)
 
         schema = TABLE_SCHEMAS.get(self.table)
@@ -699,9 +713,9 @@ class ArchiveMasabi(OdinJob):
         )
         log.add_metadata(schema_size=len(self.schema_check.schema))
 
-        ndjson_path, hit_row_limit = self.fetch_and_write(pool, from_ts, to_ts)
+        ndjson_path, hit_row_limit = self.fetch_and_write(pool, from_ts, to_ts, ts_key)
         if ndjson_path is not None:
-            self.sync_parquet(ndjson_path)
+            self.sync_parquet(ndjson_path, ts_key)
 
         if hit_row_limit:
             log.complete(next_run_interval="short")
