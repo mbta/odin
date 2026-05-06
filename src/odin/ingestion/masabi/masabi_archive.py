@@ -96,6 +96,7 @@ TABLE_NUMERIC_OVERRIDES: dict[str, frozenset[str]] = {
     "retail.tickets": frozenset({"hourOfDay"}),
     "retail.rider_entitlement_events": frozenset({"hourOfDay"}),
     "validation.scans": frozenset({"hourOfDay"}),
+    "validation.telemetry": frozenset({"hourOfDay"}),
 }
 
 TABLE_TIMESTAMP_OVERRIDES: dict[str, str] = {
