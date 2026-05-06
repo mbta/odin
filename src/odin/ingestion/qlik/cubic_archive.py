@@ -340,6 +340,7 @@ class ArchiveCubicQlikTable(OdinJob):
             - if backlog of cdc files exists -> 5 mins
                 * when cdc files > half of max_cdc_files requested
         """
+        log = ProcessLog("ArchiveCubicQlikTable", table=self.table)
         try:
             self.start_kwargs = {"table": self.table, "save_local": self.save_local}
             self.archive_objects: List[str] = []
@@ -356,9 +357,11 @@ class ArchiveCubicQlikTable(OdinJob):
             self.load_cdc(cdc_files)
             self.move_objects()
 
-        except RecentSnapshotError:
+            log.complete(run_interval=next_run_secs)
+        except RecentSnapshotError as e:
             self.start_kwargs["skipped_recent_snapshot"] = True
             next_run_secs = NEXT_RUN_DEFAULT
+            log.failed(exception=e)
 
         return next_run_secs
 
