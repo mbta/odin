@@ -159,6 +159,7 @@ class DataDictionary(OdinJob):
             ]
         }
         """
+        log = ProcessLog("DataDictionary")
         # Create and upload Data Dictionary json file.
         column_descriptions = fetch_AFC_column_descriptions()
         data_dictionary = [
@@ -187,6 +188,7 @@ class DataDictionary(OdinJob):
         upload_path = os.path.join(DATA_SPRINGBOARD, ODIN_DICTIONARY, db_obj_name)
         upload_file(db_file, upload_path)
 
+        log.complete(run_interval=NEXT_RUN_DEFAULT)
         return NEXT_RUN_DEFAULT
 
 
