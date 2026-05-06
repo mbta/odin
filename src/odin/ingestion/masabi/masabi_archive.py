@@ -579,6 +579,8 @@ class ArchiveMasabi(OdinJob):
         self.schema_check.reset_warnings()
         with open(ndjson_path, "w") as f:
             for page_hits in self.api_pages(pool, from_ts, to_ts, ts_key):
+                if not page_hits:
+                    break
                 min_page_ts = min([x[ts_key] for x in page_hits])
                 max_page_ts = max([x[ts_key] for x in page_hits])
                 if min_page_ts < max_obs_ts:
@@ -670,7 +672,7 @@ class ArchiveMasabi(OdinJob):
             upload_file(new_path, upload_path)
         log.complete(uploaded_files=",".join(new_paths))
 
-    def setup_job(self):
+    def setup_job(self, ts_key):
         """Read the pre-existing parquet files to get the start time for data."""
         log = ProcessLog("masabi_setup_job", table=self.table)
 
@@ -698,7 +700,7 @@ class ArchiveMasabi(OdinJob):
             TABLE_SCHEMAS, TABLE_JSON_COLS = _load_schemas(TABLES, pool)
 
         ts_key = TABLE_TIMESTAMP_OVERRIDES.get(self.table, 'serverTimestamp')
-        from_ts = self.setup_job()
+        from_ts = self.setup_job(ts_key)
         to_ts = int(time.time() * 1000)
 
         schema = TABLE_SCHEMAS.get(self.table)
