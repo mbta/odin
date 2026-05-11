@@ -82,6 +82,7 @@ API_TABLES = [
     "v_transit_accounts",
     "v_payment_methods",
     "v_entitlements",
+    "v_entitlements_full",  # temporary full snapshot export containing older data
     "v_payment_method_instances",
     "v_products",
 ]
