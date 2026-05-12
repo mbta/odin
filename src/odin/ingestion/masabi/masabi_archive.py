@@ -61,8 +61,6 @@ NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 MASABI_START_TIMESTAMP_MS: int = 1_577_836_800_000
 
 TABLES = [
-    "data.external_rider_data",
-    "partner.rider_association_events",
     "retail.account_actions",
     "retail.activations",
     "retail.rider_entitlement_events",
@@ -72,7 +70,6 @@ TABLES = [
     "validation.telemetry",
     "view.hub_search_account",
     "view.hub_search_guest_account",
-    "view.hub_search_token",
     "view.hub_search_vendor_sale",
     "view.validators",
 ]
@@ -106,6 +103,60 @@ TABLE_TIMESTAMP_OVERRIDES: dict[str, str] = {
     "view.hub_search_vendor_sale": "latestIngestTimestamp",
     "view.validators": "latestIngestTimestamp",
 }
+
+TABLE_PII_DROP_COLUMNS: dict[str, list[str]] = {
+    "retail.account_actions": [
+        "email",
+        "firstName",
+        "ipAddress",
+        "lastName",
+        "phoneNumber",
+        "username",
+    ],
+    "retail.activations": ["ipAddress", "location"],
+    "retail.rider_entitlement_events": ["ipAddress", "proofId"],
+    "retail.ticket_purchases": [
+        "bankAccountNumber",
+        "cardName",
+        "cardSignature",
+        "email",
+        "ipAddress",
+        "panFirstSix",
+        "panLastFour",
+        "salesAgent",
+        "zipCode",
+    ],
+    "retail.tickets": ["ipAddress", "salesAgent"],
+    "validation.scans": ["location", "username"],
+    "validation.telemetry": ["inspector", "ipAddress", "location", "username"],
+    "view.hub_search_account": [
+        "emails",
+        "entitlementProofIds",
+        "latestEmail",
+        "latestFirstName",
+        "latestFundingDetails",
+        "latestLastName",
+        "latestPhoneNumber",
+        "latestState",
+        "retailCards",
+        "username",
+    ],
+    "view.hub_search_guest_account": [
+        "emails",
+        "latestEmail",
+        "latestFundingDetails",
+        "retailCards",
+    ],
+    "view.hub_search_vendor_sale": [
+        "cardName",
+        "cardSignature",
+        "panFirstSix",
+        "panLastFour",
+        "salesAgent",
+    ],
+    "view.validators": ["username"],
+}
+
 
 # ---------------------------------------------------------------------------
 # Schema Retrieval
@@ -196,6 +247,7 @@ class SchemaCheck:
         schema: pl.Schema,
         json_cols: frozenset[str],
         numeric_overrides: frozenset[str],
+        exclude_cols: list[str],
     ) -> None:
         """
         Create a SchemaCheck for a single table.
@@ -208,6 +260,7 @@ class SchemaCheck:
         self.json_cols = json_cols
         self.numeric_overrides = numeric_overrides
         self.warned_columns: set[str] = set()
+        self.exclude_cols = exclude_cols
 
     @staticmethod
     def _arrow_type_name(pl_dtype: pl.DataType) -> str:
@@ -377,7 +430,7 @@ class SchemaCheck:
         """
         Compare an existing parquet file's schema against the expected polars schema.
 
-        - Extra columns in the parquet (not in expected schema): logged as warning.
+        - Extra columns in the parquet (not in expected schema, and not an excluded column): logged as warning.
         - Missing columns in the parquet (in expected schema but absent): logged as warning.
         - Type mismatch on a shared column: raises SchemaError.
 
@@ -390,7 +443,7 @@ class SchemaCheck:
         expected_names = set(self.schema.names())
         pq_names = set(pq_col_types.keys())
 
-        extra_in_pq = pq_names - expected_names
+        extra_in_pq = pq_names - (expected_names | set(self.exclude_cols))
         if extra_in_pq:
             log.add_metadata(extra_columns_in_parquet=sorted(extra_in_pq))
 
@@ -439,7 +492,7 @@ class ArchiveMasabi(OdinJob):
         self,
         pool: urllib3.PoolManager,
         url: str,
-        fields: dict[str, str],
+        fields: list[tuple[str, str]],
     ) -> urllib3.BaseHTTPResponse:
         """
         Issue a GET request to the Masabi API, retrying on failure.
@@ -510,17 +563,21 @@ class ArchiveMasabi(OdinJob):
         :param to_ts: inclusive upper bound (ms since UTC epoch)
         """
         url = "/".join([API_ROOT.rstrip("/"), "data-store/query/v2/MBTA", self.table]) + "/"
-        fields: dict[str, str] = {
-            "filter": f"and(gt({ts_key}:{from_ts}),lte({ts_key}:{to_ts}))",
-            "orderBy": f"{ts_key}:asc",
-            "size": str(API_PAGE_SIZE),
-        }
+        fields: list[tuple[str, str]] = [
+            ("filter", f"and(gt({ts_key}:{from_ts}),lte({ts_key}:{to_ts}))"),
+            ("orderBy", f"{ts_key}:asc"),
+            ("size", str(API_PAGE_SIZE)),
+        ]
+        for exc_col in self.schema_check.exclude_cols:
+            fields.append(("exclude", exc_col))
+
         log = ProcessLog("masabi_api_pages", table=self.table, from_ts=from_ts, to_ts=to_ts)
         page_count = 0
         min_hits_per_page = float("inf")
         max_hits_per_page = -1
+        next_page: list[tuple[str, Any]] = []
         while True:
-            r = self._make_request(pool, url, fields)
+            r = self._make_request(pool, url, fields + next_page)
             data: dict[str, Any] = r.json()
             # Each hit is {"type": "<table>", "doc": { ...fields... }}.
             # Unwrap "doc" here so the rest of the pipeline sees flat records.
@@ -534,7 +591,7 @@ class ArchiveMasabi(OdinJob):
             # nextPageId was the *value*, not the key). The correct check is below.
             if "nextPageId" not in data or not hits:
                 break
-            fields["nextPageId"] = data["nextPageId"]
+            next_page = [("nextPageId", data["nextPageId"])]
         log.complete(
             page_count=page_count,
             min_hits_per_page=min_hits_per_page,
@@ -706,11 +763,16 @@ class ArchiveMasabi(OdinJob):
         to_ts = int(time.time() * 1000)
 
         schema = TABLE_SCHEMAS.get(self.table)
+        exclude_cols = TABLE_PII_DROP_COLUMNS.get(self.table, [])
+        if schema is not None:
+            schema = pl.Schema([(x, schema[x]) for x in schema if x not in exclude_cols])
+
         assert schema is not None, f"No schema loaded for {self.table!r}"
         self.schema_check = SchemaCheck(
             schema=schema,
             json_cols=TABLE_JSON_COLS.get(self.table, frozenset()),
             numeric_overrides=TABLE_NUMERIC_OVERRIDES.get(self.table, frozenset()),
+            exclude_cols=exclude_cols,
         )
         log.add_metadata(schema_size=len(self.schema_check.schema))
 
