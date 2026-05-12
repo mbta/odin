@@ -68,10 +68,10 @@ TABLES = [
     "retail.tickets",
     "validation.scans",
     "validation.telemetry",
-    "view.hub_search_account",
-    "view.hub_search_guest_account",
-    "view.hub_search_vendor_sale",
-    "view.validators",
+    # "view.hub_search_account",
+    # "view.hub_search_guest_account",
+    # "view.hub_search_vendor_sale",
+    # "view.validators",
 ]
 
 _YAML_TYPE_MAP: dict[str, pl.DataType] = {
