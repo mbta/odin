@@ -35,7 +35,9 @@ from odin.utils.aws.s3 import upload_file
 from odin.utils.aws.s3 import s3_folder
 from odin.ingestion.qlik.dfm import dfm_from_s3
 from odin.ingestion.qlik.dfm import QlikDFM
-from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES
+from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES_ALPHA
+from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES_BETA
+from odin.utils.instance import get_odin_instance
 
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
 NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
@@ -628,6 +630,8 @@ def schedule_cubic_ods_fact_gen(schedule: sched.scheduler) -> None:
 
     :param schedule: application scheduler
     """
-    for table in CUBIC_ODS_TABLES:
+    instance = get_odin_instance()
+    instance_tables = CUBIC_ODS_TABLES_ALPHA if instance == "alpha" else CUBIC_ODS_TABLES_BETA
+    for table in instance_tables:
         job = CubicODSFact(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))

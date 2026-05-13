@@ -17,6 +17,7 @@ from odin.utils.aws.s3 import s3_folder
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import upload_file
+from odin.utils.instance import get_odin_instance
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_metadata_min_max
 from odin.utils.parquet import pq_dataset_writer
@@ -60,7 +61,7 @@ NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 # Exclusive lower bound for the initial historical backfill: 2020-01-01 00:00:00 UTC (ms).
 MASABI_START_TIMESTAMP_MS: int = 1_577_836_800_000
 
-TABLES = [
+TABLES_ALPHA = [
     "data.external_rider_data",
     "partner.rider_association_events",
     "retail.account_actions",
@@ -76,6 +77,10 @@ TABLES = [
     "view.hub_search_vendor_sale",
     "view.validators",
 ]
+
+TABLES_BETA: list[str] = []
+
+TABLES = TABLES_ALPHA + TABLES_BETA
 
 _YAML_TYPE_MAP: dict[str, pl.DataType] = {
     "string": pl.String(),
@@ -731,6 +736,8 @@ def schedule_masabi_archive(schedule: sched.scheduler) -> None:
 
     :param schedule: application scheduler
     """
-    for table in TABLES:
+    instance = get_odin_instance()
+    instance_tables = TABLES_ALPHA if instance == "alpha" else TABLES_BETA
+    for table in instance_tables:
         job = ArchiveMasabi(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))

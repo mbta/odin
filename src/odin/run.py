@@ -55,6 +55,7 @@ def start():
         aws=[
             "ECS_CLUSTER",
             "ECS_TASK_GROUP",
+            "ODIN_INSTANCE",
         ],
     )
     log_installed_packages()

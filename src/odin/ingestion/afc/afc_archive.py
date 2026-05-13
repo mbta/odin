@@ -22,6 +22,7 @@ from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import upload_file
 from odin.utils.aws.s3 import delete_objects
+from odin.utils.instance import get_odin_instance
 from odin.utils.parquet import ds_metadata_min_max
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import pq_dataset_writer
@@ -41,7 +42,7 @@ NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 API_ROOT = os.getenv("AFC_ROOT", "")
 
 # Table returned by `tableinfos` endpoint as of October 20, 2025
-API_TABLES = [
+API_TABLES_ALPHA = [
     "v_business_entities",
     "v_ca_legal_relations",
     "v_deviceclass",
@@ -85,6 +86,10 @@ API_TABLES = [
     "v_payment_method_instances",
     "v_products",
 ]
+
+API_TABLES_BETA: list[str] = []
+
+API_TABLES = API_TABLES_ALPHA + API_TABLES_BETA
 
 # Per-table list of columns to remove before parquet sync/upload.
 # Populate this mapping with any identified PII fields for public AFC datasets.
@@ -580,6 +585,8 @@ def schedule_afc_archive(schedule: sched.scheduler) -> None:
 
     :param schedule: application scheduler
     """
-    for table in API_TABLES:
+    instance = get_odin_instance()
+    instance_tables = API_TABLES_ALPHA if instance == "alpha" else API_TABLES_BETA
+    for table in instance_tables:
         job = ArchiveAFCAPI(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))

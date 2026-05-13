@@ -11,6 +11,7 @@ from odin.utils.locations import AFC_RESTRICTED
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import upload_file
+from odin.utils.instance import get_odin_instance
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import pq_dataset_writer
 
@@ -96,5 +97,8 @@ def schedule_restricted_afc_archive(schedule: sched.scheduler) -> None:
 
     :param schedule: application scheduler
     """
+    if get_odin_instance() != "alpha":
+        return
+
     job = RestrictedAFC("v_media")
     schedule.enter(0, 1, job_proc_schedule, (job, schedule))
