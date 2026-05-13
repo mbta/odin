@@ -83,6 +83,7 @@ API_TABLES_ALPHA = [
     "v_transit_accounts",
     "v_payment_methods",
     "v_entitlements",
+    "v_entitlements_full",  # temporary full snapshot export containing older data
     "v_payment_method_instances",
     "v_products",
 ]
@@ -565,6 +566,7 @@ class ArchiveAFCAPI(OdinJob):
         May 12, 2025 - API has been updated to always return results from "count" endpoint.
         June 2, 2025 - Updated to handle "static" and "transactional" table types.
         """
+        log = ProcessLog("ArchiveAFCAPI", table=self.table)
         self.start_kwargs = {"table": self.table}
         # Current timetout set to 10 mins, for full PROD deployment should be no more than 2 mins.
         self.req_pool = urllib3.PoolManager(
@@ -576,6 +578,7 @@ class ArchiveAFCAPI(OdinJob):
         self.load_job_ids()
         next_run_duration = self.re_run_check()
         self.sync_parquet()
+        log.complete(run_interval=next_run_duration)
         return next_run_duration
 
 
