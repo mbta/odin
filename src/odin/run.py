@@ -6,7 +6,6 @@ from odin.utils.instance import get_odin_instance
 from odin.utils.runtime import validate_env_vars
 from odin.utils.runtime import log_installed_packages
 from odin.utils.runtime import handle_sigterm
-from odin.utils.runtime import load_config
 from odin.utils.logger import ProcessLog
 from odin.migrate.process import start_migrations
 from odin.utils.aws.ecs import check_for_parallel_tasks
