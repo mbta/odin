@@ -85,6 +85,7 @@ API_TABLES = [
     "v_entitlements_full",  # temporary full snapshot export containing older data
     "v_payment_method_instances",
     "v_products",
+    "v_versions",
 ]
 
 # Per-table list of columns to remove before parquet sync/upload.
