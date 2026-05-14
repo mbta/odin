@@ -2,6 +2,7 @@ import sched
 import signal
 import time
 
+from odin.utils.instance import get_odin_instance
 from odin.utils.runtime import validate_env_vars
 from odin.utils.runtime import log_installed_packages
 from odin.utils.runtime import handle_sigterm
@@ -65,22 +66,19 @@ def start():
     ProcessLog("odin_event_loop")
     schedule = sched.scheduler(time.monotonic, time.sleep)
 
+    odin_instance = get_odin_instance()
+
     # Schedule ODIN Jobs
-    config = load_config()
     schedule_sigterm_check(schedule)
-    if "cubic_archive_qlik" in config:
+    if odin_instance in ["alpha", "beta"]:
         schedule_cubic_archive_qlik(schedule)
-    if "cubic_ods_fact" in config:
         schedule_cubic_ods_fact_gen(schedule)
-    if "afc_archive" in config:
-        schedule_afc_archive(schedule)
-        schedule_restricted_afc_archive(schedule)
-    if "masabi_archive" in config:
         schedule_masabi_archive(schedule)
-    if "data_dictionary" in config:
+        schedule_afc_archive(schedule)
+
+    if odin_instance in ["alpha"]:
+        schedule_restricted_afc_archive(schedule)
+        # schedule_tableau_upload(schedule)
         schedule_dictionary(schedule)
-    # Tableau upload disabled until gateway connection issues are resolved
-    # if "tableau_upload" in config:
-    #     schedule_tableau_upload(schedule)
 
     schedule.run()

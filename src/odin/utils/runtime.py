@@ -148,28 +148,3 @@ def infinite_wait(reason: str) -> None:
         # sleep
         time.sleep(sleep_time_secs)
         secs_since_log += sleep_time_secs
-
-
-def load_config() -> dict[str, Any]:
-    """
-    Load config dictionary from `ODIN_CONFIG` env var or `config.toml` file.
-
-    Will raise if valid config not found.
-
-    :return: Dictionary representing layout of config object.
-    """
-    try:
-        log = ProcessLog("load_config")
-        config_string = os.getenv("ODIN_CONFIG")
-        if config_string is not None:
-            config = tomllib.loads(config_string)
-        else:
-            with open("config.toml", "rb") as f:
-                config = tomllib.load(f)
-        log.complete(config=config)
-
-    except Exception as exception:
-        log.failed(exception=exception)
-        raise exception
-
-    return config

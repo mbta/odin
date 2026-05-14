@@ -1,7 +1,0 @@
-# Uncomment a job and its arguments to start it.
-
-# [cubic_archive_qlik]
-# # job configuration controlled by environment variables
-
-# [cubic_ods_fact]
-# # job configuration controlled by environment variables
