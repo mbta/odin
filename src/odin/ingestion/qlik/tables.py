@@ -21,7 +21,6 @@ CUBIC_ODS_TABLES_ALPHA = [
     "EDW.TRIP_PAYMENT",
     "EDW.SALE_TRANSACTION",
     "EDW.PAYMENT_TYPE_DIMENSION",
-    # "EDW.TRANSACTION_HISTORY", # high memory usage, not used in current reports
     "EDW.FARE_REVENUE_REPORT_SCHEDULE",  # addendum support
     # FMIS
     "EDW.FNP_GENERAL_JRNL_ACCOUNT_ENTRY",
@@ -135,6 +134,8 @@ CUBIC_ODS_TABLES_ALPHA = [
     "EDW.ROUTE_GROUP_DIMENSION",
 ]
 
-CUBIC_ODS_TABLES_BETA: list[str] = []
+CUBIC_ODS_TABLES_BETA: list[str] = [
+    "EDW.TRANSACTION_HISTORY", # high memory usage, not used in current reports
+]
 
 CUBIC_ODS_TABLES = CUBIC_ODS_TABLES_ALPHA + CUBIC_ODS_TABLES_BETA
