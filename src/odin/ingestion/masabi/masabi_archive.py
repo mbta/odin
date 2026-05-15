@@ -157,6 +157,13 @@ TABLE_PII_DROP_COLUMNS: dict[str, list[str]] = {
     "view.validators": ["username"],
 }
 
+TABLE_PII_RESTRICTED_ALLOWED: dict[str, list[str]] = {
+    "retail.rider_entitlement_events": ["proofId"],
+    "retail.activations": ["location"],
+    "retail.ticket_purchases": ["location"],
+    "validation.scans": ["location"],
+    "validation.telemetry": ["location"],
+}
 
 # ---------------------------------------------------------------------------
 # Schema Retrieval
@@ -767,10 +774,10 @@ class ArchiveMasabi(OdinJob):
         to_ts = int(time.time() * 1000)
 
         schema = TABLE_SCHEMAS.get(self.table)
+        exclude_cols = TABLE_PII_DROP_COLUMNS.get(self.table, [])
         if self.restricted:
-            exclude_cols = []
-        else:
-            exclude_cols = TABLE_PII_DROP_COLUMNS.get(self.table, [])
+            restricted_allowed = TABLE_PII_RESTRICTED_ALLOWED.get(self.table, [])
+            exclude_cols = [x for x in exclude_cols if x not in restricted_allowed]
         if schema is not None:
             schema = pl.Schema([(x, schema[x]) for x in schema if x not in exclude_cols])
 
