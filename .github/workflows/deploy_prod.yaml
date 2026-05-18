@@ -13,5 +13,6 @@ jobs:
     uses: ./.github/workflows/deploy_base.yaml
     with:
       environment: prod
+      odin-instance: all
       deploy-odin: true
     secrets: inherit
