@@ -4,11 +4,11 @@ on:
   workflow_call:
     inputs:
       environment:
-        description: One of 'prod', 'staging', or 'dev'
+        description: "One of 'prod', 'staging', or 'dev'"
         required: true
         type: string
       odin-instance:
-        description: Which Odin ECS service instance to deploy: alpha, beta, or all
+        description: "Which Odin ECS service instance to deploy: alpha, beta, or all"
         required: false
         default: all
         type: string
