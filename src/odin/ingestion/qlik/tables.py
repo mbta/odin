@@ -1,3 +1,6 @@
+from odin.utils.instance import get_odin_instance
+
+
 CUBIC_ODS_TABLES_ALPHA = [
     "EDW.FAREREV_RECOVERY_TXN",
     # WA160
@@ -139,3 +142,8 @@ CUBIC_ODS_TABLES_BETA: list[str] = [
 ]
 
 CUBIC_ODS_TABLES = CUBIC_ODS_TABLES_ALPHA + CUBIC_ODS_TABLES_BETA
+
+_ODIN_INSTANCE = get_odin_instance()
+CUBIC_ODS_TABLES_INSTANCE = (
+    CUBIC_ODS_TABLES_ALPHA if _ODIN_INSTANCE == "alpha" else CUBIC_ODS_TABLES_BETA
+)

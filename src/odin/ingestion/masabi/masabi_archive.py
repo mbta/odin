@@ -17,7 +17,7 @@ from odin.utils.aws.s3 import s3_folder
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import upload_file
-from odin.utils.instance import get_odin_instance
+from odin.ingestion.masabi.tables import TABLES_INSTANCE
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_metadata_min_max
 from odin.utils.parquet import pq_dataset_writer
@@ -60,24 +60,6 @@ NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
 # Exclusive lower bound for the initial historical backfill: 2020-01-01 00:00:00 UTC (ms).
 MASABI_START_TIMESTAMP_MS: int = 1_577_836_800_000
-
-TABLES_ALPHA = [
-    "retail.account_actions",
-    "retail.activations",
-    "retail.rider_entitlement_events",
-    "retail.ticket_purchases",
-    "retail.tickets",
-    "validation.scans",
-    "validation.telemetry",
-    # "view.hub_search_account",
-    # "view.hub_search_guest_account",
-    # "view.hub_search_vendor_sale",
-    # "view.validators",
-]
-
-TABLES_BETA: list[str] = []
-
-TABLES = TABLES_ALPHA + TABLES_BETA
 
 _YAML_TYPE_MAP: dict[str, pl.DataType] = {
     "string": pl.String(),
@@ -761,7 +743,7 @@ class ArchiveMasabi(OdinJob):
         pool = self._make_request_pool()
 
         if TABLE_SCHEMAS is None or TABLE_JSON_COLS is None:
-            TABLE_SCHEMAS, TABLE_JSON_COLS = _load_schemas(TABLES, pool)
+            TABLE_SCHEMAS, TABLE_JSON_COLS = _load_schemas(TABLES_INSTANCE, pool)
 
         ts_key = TABLE_TIMESTAMP_OVERRIDES.get(self.table, "serverTimestamp")
         from_ts = self.setup_job(ts_key)
@@ -799,8 +781,6 @@ def schedule_masabi_archive(schedule: sched.scheduler) -> None:
 
     :param schedule: application scheduler
     """
-    instance = get_odin_instance()
-    instance_tables = TABLES_ALPHA if instance == "alpha" else TABLES_BETA
-    for table in instance_tables:
+    for table in TABLES_INSTANCE:
         job = ArchiveMasabi(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))

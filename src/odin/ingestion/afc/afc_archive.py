@@ -22,7 +22,7 @@ from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import upload_file
 from odin.utils.aws.s3 import delete_objects
-from odin.utils.instance import get_odin_instance
+from odin.ingestion.afc.tables import API_TABLES_INSTANCE
 from odin.utils.parquet import ds_metadata_min_max
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import pq_dataset_writer
@@ -41,57 +41,6 @@ NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 
 API_ROOT = os.getenv("AFC_ROOT", "")
 
-# Table returned by `tableinfos` endpoint as of October 20, 2025
-API_TABLES_ALPHA = [
-    "v_business_entities",
-    "v_ca_legal_relations",
-    "v_deviceclass",
-    "v_eventgroup",
-    "v_eventhistory",
-    "v_eventtext",
-    "v_legal_persons",
-    "v_mainshift",
-    "v_medium_types",
-    "v_person",
-    "v_product_templates",
-    "v_routes",
-    "v_sales_txns",
-    "v_shiftevent",
-    "v_stop_points",
-    "v_ta_ca_relations",
-    "v_ta_legal_relations",
-    "v_trips",
-    "v_tvmstation",
-    "v_tvmtable",
-    "v_validation_taps",
-    "v_cashless_payments",
-    "v_inspections",
-    "v_tsmstatus",
-    "v_salesdetail",
-    "v_salestransaction",
-    "v_lines",
-    "v_users",
-    "v_groups_roles",
-    "v_user_group_relations",
-    "v_cashtype",
-    "v_cashboxmovement",
-    "v_cashboxmovementmoneydetails",
-    "v_moneycontainersum",
-    "v_moneycontainercontentsum",
-    "v_accesslevel",
-    "v_svw_balance_changes",
-    "v_transit_accounts",
-    "v_payment_methods",
-    "v_entitlements",
-    "v_entitlements_full",  # temporary full snapshot export containing older data
-    "v_payment_method_instances",
-    "v_products",
-]
-
-API_TABLES_BETA: list[str] = []
-
-API_TABLES = API_TABLES_ALPHA + API_TABLES_BETA
-
 # Per-table list of columns to remove before parquet sync/upload.
 # Populate this mapping with any identified PII fields for public AFC datasets.
 API_TABLE_PII_DROP_COLUMNS: dict[str, list[str]] = {
@@ -103,7 +52,7 @@ API_TABLE_PII_DROP_COLUMNS: dict[str, list[str]] = {
 
 
 API_TABLE_START_JOBID = {}
-if os.getenv("ECS_TASK_GROUP") == "family:odin-prod":
+if os.getenv("ECS_TASK_GROUP", "").startswith("family:odin-prod"):
     API_TABLE_START_JOBID.update(
         {
             "v_salesdetail": 10607794,
@@ -588,8 +537,6 @@ def schedule_afc_archive(schedule: sched.scheduler) -> None:
 
     :param schedule: application scheduler
     """
-    instance = get_odin_instance()
-    instance_tables = API_TABLES_ALPHA if instance == "alpha" else API_TABLES_BETA
-    for table in instance_tables:
+    for table in API_TABLES_INSTANCE:
         job = ArchiveAFCAPI(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))
