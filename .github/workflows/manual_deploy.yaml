@@ -13,8 +13,6 @@ on:
         type: choice
         options:
           - all
-          - alpha
-          - beta
         default: all
       deploy-odin:
         description: Deploy Odin
