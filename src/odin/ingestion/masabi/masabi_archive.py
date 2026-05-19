@@ -12,12 +12,12 @@ import pyarrow.parquet as pq
 
 from odin.utils.logger import ProcessLog
 from odin.job import OdinJob, job_proc_schedule
-from odin.utils.locations import DATA_SPRINGBOARD, MASABI_DATA, MASABI_RESTRICTED
+from odin.utils.locations import DATA_SPRINGBOARD, MASABI_DATA
 from odin.utils.aws.s3 import s3_folder
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import upload_file
-from odin.ingestion.masabi.tables import TABLES_INSTANCE
+from odin.ingestion.masabi.masabi_tables import TABLES_INSTANCE
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_metadata_min_max
 from odin.utils.parquet import pq_dataset_writer
@@ -144,13 +144,6 @@ TABLE_PII_DROP_COLUMNS: dict[str, list[str]] = {
     "view.validators": ["username"],
 }
 
-TABLE_PII_RESTRICTED_ALLOWED: dict[str, list[str]] = {
-    "retail.rider_entitlement_events": ["proofId"],
-    "retail.activations": ["location"],
-    "retail.ticket_purchases": ["location"],
-    "validation.scans": ["location"],
-    "validation.telemetry": ["location"],
-}
 
 # ---------------------------------------------------------------------------
 # Schema Retrieval
@@ -467,15 +460,11 @@ class SchemaCheck:
 class ArchiveMasabi(OdinJob):
     """Basic Odin job stub for Masabi ingestion."""
 
-    def __init__(self, table: str, restricted: bool = False) -> None:
+    def __init__(self, table: str) -> None:
         """Create Job instance."""
         self.table = table
-        self.restricted = restricted
         self.start_kwargs = {"table": table}
-        if restricted:
-            self.export_folder = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_RESTRICTED, table))
-        else:
-            self.export_folder = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_DATA, table))
+        self.export_folder = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_DATA, table))
         self._last_request_time: float = 0.0
 
     def _make_request_pool(self) -> urllib3.PoolManager:
@@ -762,9 +751,6 @@ class ArchiveMasabi(OdinJob):
 
         schema = TABLE_SCHEMAS.get(self.table)
         exclude_cols = TABLE_PII_DROP_COLUMNS.get(self.table, [])
-        if self.restricted:
-            restricted_allowed = TABLE_PII_RESTRICTED_ALLOWED.get(self.table, [])
-            exclude_cols = [x for x in exclude_cols if x not in restricted_allowed]
         if schema is not None:
             schema = pl.Schema([(x, schema[x]) for x in schema if x not in exclude_cols])
 
@@ -798,6 +784,3 @@ def schedule_masabi_archive(schedule: sched.scheduler) -> None:
     for table in TABLES_INSTANCE:
         job = ArchiveMasabi(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))
-        if table in TABLE_PII_DROP_COLUMNS:
-            restricted_job = ArchiveMasabi(table, True)
-            schedule.enter(0, 1, job_proc_schedule, (restricted_job, schedule))

@@ -22,7 +22,7 @@ from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import upload_file
 from odin.utils.aws.s3 import delete_objects
-from odin.ingestion.afc.tables import API_TABLES_INSTANCE
+from odin.ingestion.afc.afc_tables import API_TABLES_INSTANCE
 from odin.utils.parquet import ds_metadata_min_max
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import pq_dataset_writer
