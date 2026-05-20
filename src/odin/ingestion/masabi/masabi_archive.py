@@ -811,6 +811,6 @@ def schedule_masabi_archive(schedule: sched.scheduler) -> None:
     for table in TABLES:
         job = ArchiveMasabi(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))
-        if table in TABLE_PII_DROP_COLUMNS:
+        if table in TABLE_PII_RESTRICTED_ALLOWED:
             restricted_job = ArchiveMasabi(table, True)
             schedule.enter(0, 1, job_proc_schedule, (restricted_job, schedule))
