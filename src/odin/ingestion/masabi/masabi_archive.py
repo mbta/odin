@@ -472,7 +472,7 @@ class ArchiveMasabi(OdinJob):
         """Create Job instance."""
         self.table = table
         self.restricted = restricted
-        self.start_kwargs = {"table": table}
+        self.start_kwargs = {"table": table, "restricted": restricted}
         if restricted:
             self.export_folder = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_RESTRICTED, table))
         else:
