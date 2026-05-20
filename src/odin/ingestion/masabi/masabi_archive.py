@@ -121,6 +121,7 @@ TABLE_PII_DROP_COLUMNS: dict[str, list[str]] = {
         "cardSignature",
         "email",
         "ipAddress",
+        "location",
         "panFirstSix",
         "panLastFour",
         "salesAgent",
