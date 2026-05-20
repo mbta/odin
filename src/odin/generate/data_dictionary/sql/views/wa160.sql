@@ -57,7 +57,10 @@ SELECT
     coalesce(one_account_value, 0) as one_account_value,
     coalesce(ut.restricted_purse_value, 0) as restricted_purse_value,
     coalesce(ut.refundable_purse_value, 0) as refundable_purse_value,
-    coalesce(ut.uncollectible_amount, 0)::double / 100 as uncollectible_amount
+    coalesce(ut.uncollectible_amount, 0)::double / 100 as uncollectible_amount,
+    tad.is_registered,
+    coalesce(ut.discount_amount, 0)::double / 100 AS discount_amount,
+    coalesce(ut.post_pay_amount, 0)::double / 100 AS post_pay_amount
 FROM
     cubic_ods.edw_use_transaction ut
 LEFT JOIN
