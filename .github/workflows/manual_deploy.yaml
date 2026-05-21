@@ -8,6 +8,12 @@ on:
         type: choice
         options:
           - dev
+      odin-instance:
+        description: Which Odin ECS service to deploy
+        type: choice
+        options:
+          - all
+        default: all
       deploy-odin:
         description: Deploy Odin
         default: false
@@ -16,11 +22,12 @@ on:
 jobs:
   deploy:
     concurrency:
-      group: github.event.inputs.environment
+      group: ${{ github.event.inputs.odin-instance }}-${{ github.event.inputs.environment }}
     uses: ./.github/workflows/deploy_base.yaml
     with:
       # pass the inputs from the workflow dispatch through to the deploy base. the booleans are
       # converted to strings, so flip them back using fromJson function
       environment: ${{ github.event.inputs.environment }}
+      odin-instance: ${{ github.event.inputs.odin-instance }}
       deploy-odin: ${{ fromJson(github.event.inputs.deploy-odin) }}
     secrets: inherit

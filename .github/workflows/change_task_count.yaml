@@ -9,6 +9,14 @@ on:
         options:
           - dev
           - prod
+      odin-instance:
+        type: choice
+        description: Which Odin ECS service(s) to update
+        options:
+          - all
+          - alpha
+          - beta
+        default: all
       new_count:
         description: 1 to turn on 0 to turn off
         required: true
@@ -31,9 +39,17 @@ jobs:
           aws-region: us-east-1
       - name: Run ECS Update Service Command
         # yamllint disable rule:line-length
-        run: >
-          aws ecs update-service
-          --cluster odin
-          --service odin-${{ github.event.inputs.environment }}
-          --desired-count ${{ github.event.inputs.new_count }}
+        run: |
+          if [[ "${{ github.event.inputs.odin-instance }}" == "all" ]]; then
+            services=("odin-alpha-${{ github.event.inputs.environment }}" "odin-beta-${{ github.event.inputs.environment }}")
+          else
+            services=("odin-${{ github.event.inputs.odin-instance }}-${{ github.event.inputs.environment }}")
+          fi
+
+          for service in "${services[@]}"; do
+            aws ecs update-service \
+              --cluster odin \
+              --service "$service" \
+              --desired-count "${{ github.event.inputs.new_count }}"
+          done
         # yamllint enable

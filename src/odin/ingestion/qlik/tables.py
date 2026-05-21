@@ -1,4 +1,7 @@
-CUBIC_ODS_TABLES = [
+from odin.utils.instance import get_odin_instance
+
+
+CUBIC_ODS_TABLES_ALPHA = [
     "EDW.FAREREV_RECOVERY_TXN",
     # WA160
     "EDW.DATE_DIMENSION",
@@ -21,7 +24,6 @@ CUBIC_ODS_TABLES = [
     "EDW.TRIP_PAYMENT",
     "EDW.SALE_TRANSACTION",
     "EDW.PAYMENT_TYPE_DIMENSION",
-    # "EDW.TRANSACTION_HISTORY", # high memory usage, not used in current reports
     "EDW.FARE_REVENUE_REPORT_SCHEDULE",  # addendum support
     # FMIS
     "EDW.FNP_GENERAL_JRNL_ACCOUNT_ENTRY",
@@ -134,3 +136,14 @@ CUBIC_ODS_TABLES = [
     "EDW.TIME_PERIOD_DIMENSION",
     "EDW.ROUTE_GROUP_DIMENSION",
 ]
+
+CUBIC_ODS_TABLES_BETA: list[str] = [
+    "EDW.TRANSACTION_HISTORY",  # high memory usage, not used in current reports
+]
+
+CUBIC_ODS_TABLES = CUBIC_ODS_TABLES_ALPHA + CUBIC_ODS_TABLES_BETA
+
+_ODIN_INSTANCE = get_odin_instance()
+CUBIC_ODS_TABLES_INSTANCE = (
+    CUBIC_ODS_TABLES_ALPHA if _ODIN_INSTANCE == "alpha" else CUBIC_ODS_TABLES_BETA
+)

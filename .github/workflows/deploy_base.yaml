@@ -4,8 +4,13 @@ on:
   workflow_call:
     inputs:
       environment:
-        description: One of 'prod', 'staging', or 'dev'
+        description: "One of 'prod', 'staging', or 'dev'"
         required: true
+        type: string
+      odin-instance:
+        description: "Which Odin ECS service instance to deploy: alpha, beta, or all"
+        required: false
+        default: all
         type: string
       deploy-odin:
         description: Should the Odin Application be Deployed
@@ -50,13 +55,23 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           docker-repo: ${{ secrets.DOCKER_REPO }}
           docker-additional-args: --build-arg VERSION=${{ env.version }}
-      - name: Deploy Odin Application
-        id: deploy-odin
-        if: ${{ inputs.deploy-odin }}
+      - name: Deploy Odin Alpha Service
+        id: deploy-odin-alpha
+        if: ${{ inputs.deploy-odin && (inputs.odin-instance == 'all' || inputs.odin-instance == 'alpha') }}
         uses: mbta/actions/deploy-ecs@v2
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           ecs-cluster: odin
-          ecs-service: odin-${{ inputs.environment }}
+          ecs-service: odin-alpha-${{ inputs.environment }}
+          docker-tag: ${{ steps.build-push.outputs.docker-tag }}
+          allow-zero-desired: false
+      - name: Deploy Odin Beta Service
+        id: deploy-odin-beta
+        if: ${{ inputs.deploy-odin && (inputs.odin-instance == 'all' || inputs.odin-instance == 'beta') }}
+        uses: mbta/actions/deploy-ecs@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          ecs-cluster: odin
+          ecs-service: odin-beta-${{ inputs.environment }}
           docker-tag: ${{ steps.build-push.outputs.docker-tag }}
           allow-zero-desired: false
