@@ -81,6 +81,4 @@ Running `start-odin` from the CLI will start the application.
 
 ## Job Configuration
 
-Which jobs to run, and their configuration, is controlled by a file `config.toml`. (It can also be passed in as an environment variable `ODIN_CONFIG`).
-
-Copy `config.toml.template` to `config.toml`, then uncomment the jobs you want to be started when the application starts.
+When running in aws, these jobs are set to run based on their specific instance of Odin ("alpha" or "beta"), as are specific tables. Set the environment variable `ODIN_INSTANCE` to one of these to run the jobs and tables associated with that instance (see src/odin/run.py for details).

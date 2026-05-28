@@ -67,6 +67,8 @@ class ProcessLog:
 
         self.default_data["parent"] = "odin"
         self.default_data["process"] = process
+        self.default_data["odin_instance"] = os.getenv("ODIN_INSTANCE", "local")
+        self.default_data["ecs_task_group"] = os.getenv("ECS_TASK_GROUP", "no_task_group")
 
         self.start_time = 0.0
         self.uuid = ""
