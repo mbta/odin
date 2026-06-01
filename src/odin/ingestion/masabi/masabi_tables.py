@@ -2,12 +2,7 @@ from odin.utils.instance import get_odin_instance
 
 
 TABLES_ALPHA = [
-    "retail.account_actions",
-    "retail.activations",
     "retail.rider_entitlement_events",
-    "retail.ticket_purchases",
-    "retail.tickets",
-    "validation.scans",
     "validation.telemetry",
     # "view.hub_search_account",
     # "view.hub_search_guest_account",
@@ -15,7 +10,13 @@ TABLES_ALPHA = [
     # "view.validators",
 ]
 
-TABLES_BETA: list[str] = []
+TABLES_BETA: list[str] = [
+    "retail.account_actions",
+    "retail.activations",
+    "retail.ticket_purchases",
+    "retail.tickets",
+    "validation.scans",
+]
 
 TABLES = TABLES_ALPHA + TABLES_BETA
 
