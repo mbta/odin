@@ -1,5 +1,6 @@
 import os
 import sched
+from typing import Any
 from typing import List
 from typing import Tuple
 
@@ -41,6 +42,10 @@ NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
 NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 MAX_LOAD_RECORDS = 10_000
+CDC_BATCH_MAX_NBYTES = 96 * 1024 * 1024
+CDC_ACCUMULATION_MAX_NBYTES = 192 * 1024 * 1024
+CDC_ACCUMULATION_MAX_ROWS = MAX_LOAD_RECORDS * 4
+MAX_CDC_ACCUMULATION_BATCHES = 11
 
 
 class NoQlikHistoryError(Exception):
@@ -90,6 +95,14 @@ def dfm_from_cdc_records(cdc_df: pl.DataFrame) -> QlikDFM:
     dfm_path = dfm_path.replace("s3://", "").split("/", 1)[-1]
     dfm_path = os.path.join(DATA_ARCHIVE, CUBIC_QLIK_PROCESSED, dfm_path)
     return dfm_from_s3(dfm_path)
+
+
+def pl_df_nbytes(frame: pl.DataFrame) -> int:
+    """Return an approximate in-memory size for a polars dataframe."""
+    try:
+        return int(frame.estimated_size())
+    except AttributeError:
+        return frame.to_arrow().nbytes
 
 
 class CubicODSFact(OdinJob):
@@ -297,6 +310,48 @@ class CubicODSFact(OdinJob):
         )
         load_complete_log.complete()
 
+    def _accumulate_cdc_frames(
+        self, min_sort_value: Any | None, cdc_filter: pc.Expression
+    ) -> tuple[list[pl.DataFrame], int, int]:
+        """Collect CDC frames within byte and row budgets."""
+        all_cdc_frames: list[pl.DataFrame] = []
+        current_min_seq = min_sort_value
+        total_cdc_rows = 0
+        total_cdc_nbytes = 0
+
+        for _ in range(MAX_CDC_ACCUMULATION_BATCHES):
+            remaining_rows = CDC_ACCUMULATION_MAX_ROWS - total_cdc_rows
+            remaining_nbytes = CDC_ACCUMULATION_MAX_NBYTES - total_cdc_nbytes
+            if remaining_rows <= 0 or remaining_nbytes <= 0:
+                break
+
+            batch_df = ds_metadata_limit_k_sorted(
+                ds=self.history_ds,
+                sort_column="header__change_seq",
+                min_sort_value=current_min_seq,
+                ds_filter=cdc_filter,
+                ds_filter_columns=["header__change_oper"],
+                max_nbytes=min(CDC_BATCH_MAX_NBYTES, remaining_nbytes),
+            )
+            if batch_df.height == 0:
+                break
+
+            if batch_df.height > remaining_rows:
+                batch_df = batch_df.head(remaining_rows)
+
+            all_cdc_frames.append(batch_df)
+            current_min_seq = batch_df.get_column("header__change_seq").max()
+            total_cdc_rows += batch_df.height
+            total_cdc_nbytes += pl_df_nbytes(batch_df)
+
+            if (
+                total_cdc_rows >= CDC_ACCUMULATION_MAX_ROWS
+                or total_cdc_nbytes >= CDC_ACCUMULATION_MAX_NBYTES
+            ):
+                break
+
+        return all_cdc_frames, total_cdc_rows, total_cdc_nbytes
+
     def load_cdc_records(self) -> int:
         """
         Load CDC records and apply to fact table.
@@ -333,6 +388,9 @@ class CubicODSFact(OdinJob):
             initial_row_count=initial_row_count,
             max_fact_seq=str(max_fact_seq),
             max_odin_index=str(max_odin_index),
+            cdc_batch_max_nbytes=CDC_BATCH_MAX_NBYTES,
+            cdc_accumulation_max_nbytes=CDC_ACCUMULATION_MAX_NBYTES,
+            cdc_accumulation_max_rows=CDC_ACCUMULATION_MAX_ROWS,
         )
 
         # --- Step 2: Accumulate CDC records ---
@@ -341,28 +399,12 @@ class CubicODSFact(OdinJob):
             | (pc.field("header__change_oper") == "D")
             | (pc.field("header__change_oper") == "U")
         )
-        all_cdc_frames: list[pl.DataFrame] = []
-        current_min_seq = max_fact_seq
-        max_load_records = MAX_LOAD_RECORDS
-        for _ in range(11):
-            batch_df = ds_metadata_limit_k_sorted(
-                ds=self.history_ds,
-                sort_column="header__change_seq",
-                min_sort_value=current_min_seq,
-                ds_filter=cdc_filter,
-                ds_filter_columns=["header__change_oper"],
-            )
-            if batch_df.height == 0:
-                break
-            all_cdc_frames.append(batch_df)
-            current_min_seq = batch_df.get_column("header__change_seq").max()
-            max_load_records = max(max_load_records, batch_df.height)
-            total_cdc = sum(f.height for f in all_cdc_frames)
-            if total_cdc > max_load_records:
-                break
+        all_cdc_frames, total_cdc_rows, total_cdc_nbytes = self._accumulate_cdc_frames(
+            max_fact_seq, cdc_filter
+        )
 
         if not all_cdc_frames:
-            logger.complete(cdc_records_found=0)
+            logger.complete(cdc_records_found=0, cdc_accumulated_nbytes=0)
             return NEXT_RUN_LONG
 
         cdc_df = pl.concat(all_cdc_frames, how="diagonal")
@@ -527,18 +569,28 @@ class CubicODSFact(OdinJob):
 
         # Check if more CDC records are available
         ds_available_count = 0
+        ds_available_nbytes = 0
         if cdc_df.height > 0:
-            ds_available_count = ds_metadata_limit_k_sorted(
+            ds_available_preview = ds_metadata_limit_k_sorted(
                 ds=self.history_ds,
                 sort_column="header__change_seq",
                 min_sort_value=cdc_df.get_column("header__change_seq").max(),
                 ds_filter=cdc_filter,
                 ds_filter_columns=["header__change_oper"],
-                max_rows=max_load_records,
-            ).height
+                max_nbytes=CDC_BATCH_MAX_NBYTES,
+            )
+            ds_available_count = ds_available_preview.height
+            if ds_available_count > 0:
+                ds_available_nbytes = pl_df_nbytes(ds_available_preview)
+
+        cdc_budget_nearly_full = total_cdc_rows >= int(
+            0.9 * CDC_ACCUMULATION_MAX_ROWS
+        ) or total_cdc_nbytes >= int(0.9 * CDC_ACCUMULATION_MAX_NBYTES)
 
         logger.complete(
             cdc_records_processed=cdc_df.height,
+            cdc_accumulated_rows=total_cdc_rows,
+            cdc_accumulated_nbytes=total_cdc_nbytes,
             resolved_inserts=resolved_inserts.height,
             resolved_updates=resolved_updates.height,
             resolved_deletes=resolved_deletes.height,
@@ -550,9 +602,11 @@ class CubicODSFact(OdinJob):
             s3_verify_seq_min=str(verify_min),
             s3_verify_seq_max=str(verify_max),
             ds_available_count=ds_available_count,
+            ds_available_nbytes=ds_available_nbytes,
+            cdc_budget_nearly_full=cdc_budget_nearly_full,
         )
 
-        if ds_available_count > int(0.9 * max_load_records):
+        if cdc_budget_nearly_full and ds_available_count > 0:
             return NEXT_RUN_IMMEDIATE
         return NEXT_RUN_DEFAULT
 
