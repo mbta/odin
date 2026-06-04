@@ -583,10 +583,9 @@ class CubicODSFact(OdinJob):
             if ds_available_count > 0:
                 ds_available_nbytes = pl_df_nbytes(ds_available_preview)
 
-        cdc_budget_nearly_full = (
-            total_cdc_rows >= int(0.9 * CDC_ACCUMULATION_MAX_ROWS)
-            or total_cdc_nbytes >= int(0.9 * CDC_ACCUMULATION_MAX_NBYTES)
-        )
+        cdc_budget_nearly_full = total_cdc_rows >= int(
+            0.9 * CDC_ACCUMULATION_MAX_ROWS
+        ) or total_cdc_nbytes >= int(0.9 * CDC_ACCUMULATION_MAX_NBYTES)
 
         logger.complete(
             cdc_records_processed=cdc_df.height,
