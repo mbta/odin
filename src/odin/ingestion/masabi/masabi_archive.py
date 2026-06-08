@@ -711,7 +711,10 @@ class ArchiveMasabi(OdinJob):
             local_last = os.path.join(self.tmpdir, last_s3.replace("/table_", "/temp_"))
             download_object(found_objs[-1].path, local_last)
             self.schema_check.check_parquet_schema(local_last)
+            local_dir = os.path.dirname(local_last)
             sync_paths.append(local_last)
+        else:
+            local_dir = self.export_folder.replace("s3://", "")
         sync_paths.append(pq_path)
 
         new_row_count = ds_from_path(pq_path).count_rows()
@@ -719,7 +722,7 @@ class ArchiveMasabi(OdinJob):
 
         new_paths = pq_dataset_writer(
             source=ds_from_path(sync_paths),
-            export_folder=os.path.join(self.tmpdir, self.export_folder),
+            export_folder=local_dir, self.export_folder),
             export_file_prefix="table",
         )
 
