@@ -58,8 +58,8 @@ NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
 NEXT_RUN_IMMEDIATE = 60  # 1 minute
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
-# Exclusive lower bound for the initial historical backfill: 2020-01-01 00:00:00 UTC (ms).
-MASABI_START_TIMESTAMP_MS: int = 1_577_836_800_000
+# Exclusive lower bound for the initial historical backfill: 2025-06-01 00:00:00 UTC (ms).
+MASABI_START_TIMESTAMP_MS: int = 1_748_736_000_000
 
 _YAML_TYPE_MAP: dict[str, pl.DataType] = {
     "string": pl.String(),
@@ -799,6 +799,6 @@ def schedule_masabi_archive(schedule: sched.scheduler) -> None:
     for table in TABLES_INSTANCE:
         job = ArchiveMasabi(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))
-        if table in TABLE_PII_RESTRICTED_ALLOWED:
-            restricted_job = ArchiveMasabi(table, True)
-            schedule.enter(0, 1, job_proc_schedule, (restricted_job, schedule))
+        # if table in TABLE_PII_RESTRICTED_ALLOWED:
+        #     restricted_job = ArchiveMasabi(table, True)
+        #     schedule.enter(0, 1, job_proc_schedule, (restricted_job, schedule))
