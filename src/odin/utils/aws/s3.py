@@ -336,6 +336,65 @@ def delete_objects(objects: List[str]):
     return failed_delete
 
 
+def copy_object(from_object: str, to_object: str) -> str | None:
+    """
+    Copy an S3 object.
+
+    :param from_object: COPY from as 's3://bucket/object' or 'bucket/object'
+    :param to_object: COPY to as 's3://bucket/object' or 'bucket/object'
+
+    :return: 'from_object' if failed, else None
+    """
+    logger = ProcessLog("copy_object", from_object=from_object, to_object=to_object)
+    try:
+        client = get_client()
+        copy_source = os.path.join(*split_object(from_object))
+        to_bucket, to_key = split_object(to_object)
+
+        client.copy_object(
+            Bucket=to_bucket,
+            CopySource=copy_source,
+            Key=to_key,
+        )
+
+        logger.complete()
+        return None
+
+    except Exception as exception:
+        logger.failed(exception)
+
+    return from_object
+
+
+def copy_objects(copy_tuples: list[tuple[str, str]]) -> list[str]:
+    """
+    Copy a list of S3 objects sequentially.
+
+    :param copy_tuples: list of tuples[from_object, to_object]
+
+    :return: list of objects that failed to copy
+    """
+    if len(copy_tuples) == 0:
+        return []
+
+    logger = ProcessLog("copy_objects", object_count=len(copy_tuples))
+    failed_copy = []
+
+    for from_object, to_object in copy_tuples:
+        result = copy_object(from_object, to_object)
+        if isinstance(result, str):
+            failed_copy.append(result)
+
+    logger.add_metadata(failed_count=len(failed_copy))
+    if len(failed_copy) == 0:
+        logger.complete()
+    else:
+        exception = FileExistsError(f"Failed to copy S3 objects: ({','.join(failed_copy)})")
+        logger.failed(exception=exception)
+
+    return failed_copy
+
+
 def rename_object(from_object: str, to_object: str) -> str | None:
     """
     Rename an S3 object as copy and delete operation.
