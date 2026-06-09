@@ -55,7 +55,7 @@ API_MIN_REQUEST_INTERVAL_S: float = 1.0
 
 # Rescheduling time intervals
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
-NEXT_RUN_IMMEDIATE = 1  # 1 minute  ## TESTING
+NEXT_RUN_IMMEDIATE = 1  # 1 minute  ### TESTING
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
 # Exclusive lower bound for the initial historical backfill: 2020-01-01 00:00:00 UTC (ms).
