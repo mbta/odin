@@ -31,3 +31,4 @@ AFC_RESTRICTED = f"{ODIN_DATA}/sb/restricted"
 # Masabi
 MASABI_DATA = f"{ODIN_DATA}/masabi/api"
 MASABI_RESTRICTED = f"{ODIN_DATA}/masabi/restricted"
+MASABI_TEMP = f"{ODIN_DATA}/masabi/temporary"
