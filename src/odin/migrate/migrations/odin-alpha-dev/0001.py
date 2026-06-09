@@ -25,9 +25,7 @@ def migration() -> None:
     )
 
     source_objects = [obj.path for obj in list_objects(source_prefix)]
-    copy_jobs = [
-        (obj, obj.replace(source_prefix, destination_prefix, 1)) for obj in source_objects
-    ]
+    copy_jobs = [(obj, obj.replace(source_prefix, destination_prefix, 1)) for obj in source_objects]
     failures = copy_objects(copy_jobs)
 
     log.add_metadata(
