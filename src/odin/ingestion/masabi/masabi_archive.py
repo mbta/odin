@@ -727,9 +727,6 @@ class ArchiveMasabi(OdinJob):
             export_file_prefix="table",
         )
 
-        if len(new_paths) > 1:
-            raise NotImplementedError("Fix for parquet rollover not yet implemented.")
-
         # Perform S3 upload after sigterm check — uploads cannot be rolled back.
         sigterm_check()
         for new_path in new_paths:
