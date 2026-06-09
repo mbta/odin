@@ -42,7 +42,7 @@ _SCHEMA_URL = os.getenv("MASABI_DATA_SCHEMA_URL", "")
 
 # Maximum update size: Adjust to match the maximum size that can be safely handled
 # by the ECS environment's RAM and disk resources.
-MAXIMUM_ROWS_PER_RUN = 10001
+MAXIMUM_ROWS_PER_RUN = 100001
 
 # Retry config for individual API page requests.
 # On a non-200 response or network error, the request is retried up to
@@ -55,7 +55,7 @@ API_MIN_REQUEST_INTERVAL_S: float = 1.0
 
 # Rescheduling time intervals
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
-NEXT_RUN_IMMEDIATE = 1  # 1 minute  ### TESTING
+NEXT_RUN_IMMEDIATE = 60  # 1 minute
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
 # Exclusive lower bound for the initial historical backfill: 2020-01-01 00:00:00 UTC (ms).
@@ -725,9 +725,6 @@ class ArchiveMasabi(OdinJob):
             source=ds_from_path(sync_paths),
             export_folder=local_dir,
             export_file_prefix="table",
-            mb_per_file=0,  # For testing only!
-            mb_per_group_disk=1,
-            mb_per_group_mem=1
         )
 
         # Perform S3 upload after sigterm check — uploads cannot be rolled back.
