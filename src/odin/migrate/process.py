@@ -94,8 +94,9 @@ def start_migrations():
     To create/run a new migration, create a new incremented python file in the folder of the
     ECS task/environment you want to run a migration for.
 
-    For migration on odin dev environment (task_name=odin-dev):
-        -> odin > migrate > migrations > odin-dev > 000X.py
+    For migration on split alpha task groups:
+        -> odin > migrate > migrations > odin-alpha-dev > 000X.py
+        -> odin > migrate > migrations > odin-alpha-prod > 000X.py
 
     Note:
         Any files in the migration folder not following the migration file format will
