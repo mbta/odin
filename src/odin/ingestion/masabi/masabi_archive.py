@@ -59,7 +59,7 @@ NEXT_RUN_IMMEDIATE = 60  # 1 minute
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
 # Exclusive lower bound for the initial historical backfill: 2025-06-01 00:00:00 UTC (ms).
-MASABI_START_TIMESTAMP_MS: int = 1_748_736_000_000
+MASABI_START_TIMESTAMP_MS: int = 1_577_836_800_000
 
 _YAML_TYPE_MAP: dict[str, pl.DataType] = {
     "string": pl.String(),
