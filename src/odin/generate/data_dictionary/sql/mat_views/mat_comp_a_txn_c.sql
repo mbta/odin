@@ -234,4 +234,4 @@ farerev_prod_sales_txn_c AS
     settlement_day_key
 FROM
     EDW_farerev_prod_sales_txn_c)
-SELECT * FROM farerev_prod_sales_txn_c;
+SELECT * FROM farerev_prod_sales_txn_c

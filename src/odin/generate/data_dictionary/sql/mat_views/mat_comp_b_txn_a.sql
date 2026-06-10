@@ -207,4 +207,4 @@ SELECT
 FROM
     EDW_farerev_payg_trip_txn_a)
 SELECT *
-FROM farerev_payg_trip_txn_a;
+FROM farerev_payg_trip_txn_a

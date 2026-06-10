@@ -243,4 +243,4 @@ SELECT DISTINCT
     settlement_day_key
 FROM
     EDW_farerev_prod_sales_txn_a)
-SELECT * FROM farerev_prod_sales_txn_a;
+SELECT * FROM farerev_prod_sales_txn_a
