@@ -91,7 +91,7 @@ def create_fares_db(folder: str) -> str:
 
     :return: full path of created DB file.
     """
-    spill_path = os.path.join(folder, 'duckdb_spill')
+    spill_path = os.path.join(folder, "duckdb_spill")
     os.makedirs(spill_path, exist_ok=True)
 
     write_path = os.path.join(folder, DB_FILE)
