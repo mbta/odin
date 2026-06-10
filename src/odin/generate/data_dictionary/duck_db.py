@@ -91,12 +91,15 @@ def create_fares_db(folder: str) -> str:
 
     :return: full path of created DB file.
     """
+    spill_path = os.path.join(folder, "duckdb_spill")
+    os.makedirs(spill_path, exist_ok=True)
+
     write_path = os.path.join(folder, DB_FILE)
     with duckdb.connect(write_path) as con:
         # Hopefully this works on ECS...
         con.execute("CREATE OR REPLACE SECRET secret (TYPE s3, PROVIDER credential_chain);")
 
-        con.execute(f"SET temp_directory = '{os.path.join(folder, 'duckdb_spill')}'")
+        con.execute(f"SET temp_directory = '{spill_path}'")
         con.execute("SET memory_limit='15GB'")
         con.execute("SET threads='2'")
         con.execute("PRAGMA disable_progress_bar;")
