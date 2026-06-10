@@ -136,6 +136,7 @@ def create_fares_db(folder: str) -> str:
 
             except Exception as exception:
                 view_log.failed(exception=exception)
+            view_log.complete()
         for view_file in files("odin.generate.data_dictionary.sql.views").iterdir():
             if not view_file.name.endswith(".sql"):
                 continue

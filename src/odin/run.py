@@ -78,6 +78,8 @@ def start():
     if odin_instance in ["alpha"]:
         schedule_restricted_afc_archive(schedule)
         # schedule_tableau_upload(schedule)
+
+    if odin_instance in ["beta"]:
         schedule_dictionary(schedule)
 
     schedule.run()
