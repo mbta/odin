@@ -23,6 +23,7 @@ from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import upload_file
 from odin.utils.aws.s3 import delete_objects
 from odin.ingestion.afc.afc_tables import API_TABLES_INSTANCE
+from odin.ingestion.afc.afc_tables import _ODIN_INSTANCE
 from odin.utils.parquet import ds_metadata_min_max
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import pq_dataset_writer
@@ -38,6 +39,7 @@ class APIEmptyResponseError(Exception):
 
 
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
+NEXT_RUN_BETA = 60 * 60  # 1 hour
 
 API_ROOT = os.getenv("AFC_ROOT", "")
 
@@ -480,7 +482,7 @@ class ArchiveAFCAPI(OdinJob):
         If `count` returning more than 1 job, based on self.max_job_id, more jobs available.
         """
         log = ProcessLog("re_run_check", table=self.table, max_job_id=self.max_job_id)
-        return_duration = NEXT_RUN_DEFAULT
+        return_duration = NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_DEFAULT
         if self.max_job_id > 0:
             r = self.make_request(
                 url=f"{API_ROOT}/count",
