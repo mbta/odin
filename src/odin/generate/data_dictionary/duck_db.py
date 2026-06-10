@@ -96,9 +96,11 @@ def create_fares_db(folder: str) -> str:
         # Hopefully this works on ECS...
         con.execute("CREATE OR REPLACE SECRET secret (TYPE s3, PROVIDER credential_chain);")
 
-        con.execute(f"set temp_directory = '{os.path.join(folder, 'duckdb_spill')}'")
-        con.execute("set memory_limit='15GB'")
-        con.execute("set threads='2'")
+        con.execute(f"SET temp_directory = '{os.path.join(folder, 'duckdb_spill')}'")
+        con.execute("SET memory_limit='15GB'")
+        con.execute("SET threads='2'")
+        con.execute("PRAGMA disable_progress_bar;")
+        con.execute("PRAGMA disable_print_progress_bar;")
 
         for view in dataset_views:
             con.execute(f"CREATE SCHEMA IF NOT EXISTS {view.schema};")
@@ -119,6 +121,7 @@ def create_fares_db(folder: str) -> str:
                 except Exception as exception:
                     view_log.failed(exception=exception)
 
+        con.execute("SET preserve_insertion_order=false")
         con.execute("CREATE SCHEMA IF NOT EXISTS cubic_reports;")
         for view_file in files("odin.generate.data_dictionary.sql.mat_views").iterdir():
             if not view_file.name.endswith(".sql"):
