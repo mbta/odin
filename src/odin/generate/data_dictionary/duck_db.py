@@ -124,6 +124,7 @@ def create_fares_db(folder: str) -> str:
                 except Exception as exception:
                     view_log.failed(exception=exception)
 
+        con.execute("SET preserve_insertion_order=false")
         con.execute("CREATE SCHEMA IF NOT EXISTS cubic_reports;")
         for view_file in files("odin.generate.data_dictionary.sql.mat_views").iterdir():
             if not view_file.name.endswith(".sql"):
