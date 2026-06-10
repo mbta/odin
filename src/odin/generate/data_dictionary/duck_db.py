@@ -98,6 +98,7 @@ def create_fares_db(folder: str) -> str:
 
         con.execute(f"set temp_directory = '{os.path.join(folder, 'duckdb_spill')}'")
         con.execute("set memory_limit='15GB'")
+        con.execute("set threads='2'")
 
         for view in dataset_views:
             con.execute(f"CREATE SCHEMA IF NOT EXISTS {view.schema};")
