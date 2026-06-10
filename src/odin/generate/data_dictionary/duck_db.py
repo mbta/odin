@@ -96,6 +96,9 @@ def create_fares_db(folder: str) -> str:
         # Hopefully this works on ECS...
         con.execute("CREATE OR REPLACE SECRET secret (TYPE s3, PROVIDER credential_chain);")
 
+        con.execute(f"set temp_directory = '{os.path.join(folder, 'duckdb_spill')}'")
+        con.execute("set memory_limit='15GB'")
+
         for view in dataset_views:
             con.execute(f"CREATE SCHEMA IF NOT EXISTS {view.schema};")
             for view_table in list_partitions(view.s3_prefix):
@@ -134,9 +137,11 @@ def create_fares_db(folder: str) -> str:
                 view_query = f"CREATE VIEW cubic_reports.{view_name} AS SELECT * FROM read_parquet('s3://{upload_path}')"
                 con.execute(view_query)
 
+                os.remove(mat_view_path)
+
+                view_log.complete()
             except Exception as exception:
                 view_log.failed(exception=exception)
-            view_log.complete()
         for view_file in files("odin.generate.data_dictionary.sql.views").iterdir():
             if not view_file.name.endswith(".sql"):
                 continue
