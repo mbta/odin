@@ -36,9 +36,11 @@ from odin.utils.aws.s3 import upload_file
 from odin.utils.aws.s3 import s3_folder
 from odin.ingestion.qlik.dfm import dfm_from_s3
 from odin.ingestion.qlik.dfm import QlikDFM
+from odin.ingestion.qlik.tables import _ODIN_INSTANCE
 from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES_INSTANCE
 
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
+NEXT_RUN_BETA = 60 * 60  # 1 hour
 NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 MAX_LOAD_RECORDS = 10_000
@@ -46,6 +48,16 @@ CDC_BATCH_MAX_NBYTES = 96 * 1024 * 1024
 CDC_ACCUMULATION_MAX_NBYTES = 192 * 1024 * 1024
 CDC_ACCUMULATION_MAX_ROWS = MAX_LOAD_RECORDS * 16
 MAX_CDC_ACCUMULATION_BATCHES = 11
+
+
+def _default_run_interval() -> int:
+    """Return the normal rerun interval for the active instance"""
+    return NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_DEFAULT
+
+
+def _long_run_interval() -> int:
+    """Return the no-new-data rerun interval for the active instance"""
+    return NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_LONG
 
 
 class NoQlikHistoryError(Exception):
@@ -405,7 +417,7 @@ class CubicODSFact(OdinJob):
 
         if not all_cdc_frames:
             logger.complete(cdc_records_found=0, cdc_accumulated_nbytes=0)
-            return NEXT_RUN_LONG
+            return _long_run_interval()
 
         cdc_df = pl.concat(all_cdc_frames, how="diagonal")
         del all_cdc_frames
@@ -608,15 +620,15 @@ class CubicODSFact(OdinJob):
 
         if cdc_budget_nearly_full and ds_available_count > 0:
             return NEXT_RUN_IMMEDIATE
-        return NEXT_RUN_DEFAULT
+        return _default_run_interval()
 
     def run(self) -> int:
         """
         Create / Update ODS Fact tables from Qlik history dataset.
 
         next_run Duration:
-            - default -> 60 mins
-            - no new CDC records found -> 12 hours
+            - default -> 4 hours on alpha, 1 hour on beta
+            - no new CDC records found -> 12 hours on alpha, 1 hour on beta
             - excess of CDC records -> 5 mins
 
         Maintain consistency of FACT tables with Qlik CDC history dataset.
@@ -639,7 +651,7 @@ class CubicODSFact(OdinJob):
         """
         log = ProcessLog("CubicODSFact", table=self.table)
         self.start_kwargs = {"table": self.table}
-        next_run_secs = NEXT_RUN_DEFAULT
+        next_run_secs = _default_run_interval()
 
         try:
             self.snapshot_check()

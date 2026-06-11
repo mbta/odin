@@ -36,6 +36,7 @@ from odin.ingestion.qlik.utils import snapshot_to_parquet
 from odin.ingestion.qlik.utils import re_get_first
 from odin.ingestion.qlik.dfm import QlikDFM
 from odin.ingestion.qlik.dfm import dfm_snapshot_dt
+from odin.ingestion.qlik.tables import _ODIN_INSTANCE
 from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES_INSTANCE
 from odin.ingestion.qlik.clean import clean_old_snapshots
 from odin.utils.locations import CUBIC_QLIK_DATA
@@ -47,8 +48,19 @@ from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_unique_values
 
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
+NEXT_RUN_BETA = 60 * 60  # 1 hour
 NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
+
+
+def _default_run_interval() -> int:
+    """Return the normal rerun interval for the active instance"""
+    return NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_DEFAULT
+
+
+def _long_run_interval() -> int:
+    """Return the no-new-data rerun interval for the active instance"""
+    return NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_LONG
 
 
 def thread_save_csv(args: Tuple[str, str]) -> Tuple[int, Optional[str]]:
@@ -334,8 +346,8 @@ class ArchiveCubicQlikTable(OdinJob):
             4. Move processed files on S3
 
         next_run Duration:
-            - default -> 60 mins
-            - if table updated in-frequently -> 6 hours
+            - default -> 4 hours on alpha, 1 hour on beta
+            - if table updated in-frequently -> 12 hours on alpha, 1 hour on beta
                 * when 0 cdc files are available to process
             - if backlog of cdc files exists -> 5 mins
                 * when cdc files > half of max_cdc_files requested
@@ -345,11 +357,11 @@ class ArchiveCubicQlikTable(OdinJob):
             self.start_kwargs = {"table": self.table, "save_local": self.save_local}
             self.archive_objects: List[str] = []
 
-            next_run_secs = NEXT_RUN_DEFAULT
+            next_run_secs = _default_run_interval()
             max_cdc_files = 10_000
             cdc_files = find_qlik_cdc_files(self.table, self.save_local, max_cdc_files)
             if len(cdc_files) == 0:
-                next_run_secs = NEXT_RUN_LONG
+                next_run_secs = _long_run_interval()
             elif len(cdc_files) / max_cdc_files > 0.5:
                 next_run_secs = NEXT_RUN_IMMEDIATE
 
@@ -360,7 +372,7 @@ class ArchiveCubicQlikTable(OdinJob):
             log.complete(run_interval=next_run_secs)
         except RecentSnapshotError as e:
             self.start_kwargs["skipped_recent_snapshot"] = True
-            next_run_secs = NEXT_RUN_DEFAULT
+            next_run_secs = _default_run_interval()
             log.failed(exception=e)
 
         return next_run_secs
