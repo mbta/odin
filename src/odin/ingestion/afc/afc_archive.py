@@ -39,7 +39,7 @@ class APIEmptyResponseError(Exception):
 
 
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
-NEXT_RUN_BETA = 60 * 60  # 1 hour
+NEXT_RUN_BETA = 60 * 15  # 15 minutes
 
 API_ROOT = os.getenv("AFC_ROOT", "")
 

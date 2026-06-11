@@ -48,7 +48,7 @@ from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_unique_values
 
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
-NEXT_RUN_BETA = 60 * 60  # 1 hour
+NEXT_RUN_BETA = 60 * 15  # 15 minutes
 NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
