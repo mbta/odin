@@ -56,7 +56,7 @@ API_MIN_REQUEST_INTERVAL_S: float = 1.0
 
 # Rescheduling time intervals
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
-NEXT_RUN_BETA = 60 * 60  # 1 hour
+NEXT_RUN_BETA = 60 * 15  # 15 minutes
 NEXT_RUN_IMMEDIATE = 60  # 1 minute
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 

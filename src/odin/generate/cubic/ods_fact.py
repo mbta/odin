@@ -40,7 +40,7 @@ from odin.ingestion.qlik.tables import _ODIN_INSTANCE
 from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES_INSTANCE
 
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
-NEXT_RUN_BETA = 60 * 60  # 1 hour
+NEXT_RUN_BETA = 60 * 15  # 15 minutes
 NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 MAX_LOAD_RECORDS = 10_000
