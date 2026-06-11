@@ -7,15 +7,12 @@ API_TABLES_ALPHA = [
     "v_ca_legal_relations",
     "v_deviceclass",
     "v_eventgroup",
-    "v_eventhistory",
     "v_eventtext",
     "v_legal_persons",
-    "v_mainshift",
     "v_medium_types",
     "v_person",
     "v_product_templates",
     "v_routes",
-    "v_sales_txns",
     "v_shiftevent",
     "v_stop_points",
     "v_ta_ca_relations",
@@ -23,7 +20,6 @@ API_TABLES_ALPHA = [
     "v_trips",
     "v_tvmstation",
     "v_tvmtable",
-    "v_validation_taps",
     "v_cashless_payments",
     "v_inspections",
     "v_tsmstatus",
@@ -39,17 +35,22 @@ API_TABLES_ALPHA = [
     "v_moneycontainersum",
     "v_moneycontainercontentsum",
     "v_accesslevel",
-    "v_svw_balance_changes",
     "v_transit_accounts",
     "v_payment_methods",
     "v_entitlements",
     "v_entitlements_full",  # temporary full snapshot export containing older data
     "v_payment_method_instances",
-    "v_products",
     "v_versions",
 ]
 
-API_TABLES_BETA: list[str] = []
+API_TABLES_BETA: list[str] = [
+    "v_validation_taps",
+    "v_sales_txns",
+    "v_products",
+    "v_svw_balance_changes",
+    "v_eventhistory",
+    "v_mainshift",
+]
 
 API_TABLES = API_TABLES_ALPHA + API_TABLES_BETA
 

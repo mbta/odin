@@ -17,6 +17,7 @@ from odin.utils.aws.s3 import s3_folder
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import upload_file
+from odin.ingestion.masabi.masabi_tables import _ODIN_INSTANCE
 from odin.ingestion.masabi.masabi_tables import TABLES_INSTANCE
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_metadata_min_max
@@ -55,6 +56,7 @@ API_MIN_REQUEST_INTERVAL_S: float = 1.0
 
 # Rescheduling time intervals
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
+NEXT_RUN_BETA = 60 * 60  # 1 hour
 NEXT_RUN_IMMEDIATE = 60  # 1 minute
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
@@ -791,7 +793,7 @@ class ArchiveMasabi(OdinJob):
             return NEXT_RUN_IMMEDIATE
         else:
             log.complete(next_run_interval="normal")
-            return NEXT_RUN_DEFAULT
+            return NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_DEFAULT
 
 
 def schedule_masabi_archive(schedule: sched.scheduler) -> None:
