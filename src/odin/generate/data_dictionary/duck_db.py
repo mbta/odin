@@ -100,8 +100,6 @@ def create_fares_db(folder: str) -> str:
         con.execute("CREATE OR REPLACE SECRET secret (TYPE s3, PROVIDER credential_chain);")
 
         con.execute(f"SET temp_directory = '{spill_path}'")
-        con.execute("SET memory_limit='15GB'")
-        con.execute("SET threads='2'")
         con.execute("PRAGMA disable_progress_bar;")
         con.execute("PRAGMA disable_print_progress_bar;")
 
@@ -125,6 +123,7 @@ def create_fares_db(folder: str) -> str:
                     view_log.failed(exception=exception)
 
         con.execute("SET preserve_insertion_order=false")
+        con.execute("SET threads='1'")
         con.execute("CREATE SCHEMA IF NOT EXISTS cubic_reports;")
         for view_file in files("odin.generate.data_dictionary.sql.mat_views").iterdir():
             if not view_file.name.endswith(".sql"):
@@ -149,6 +148,7 @@ def create_fares_db(folder: str) -> str:
                 view_log.complete()
             except Exception as exception:
                 view_log.failed(exception=exception)
+        con.execute("SET threads='4'")
         for view_file in files("odin.generate.data_dictionary.sql.views").iterdir():
             if not view_file.name.endswith(".sql"):
                 continue
