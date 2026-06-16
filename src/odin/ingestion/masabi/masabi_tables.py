@@ -9,13 +9,13 @@ TABLES_ALPHA = [
     # "view.hub_search_vendor_sale",
     # "view.validators",
     "retail.account_actions",
-    "retail.activations",
     "retail.tickets",
     "validation.scans",
 ]
 
 TABLES_BETA: list[str] = [
     "retail.ticket_purchases",
+    "retail.activations",
 ]
 
 TABLES = TABLES_ALPHA + TABLES_BETA
