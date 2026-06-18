@@ -8,6 +8,7 @@ from odin.utils.runtime import sigterm_check
 from odin.utils.logger import ProcessLog
 from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import AFC_RESTRICTED
+from odin.utils.aws.s3 import s3_folder
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import upload_file
@@ -68,7 +69,7 @@ class RestrictedAFC(ArchiveAFCAPI):
         )
         new_paths: list[str] = []
         for exp_fldr, read_paths in export_jobs:
-            found_objs = list_objects(f"s3://{exp_fldr}", in_filter=".parquet")
+            found_objs = list_objects(s3_folder(exp_fldr), in_filter=".parquet")
             if found_objs:
                 sync_file = found_objs[-1].path.replace("s3://", "")
                 s3_pq_file = os.path.join(self.tmpdir, sync_file.replace("/table_", "/temp_"))

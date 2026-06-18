@@ -351,6 +351,44 @@ def test_sync_parquet_transactional(
 @patch("odin.ingestion.afc.afc_archive.delete_objects")
 @patch("odin.ingestion.afc.afc_archive.upload_file")
 @patch("odin.ingestion.afc.afc_archive.download_object")
+def test_sync_parquet_lists_folder_scoped_prefix(
+    dl_obj: MagicMock, mock_upload: MagicMock, del_obj: MagicMock, ls_obj: MagicMock, tmpdir
+):
+    """
+    sync_parquet must scope its S3 listing to the table's own folder.
+
+    A bare prefix (no trailing "/") matches sibling folders whose name starts with
+    this table's name (e.g. "v_entitlements" also matches "v_entitlements_full/..."),
+    which makes found_objs[-1] resolve to the wrong table's file and corrupts the
+    re-merge/part-offset, silently overwriting data on S3. Pin the folder boundary.
+    """
+    export = "bucket/odin/data/sb/api/v_entitlements"
+    data = [{"job_id": 1, "value": "sid_1"}]
+    pl.DataFrame(data).write_ndjson(os.path.join(tmpdir, "1.json"))
+
+    job = ArchiveAFCAPI("test_table")
+    job.tmpdir = tmpdir
+    job.schema = pl.Schema({"job_id": pl.Int64(), "value": pl.String()})
+    job.table_type = "transactional"
+    job.ts_cols = []
+    job.export_folder = export
+    ls_obj.return_value = []
+
+    job.sync_parquet()
+
+    # Every S3 listing for this folder must end with "/" so a raw prefix match cannot
+    # spill into a sibling folder like ".../v_entitlements_full/".
+    assert ls_obj.call_count >= 1
+    for c in ls_obj.call_args_list:
+        listed_prefix = c.args[0]
+        assert listed_prefix.endswith("/"), f"listing not folder-scoped: {listed_prefix!r}"
+        assert listed_prefix.rstrip("/").endswith("/v_entitlements")
+
+
+@patch("odin.ingestion.afc.afc_archive.list_objects")
+@patch("odin.ingestion.afc.afc_archive.delete_objects")
+@patch("odin.ingestion.afc.afc_archive.upload_file")
+@patch("odin.ingestion.afc.afc_archive.download_object")
 @patch.dict(
     "odin.ingestion.afc.afc_archive.API_TABLE_PII_DROP_COLUMNS", {"test_table": ["pii_value"]}
 )

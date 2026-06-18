@@ -18,6 +18,7 @@ from odin.utils.runtime import disk_free_pct
 from odin.utils.logger import ProcessLog
 from odin.utils.locations import AFC_DATA
 from odin.utils.locations import DATA_SPRINGBOARD
+from odin.utils.aws.s3 import s3_folder
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import upload_file
@@ -262,7 +263,7 @@ class ArchiveAFCAPI(OdinJob):
 
         # set self.pq_job_id from parquet dataset or specified start point
         last_exported_id = 0
-        if list_objects(self.export_folder, in_filter=".parquet"):
+        if list_objects(s3_folder(self.export_folder), in_filter=".parquet"):
             _, last_exported_id = ds_metadata_min_max(
                 ds_from_path(f"s3://{self.export_folder}"), "job_id"
             )
@@ -443,7 +444,7 @@ class ArchiveAFCAPI(OdinJob):
         if len(sync_paths) == 0:
             return
 
-        found_objs = list_objects(f"s3://{self.export_folder}", in_filter=".parquet")
+        found_objs = list_objects(s3_folder(self.export_folder), in_filter=".parquet")
         del_objs = []
         if self.table_type == "transactional":
             # `transactional` table type is supposed to be incremental (append-only) data model
