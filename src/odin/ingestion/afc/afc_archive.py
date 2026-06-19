@@ -8,7 +8,7 @@ import time
 from collections import ChainMap
 from operator import itemgetter
 from pathlib import Path
-from typing import Literal, TypedDict, Generator
+from typing import Literal, TypedDict, Generator, SupportsInt
 
 
 from odin.job import OdinJob
@@ -18,10 +18,11 @@ from odin.utils.runtime import disk_free_pct
 from odin.utils.logger import ProcessLog
 from odin.utils.locations import AFC_DATA
 from odin.utils.locations import DATA_SPRINGBOARD
-from odin.utils.aws.s3 import list_objects
+from odin.utils.aws.s3 import list_objects, s3_folder
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import upload_file
 from odin.utils.aws.s3 import delete_objects
+from odin.utils.aws.s3 import S3Object
 from odin.ingestion.afc.afc_tables import API_TABLES_INSTANCE
 from odin.ingestion.afc.afc_tables import _ODIN_INSTANCE
 from odin.utils.parquet import ds_metadata_min_max
@@ -76,6 +77,16 @@ class APITableInfo(TypedDict):
     frequency: str
     remarks: str
     table_infos: APITableSchema
+
+
+class AFCParquetSnapshot(TypedDict):
+    """Lightweight S3 parquet snapshot used for inline health checks."""
+
+    object_count: int
+    total_size_bytes: int
+    total_rows: int
+    min_job_id: int | None
+    max_job_id: int | None
 
 
 def make_pl_schema(schema: APITableInfo) -> pl.Schema:
@@ -210,6 +221,132 @@ class ArchiveAFCAPI(OdinJob):
                 f"API ERROR: {url=} status={r.status} response_data={r.data.decode()}"
             )
         return r
+
+    def _to_int_or_none(
+        self,
+        value: SupportsInt | str | bytes | bytearray | None,
+    ) -> int | None:
+        """Best effort conversion to int for metric values."""
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def _s3_parquet_snapshot(self, s3_objects: list[S3Object] | None = None) -> AFCParquetSnapshot:
+        """Collect near-zero-cost S3 parquet metrics for table health checks."""
+        snapshot: AFCParquetSnapshot = {
+            "object_count": 0,
+            "total_size_bytes": 0,
+            "total_rows": 0,
+            "min_job_id": None,
+            "max_job_id": None,
+        }
+
+        s3_objects = s3_objects or list_objects(s3_folder(self.export_folder), in_filter=".parquet")
+        if len(s3_objects) == 0:
+            return snapshot
+
+        snapshot["object_count"] = len(s3_objects)
+        snapshot["total_size_bytes"] = sum(obj.size_bytes for obj in s3_objects)
+
+        try:
+            ds = ds_from_path(s3_folder(self.export_folder))
+            snapshot["total_rows"] = int(ds.count_rows())
+            min_job_id, max_job_id = ds_metadata_min_max(ds, "job_id")
+            snapshot["min_job_id"] = self._to_int_or_none(min_job_id)
+            snapshot["max_job_id"] = self._to_int_or_none(max_job_id)
+        except Exception as exc:
+            ProcessLog(
+                "afc_api_metrics_snapshot_failed",
+                table=self.table,
+                export_folder=self.export_folder,
+            ).failed(exc)
+
+        return snapshot
+
+    def _log_inline_health_metrics(
+        self,
+        pre_snapshot: AFCParquetSnapshot,
+        post_snapshot: AFCParquetSnapshot,
+    ) -> None:
+        """Log pre/post parquet health metrics and emit regression errors."""
+        health_log = ProcessLog("afc_api_inline_health_metrics", table=self.table)
+        health_log.add_metadata(
+            table_type=self.table_type,
+            pre_object_count=pre_snapshot["object_count"],
+            post_object_count=post_snapshot["object_count"],
+            pre_total_rows=pre_snapshot["total_rows"],
+            post_total_rows=post_snapshot["total_rows"],
+            pre_total_size_bytes=pre_snapshot["total_size_bytes"],
+            post_total_size_bytes=post_snapshot["total_size_bytes"],
+            pre_min_job_id=pre_snapshot["min_job_id"],
+            post_min_job_id=post_snapshot["min_job_id"],
+            pre_max_job_id=pre_snapshot["max_job_id"],
+            post_max_job_id=post_snapshot["max_job_id"],
+        )
+
+        regressions = []
+        if (
+            pre_snapshot["max_job_id"] is not None
+            and post_snapshot["max_job_id"] is not None
+            and post_snapshot["max_job_id"] < pre_snapshot["max_job_id"]
+        ):
+            regressions.append(
+                (
+                    "parquet_max_job_id decreased after write: "
+                    f"{post_snapshot['max_job_id']} < {pre_snapshot['max_job_id']}"
+                )
+            )
+
+        if (
+            pre_snapshot["min_job_id"] is not None
+            and post_snapshot["min_job_id"] is not None
+            and post_snapshot["min_job_id"] > pre_snapshot["min_job_id"]
+        ):
+            regressions.append(
+                (
+                    "parquet_min_job_id increased after write: "
+                    f"{post_snapshot['min_job_id']} > {pre_snapshot['min_job_id']}"
+                )
+            )
+
+        if post_snapshot["total_rows"] < pre_snapshot["total_rows"]:
+            regressions.append(
+                (
+                    "parquet total row count decreased after write: "
+                    f"{post_snapshot['total_rows']} < {pre_snapshot['total_rows']}"
+                )
+            )
+
+        if post_snapshot["total_size_bytes"] < pre_snapshot["total_size_bytes"]:
+            regressions.append(
+                (
+                    "parquet total bytes decreased after write: "
+                    f"{post_snapshot['total_size_bytes']} < {pre_snapshot['total_size_bytes']}"
+                )
+            )
+
+        if post_snapshot["object_count"] < pre_snapshot["object_count"]:
+            regressions.append(
+                (
+                    "parquet object_count decreased after write: "
+                    f"{post_snapshot['object_count']} < {pre_snapshot['object_count']}"
+                )
+            )
+
+        for issue in regressions:
+            ProcessLog(
+                "afc_api_inline_health_regression",
+                table=self.table,
+                table_type=self.table_type,
+            ).failed(RuntimeError(issue))
+
+        health_log.complete(
+            regression_count=len(regressions),
+            health_status="regression" if regressions else "ok",
+        )
 
     def setup_job(self) -> None:
         """
@@ -444,6 +581,7 @@ class ArchiveAFCAPI(OdinJob):
             return
 
         found_objs = list_objects(f"s3://{self.export_folder}", in_filter=".parquet")
+        pre_snapshot = self._s3_parquet_snapshot(found_objs)
         del_objs = []
         if self.table_type == "transactional":
             # `transactional` table type is supposed to be incremental (append-only) data model
@@ -473,6 +611,8 @@ class ArchiveAFCAPI(OdinJob):
         for new_path in new_paths:
             move_path = new_path.replace(f"{self.tmpdir}/", "")
             upload_file(new_path, move_path)
+        post_snapshot = self._s3_parquet_snapshot()
+        self._log_inline_health_metrics(pre_snapshot, post_snapshot)
         log.complete()
 
     def re_run_check(self) -> int:
