@@ -18,7 +18,7 @@ from odin.utils.runtime import disk_free_pct
 from odin.utils.logger import ProcessLog
 from odin.utils.locations import AFC_DATA
 from odin.utils.locations import DATA_SPRINGBOARD
-from odin.utils.aws.s3 import list_objects
+from odin.utils.aws.s3 import list_objects, s3_folder
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import upload_file
 from odin.utils.aws.s3 import delete_objects
@@ -241,7 +241,7 @@ class ArchiveAFCAPI(OdinJob):
             "max_job_id": None,
         }
 
-        s3_objects = s3_objects or list_objects(f"s3://{self.export_folder}", in_filter=".parquet")
+        s3_objects = s3_objects or list_objects(s3_folder(self.export_folder), in_filter=".parquet")
         if len(s3_objects) == 0:
             return snapshot
 
@@ -249,7 +249,7 @@ class ArchiveAFCAPI(OdinJob):
         snapshot["total_size_bytes"] = sum(obj.size_bytes for obj in s3_objects)
 
         try:
-            ds = ds_from_path(f"s3://{self.export_folder}")
+            ds = ds_from_path(s3_folder(self.export_folder))
             snapshot["total_rows"] = int(ds.count_rows())
             min_job_id, max_job_id = ds_metadata_min_max(ds, "job_id")
             snapshot["min_job_id"] = self._to_int_or_none(min_job_id)
