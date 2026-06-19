@@ -8,7 +8,7 @@ import time
 from collections import ChainMap
 from operator import itemgetter
 from pathlib import Path
-from typing import Literal, TypedDict, Generator
+from typing import Literal, TypedDict, Generator, SupportsInt
 
 
 from odin.job import OdinJob
@@ -222,13 +222,16 @@ class ArchiveAFCAPI(OdinJob):
             )
         return r
 
-    def _to_int_or_none(self, value: object) -> int | None:
+    def _to_int_or_none(
+        self,
+        value: SupportsInt | str | bytes | bytearray | None,
+    ) -> int | None:
         """Best effort conversion to int for metric values."""
         if value is None:
             return None
         try:
             return int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
 
     def _s3_parquet_snapshot(self, s3_objects: list[S3Object] | None = None) -> AFCParquetSnapshot:
