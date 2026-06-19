@@ -297,6 +297,18 @@ class ArchiveAFCAPI(OdinJob):
                 )
             )
 
+        if (
+            pre_snapshot["min_job_id"] is not None
+            and post_snapshot["min_job_id"] is not None
+            and post_snapshot["min_job_id"] > pre_snapshot["min_job_id"]
+        ):
+            regressions.append(
+                (
+                    "parquet_min_job_id increased after write: "
+                    f"{post_snapshot['min_job_id']} > {pre_snapshot['min_job_id']}"
+                )
+            )
+
         if post_snapshot["total_rows"] < pre_snapshot["total_rows"]:
             regressions.append(
                 (
@@ -310,6 +322,14 @@ class ArchiveAFCAPI(OdinJob):
                 (
                     "parquet total bytes decreased after write: "
                     f"{post_snapshot['total_size_bytes']} < {pre_snapshot['total_size_bytes']}"
+                )
+            )
+
+        if post_snapshot["object_count"] < pre_snapshot["object_count"]:
+            regressions.append(
+                (
+                    "parquet object_count decreased after write: "
+                    f"{post_snapshot['object_count']} < {pre_snapshot['object_count']}"
                 )
             )
 
