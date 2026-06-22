@@ -399,7 +399,7 @@ class ArchiveAFCAPI(OdinJob):
 
         # set self.pq_job_id from parquet dataset or specified start point
         last_exported_id = 0
-        if list_objects(self.export_folder, in_filter=".parquet"):
+        if list_objects(s3_folder(self.export_folder), in_filter=".parquet"):
             _, last_exported_id = ds_metadata_min_max(
                 ds_from_path(f"s3://{self.export_folder}"), "job_id"
             )
@@ -580,7 +580,7 @@ class ArchiveAFCAPI(OdinJob):
         if len(sync_paths) == 0:
             return
 
-        found_objs = list_objects(f"s3://{self.export_folder}", in_filter=".parquet")
+        found_objs = list_objects(s3_folder(self.export_folder), in_filter=".parquet")
         pre_snapshot = self._s3_parquet_snapshot(found_objs)
         del_objs = []
         if self.table_type == "transactional":
