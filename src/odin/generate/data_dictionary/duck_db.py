@@ -16,6 +16,7 @@ from odin.utils.locations import AFC_RESTRICTED
 from odin.utils.locations import CUBIC_ODS_REPORTS
 from odin.utils.locations import MASABI_DATA
 from odin.utils.locations import MASABI_RESTRICTED
+from odin.utils.locations import MASABI_TEMP
 from odin.utils.parquet import ds_from_path
 
 
@@ -76,6 +77,13 @@ dataset_views = [
     ViewBuilder(
         s3_prefix=os.path.join(DATA_SPRINGBOARD, MASABI_RESTRICTED),
         schema="masabi_restricted",
+        template=Template(
+            f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT $columns FROM {READ_PQ};"
+        ),
+    ),
+    ViewBuilder(
+        s3_prefix=os.path.join(DATA_SPRINGBOARD, MASABI_TEMP),
+        schema="masabi_temporary",
         template=Template(
             f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT $columns FROM {READ_PQ};"
         ),
