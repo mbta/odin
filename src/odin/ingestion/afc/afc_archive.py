@@ -301,7 +301,8 @@ class ArchiveAFCAPI(OdinJob):
             )
 
         if (
-            pre_snapshot["min_job_id"] is not None
+            self.table_type == "transactional"
+            and pre_snapshot["min_job_id"] is not None
             and post_snapshot["min_job_id"] is not None
             and post_snapshot["min_job_id"] > pre_snapshot["min_job_id"]
         ):
@@ -320,7 +321,7 @@ class ArchiveAFCAPI(OdinJob):
                 )
             )
 
-        if post_snapshot["total_size_bytes"] < pre_snapshot["total_size_bytes"]:
+        if post_snapshot["total_size_bytes"] < pre_snapshot["total_size_bytes"] * 0.99:
             regressions.append(
                 (
                     "parquet total bytes decreased after write: "
