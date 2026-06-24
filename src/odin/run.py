@@ -14,6 +14,7 @@ from odin.utils.aws.ecs import check_for_parallel_tasks
 from odin.utils.runtime import schedule_sigterm_check
 from odin.ingestion.qlik.cubic_archive import schedule_cubic_archive_qlik
 from odin.generate.cubic.ods_fact import schedule_cubic_ods_fact_gen
+from odin.generate.cubic.delta_ods import schedule_delta_ods
 from odin.ingestion.afc.afc_archive import schedule_afc_archive
 from odin.ingestion.afc.afc_restricted import schedule_restricted_afc_archive
 from odin.ingestion.masabi.masabi_archive import schedule_masabi_archive
@@ -72,6 +73,9 @@ def start():
     if odin_instance in ["alpha", "beta"]:
         schedule_cubic_archive_qlik(schedule)
         schedule_cubic_ods_fact_gen(schedule)
+        # Delta-based silver pipeline; per-instance enablement is controlled by the
+        # CUBIC_ODS_DELTA_TABLES_* lists (an empty list schedules nothing).
+        schedule_delta_ods(schedule)
         schedule_masabi_archive(schedule)
         schedule_afc_archive(schedule)
 

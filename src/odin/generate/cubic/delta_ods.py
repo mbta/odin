@@ -60,7 +60,7 @@ from odin.ingestion.qlik.dfm import QlikDFM
 from odin.ingestion.qlik.dfm import dfm_from_s3
 from odin.ingestion.qlik.utils import RE_SNAPSHOT_TS
 from odin.ingestion.qlik.tables import _ODIN_INSTANCE
-from odin.ingestion.qlik.tables import CUBIC_ODS_DELTA_TABLES
+from odin.ingestion.qlik.tables import CUBIC_ODS_DELTA_TABLES_INSTANCE
 
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
 NEXT_RUN_BETA = 60 * 15  # 15 minutes
@@ -460,7 +460,7 @@ class CubicODSDelta(OdinJob):
 
 
 def schedule_delta_ods(schedule: sched.scheduler) -> None:
-    """Schedule one CubicODSDelta job per Delta-enabled Cubic ODS table."""
-    for table in CUBIC_ODS_DELTA_TABLES:
+    """Schedule one CubicODSDelta job per Delta-enabled Cubic ODS table for this instance."""
+    for table in CUBIC_ODS_DELTA_TABLES_INSTANCE:
         job = CubicODSDelta(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))
