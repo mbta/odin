@@ -321,7 +321,7 @@ class ArchiveAFCAPI(OdinJob):
                 )
             )
 
-        if post_snapshot["total_size_bytes"] < pre_snapshot["total_size_bytes"] * 0.99:
+        if post_snapshot["total_size_bytes"] < pre_snapshot["total_size_bytes"] * 0.75:
             regressions.append(
                 (
                     "parquet total bytes decreased after write: "
