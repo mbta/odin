@@ -16,6 +16,7 @@ on:
           - all
           - alpha
           - beta
+          - gamma
         default: all
       new_count:
         description: 1 to turn on 0 to turn off
@@ -41,7 +42,7 @@ jobs:
         # yamllint disable rule:line-length
         run: |
           if [[ "${{ github.event.inputs.odin-instance }}" == "all" ]]; then
-            services=("odin-alpha-${{ github.event.inputs.environment }}" "odin-beta-${{ github.event.inputs.environment }}")
+            services=("odin-alpha-${{ github.event.inputs.environment }}" "odin-beta-${{ github.event.inputs.environment }}" "odin-gamma-${{ github.event.inputs.environment }}")
           else
             services=("odin-${{ github.event.inputs.odin-instance }}-${{ github.event.inputs.environment }}")
           fi
