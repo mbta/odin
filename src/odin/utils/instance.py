@@ -2,7 +2,7 @@ import os
 
 from odin.utils.aws.ecs import running_in_aws
 
-ODIN_INSTANCES = ("alpha", "beta")
+ODIN_INSTANCES = ("alpha", "beta", "gamma")
 
 
 def get_odin_instance() -> str:
@@ -16,7 +16,7 @@ def get_odin_instance() -> str:
     if instance is None:
         if not running_in_aws():
             return "alpha"
-        raise RuntimeError("Expected ODIN_INSTANCE to be set to 'alpha' or 'beta'.")
+        raise RuntimeError(f"Expected ODIN_INSTANCE to be set to one of {ODIN_INSTANCES}.")
 
     if instance not in ODIN_INSTANCES:
         raise RuntimeError(
