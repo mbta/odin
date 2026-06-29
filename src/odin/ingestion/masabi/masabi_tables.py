@@ -10,6 +10,7 @@ TABLES_ALPHA = [
     # "view.validators",
     "retail.account_actions",
     "retail.tickets",
+    "retail.ticket_refunds",
     "validation.scans",
 ]
 
