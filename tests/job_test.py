@@ -4,6 +4,8 @@ import time
 from multiprocessing import get_context
 
 from odin.job import OdinJob
+from odin.job import job_proc_schedule as real_job_proc_schedule
+from odin.job import _monitor_proc_peak_rss_mb
 
 
 # caplog doesn't work in multiprocessing. this should be ok for now, but could be improved
@@ -80,3 +82,45 @@ def test_odin_job(caplog, monkeypatch) -> None:
         job_proc_schedule(test_job, scheduler)
     assert len(caplog.messages) == 1
     assert "process=stopping_ecs" in caplog.messages[0]
+
+
+# Defined at module level so the spawn context can pickle them
+def _mem_hog() -> None:
+    """Allocate ~50MB and hold it briefly so the parent can sample the footprint."""
+    blob = bytearray(50 * 1024 * 1024)  # noqa: F841 -- keep ref so it stays resident
+    time.sleep(0.5)
+
+
+class PeakMemJob(OdinJob):
+    """Trivial job used to exercise peak-memory logging in the real runner."""
+
+    start_kwargs = {"table": "retail.tickets"}
+
+    def run(self) -> int:
+        """Return a fixed re-run delay."""
+        return 1000
+
+
+def test_monitor_proc_peak_rss_mb() -> None:
+    """A running subprocess' peak resident memory is captured from the parent."""
+    proc = get_context("spawn").Process(target=_mem_hog)
+    proc.start()
+    peak_mem_mb = _monitor_proc_peak_rss_mb(proc, 0.05)
+
+    # Process is fully reaped and we observed a non-trivial footprint
+    assert proc.exitcode == 0
+    assert peak_mem_mb > 10.0
+
+
+def test_job_proc_schedule_logs_peak_mem(caplog) -> None:
+    """The real runner logs peak memory with job type and start_kwargs."""
+    scheduler = sched.scheduler(time.monotonic, time.sleep)
+    real_job_proc_schedule(PeakMemJob(), scheduler)
+
+    peak_logs = [m for m in caplog.messages if "process=odin_job_peak_mem" in m]
+    assert len(peak_logs) > 0
+    assert any("job_type=PeakMemJob" in m for m in peak_logs)
+    assert any("table=retail.tickets" in m for m in peak_logs)
+    assert any("peak_mem_mb=" in m for m in peak_logs)
+
+    scheduler.cancel(scheduler.queue[0])
