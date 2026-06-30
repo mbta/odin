@@ -53,7 +53,7 @@ SELECT
     rtd.ride_type_name,
     calculated_fare,
     coalesce(fpd.rider_class_name, tad.rider_class_name) as rider_class_name,
-    coalesce(emd.external_ref, emd.customer_member_id) as external_ref,
+    -- coalesce(emd.external_ref, emd.customer_member_id) as external_ref,
     coalesce(one_account_value, 0) as one_account_value,
     coalesce(ut.restricted_purse_value, 0) as restricted_purse_value,
     coalesce(ut.refundable_purse_value, 0) as refundable_purse_value,
@@ -65,8 +65,8 @@ FROM
     cubic_ods.edw_use_transaction ut
 LEFT JOIN
     cubic_ods.edw_fare_product_dimension fpd on ut.fare_prod_key = fpd.fare_prod_key
-LEFT JOIN
-    cubic_ods.edw_member_dimension emd on ut.transit_account_id = emd.transit_account_id
+-- LEFT JOIN  -- Disabled because transit_account_id is not unique, duplicating rows.
+--     cubic_ods.edw_member_dimension emd on ut.transit_account_id = emd.transit_account_id
 LEFT JOIN
     cubic_ods.edw_operator_dimension opd on ut.operator_key = opd.operator_key
 LEFT JOIN
