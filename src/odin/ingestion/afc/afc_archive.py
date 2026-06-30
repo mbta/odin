@@ -287,55 +287,56 @@ class ArchiveAFCAPI(OdinJob):
             post_max_job_id=post_snapshot["max_job_id"],
         )
 
+        # Regressions are only meaningful for transactional tables
         regressions = []
-        if (
-            pre_snapshot["max_job_id"] is not None
-            and post_snapshot["max_job_id"] is not None
-            and post_snapshot["max_job_id"] < pre_snapshot["max_job_id"]
-        ):
-            regressions.append(
-                (
-                    "parquet_max_job_id decreased after write: "
-                    f"{post_snapshot['max_job_id']} < {pre_snapshot['max_job_id']}"
+        if self.table_type == "transactional":
+            if (
+                pre_snapshot["max_job_id"] is not None
+                and post_snapshot["max_job_id"] is not None
+                and post_snapshot["max_job_id"] < pre_snapshot["max_job_id"]
+            ):
+                regressions.append(
+                    (
+                        "parquet_max_job_id decreased after write: "
+                        f"{post_snapshot['max_job_id']} < {pre_snapshot['max_job_id']}"
+                    )
                 )
-            )
 
-        if (
-            self.table_type == "transactional"
-            and pre_snapshot["min_job_id"] is not None
-            and post_snapshot["min_job_id"] is not None
-            and post_snapshot["min_job_id"] > pre_snapshot["min_job_id"]
-        ):
-            regressions.append(
-                (
-                    "parquet_min_job_id increased after write: "
-                    f"{post_snapshot['min_job_id']} > {pre_snapshot['min_job_id']}"
+            if (
+                pre_snapshot["min_job_id"] is not None
+                and post_snapshot["min_job_id"] is not None
+                and post_snapshot["min_job_id"] > pre_snapshot["min_job_id"]
+            ):
+                regressions.append(
+                    (
+                        "parquet_min_job_id increased after write: "
+                        f"{post_snapshot['min_job_id']} > {pre_snapshot['min_job_id']}"
+                    )
                 )
-            )
 
-        if post_snapshot["total_rows"] < pre_snapshot["total_rows"]:
-            regressions.append(
-                (
-                    "parquet total row count decreased after write: "
-                    f"{post_snapshot['total_rows']} < {pre_snapshot['total_rows']}"
+            if post_snapshot["total_rows"] < pre_snapshot["total_rows"]:
+                regressions.append(
+                    (
+                        "parquet total row count decreased after write: "
+                        f"{post_snapshot['total_rows']} < {pre_snapshot['total_rows']}"
+                    )
                 )
-            )
 
-        if post_snapshot["total_size_bytes"] < pre_snapshot["total_size_bytes"] * 0.75:
-            regressions.append(
-                (
-                    "parquet total bytes decreased after write: "
-                    f"{post_snapshot['total_size_bytes']} < {pre_snapshot['total_size_bytes']}"
+            if post_snapshot["total_size_bytes"] < pre_snapshot["total_size_bytes"] * 0.75:
+                regressions.append(
+                    (
+                        "parquet total bytes decreased after write: "
+                        f"{post_snapshot['total_size_bytes']} < {pre_snapshot['total_size_bytes']}"
+                    )
                 )
-            )
 
-        if post_snapshot["object_count"] < pre_snapshot["object_count"]:
-            regressions.append(
-                (
-                    "parquet object_count decreased after write: "
-                    f"{post_snapshot['object_count']} < {pre_snapshot['object_count']}"
+            if post_snapshot["object_count"] < pre_snapshot["object_count"]:
+                regressions.append(
+                    (
+                        "parquet object_count decreased after write: "
+                        f"{post_snapshot['object_count']} < {pre_snapshot['object_count']}"
+                    )
                 )
-            )
 
         for issue in regressions:
             ProcessLog(
