@@ -649,7 +649,8 @@ class CubicODSFact(OdinJob):
          - Merge CDC FACT conversion with existing FACT S3 dataset.
          - Upload merged FACT files to S3.
         """
-        log = ProcessLog("CubicODSFact", table=self.table)
+        # Lifecycle logging (process started/complete/run_delay_mins) is handled by the
+        # OdinJob base class; only swallowed exceptions are logged here.
         self.start_kwargs = {"table": self.table}
         next_run_secs = _default_run_interval()
 
@@ -679,16 +680,14 @@ class CubicODSFact(OdinJob):
                 )
                 snapshot_compare_to_history.complete()
             next_run_secs = self.load_cdc_records()
-
-            log.complete(run_interval=next_run_secs)
         # For development, other ODIN running...
         except pa.ArrowInvalid as e:
             self.start_kwargs["other_odin_running"] = "True"
-            log.failed(exception=e)
+            ProcessLog("CubicODSFact", table=self.table).failed(exception=e)
             return NEXT_RUN_IMMEDIATE
         except NoQlikHistoryError as e:
             self.start_kwargs["no_qlik_history_available"] = "True"
-            log.failed(exception=e)
+            ProcessLog("CubicODSFact", table=self.table).failed(exception=e)
 
         return next_run_secs
 
