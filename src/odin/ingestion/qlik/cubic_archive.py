@@ -352,9 +352,10 @@ class ArchiveCubicQlikTable(OdinJob):
             - if backlog of cdc files exists -> 5 mins
                 * when cdc files > half of max_cdc_files requested
         """
-        log = ProcessLog("ArchiveCubicQlikTable", table=self.table)
+        # Lifecycle logging (process started/complete/run_delay_mins) is handled by the
+        # OdinJob base class; only the swallowed RecentSnapshotError is logged here.
+        self.start_kwargs = {"table": self.table, "save_local": self.save_local}
         try:
-            self.start_kwargs = {"table": self.table, "save_local": self.save_local}
             self.archive_objects: List[str] = []
 
             next_run_secs = _default_run_interval()
@@ -368,12 +369,10 @@ class ArchiveCubicQlikTable(OdinJob):
             self.load_snapshots()
             self.load_cdc(cdc_files)
             self.move_objects()
-
-            log.complete(run_interval=next_run_secs)
         except RecentSnapshotError as e:
             self.start_kwargs["skipped_recent_snapshot"] = True
             next_run_secs = _default_run_interval()
-            log.failed(exception=e)
+            ProcessLog("ArchiveCubicQlikTable", table=self.table).failed(exception=e)
 
         return next_run_secs
 
