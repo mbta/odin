@@ -17,18 +17,18 @@ def open_delta(uri: str) -> DeltaTable | None:
         return None
 
 
-def column_max(dt: DeltaTable, column: str) -> Any:
+def column_max(dt: DeltaTable, column: str) -> int:
     """Read the max value of a column from delta stats (file or partition value)."""
     actions = pa.table(dt.get_add_actions(flatten=True))
     if actions.num_rows == 0:
-        return None
+        return 0
     for field in (f"max.{column}", f"partition.{column}"):
         if field not in actions.schema.names:
             continue
         valid = pc.drop_null(actions[field])
         if len(valid) > 0:
             return pc.max(valid).as_py()
-    return None
+    return 0
 
 
 def row_count(dt: DeltaTable) -> int:

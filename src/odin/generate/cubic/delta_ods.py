@@ -1,7 +1,7 @@
 """
 Delta-based Cubic ODS silver-table materialization.
 
-This is a parallel, read-only alternative to ``generate/cubic/ods_fact.py``. It
+This is a parallel alternative to ``generate/cubic/ods_fact.py``. It
 reads the same snapshot-partitioned Qlik history parquet produced by
 ``ingestion/qlik/cubic_archive.py`` and materializes the current-state ("silver")
 table as a Delta Lake table via MERGE, instead of the custom-parquet fact
@@ -239,11 +239,18 @@ class CubicODSDelta(OdinJob):
             if self.part_columns
             else []
         )
-        projection = ", ".join([*data_columns, "? AS odin_snapshot", *partition_columns])
+        select_exprs = [*data_columns, "? AS odin_snapshot", *partition_columns]
         sql = (
-            f"SELECT {projection} FROM {self._read_history} "
+            f"SELECT {', '.join(select_exprs)} FROM {self._read_history} "
             "WHERE snapshot = ? AND header__change_oper = 'L'"
         )
+
+        # delta-rs only collects file-level min/max stats for the first N columns
+        # (default 32). We read watermarks (odin_snapshot, header__change_seq) from
+        # those stats via column_max, and odin_snapshot is a trailing column, so we
+        # size the indexed-column count to the full silver width. Without this, a
+        # missing odin_snapshot stat reads as 0 and forces a rebuild on every run.
+        config = {"delta.dataSkippingNumIndexedCols": str(len(select_exprs))}
 
         sigterm_check()
         con = _connect(self.history_glob)
@@ -257,6 +264,7 @@ class CubicODSDelta(OdinJob):
                 mode="overwrite",
                 schema_mode="overwrite",
                 partition_by=self.part_columns or None,
+                configuration=config,
             )
         finally:
             con.close()
@@ -278,7 +286,7 @@ class CubicODSDelta(OdinJob):
             return _long_run_interval()
         log = ProcessLog("delta_merge_cdc", table=self.table)
 
-        silver_max_seq = delta_column_max(self.silver, "header__change_seq")
+        silver_max_seq = str(delta_column_max(self.silver, "header__change_seq"))
         cdc_df = self._read_cdc(silver_max_seq, limit=MAX_MERGE_RECORDS)
         if cdc_df.height == 0:
             log.complete(cdc_records_found=0)
@@ -288,6 +296,7 @@ class CubicODSDelta(OdinJob):
             f"CDC records for {self.table} contain a null header__change_seq"
         )
         max_seq_processed = cdc_df.get_column("header__change_seq").max()
+        assert max_seq_processed, f"No valid header__change_seq (.max() => {max_seq_processed})"
 
         keys = self._discover_keys(cdc_df)
         source = self._build_merge_source(cdc_df, keys)
@@ -310,14 +319,12 @@ class CubicODSDelta(OdinJob):
         )
         return NEXT_RUN_IMMEDIATE if more_pending > 0 else _default_run_interval()
 
-    def _read_cdc(self, after_seq, limit: int) -> pl.DataFrame:
+    def _read_cdc(self, after_seq: str, limit: int) -> pl.DataFrame:
         """Read up to `limit` CDC (I/U/D) records with seq > `after_seq`, seq-ascending."""
         opers = ", ".join(f"'{o}'" for o in CDC_OPERS)
-        conditions = ["snapshot = ?", f"header__change_oper IN ({opers})"]
-        params = [self.history_snapshot]
-        if after_seq is not None:
-            conditions.append("header__change_seq > ?")
-            params.append(str(after_seq))
+        conditions = ["snapshot = ?", f"header__change_oper IN ({opers})",
+                      "header__change_seq > ?"]
+        params = [self.history_snapshot, str(after_seq)]
         sql = (
             f"SELECT * FROM {self._read_history} "
             f"WHERE {' AND '.join(conditions)} "
@@ -393,10 +400,10 @@ class CubicODSDelta(OdinJob):
         )
         if "edw_inserted_dtm" in source.columns:
             source = source.with_columns(
-                pl.coalesce(pl.col("edw_inserted_dtm").dt.strftime("%Y"), "0")
+                pl.coalesce(pl.col("edw_inserted_dtm").dt.strftime("%Y"), pl.lit("0"))
                 .cast(pl.Int32)
                 .alias("odin_year"),
-                pl.coalesce(pl.col("edw_inserted_dtm").dt.strftime("%m"), "0")
+                pl.coalesce(pl.col("edw_inserted_dtm").dt.strftime("%m"), pl.lit("0"))
                 .cast(pl.Int32)
                 .alias("odin_month"),
             )

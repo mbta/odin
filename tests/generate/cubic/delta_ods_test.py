@@ -19,6 +19,7 @@ import pytest
 from deltalake import DeltaTable, write_deltalake
 
 from odin.generate.cubic.delta_ods import CubicODSDelta, READ_HISTORY
+from odin.utils.delta import column_max
 
 
 KEYS = ["txn_id"]
@@ -73,6 +74,25 @@ def history_rows(rows: list[dict]) -> pa.Table:
         "header__from_csv": FROM_CSV,
     }
     return pa.Table.from_pylist([{**defaults, **r} for r in rows], schema=HISTORY_SCHEMA)
+
+
+def dated_history_rows(rows: list[dict]) -> pa.Table:
+    """Build a history arrow table including edw_inserted_dtm (drives partitioning)."""
+    defaults = {
+        "txn_id": None,
+        "amount": None,
+        "status": None,
+        "header__change_seq": None,
+        "header__change_oper": None,
+        "header__year": 2025,
+        "header__month": 1,
+        "header__timestamp": None,
+        "header__from_csv": FROM_CSV,
+        "edw_inserted_dtm": None,
+    }
+    return pa.Table.from_pylist(
+        [{**defaults, **r} for r in rows], schema=HISTORY_SCHEMA_DATED
+    )
 
 
 def silver_rows(rows: list[dict]) -> pa.Table:
@@ -187,36 +207,24 @@ def test_rebuild_silver_partitions_by_year_and_month(job):
     from datetime import datetime
 
     pipeline, write_history, _, _ = job
-    dated = pa.Table.from_pylist(
-        [
-            {
-                "txn_id": 1,
-                "amount": 10,
-                "status": "a",
-                "header__change_seq": None,
-                "header__change_oper": "L",
-                "header__year": 2025,
-                "header__month": 1,
-                "header__timestamp": None,
-                "header__from_csv": FROM_CSV,
-                "edw_inserted_dtm": datetime(2025, 1, 15),
-            },
-            {
-                "txn_id": 2,
-                "amount": 20,
-                "status": "b",
-                "header__change_seq": None,
-                "header__change_oper": "L",
-                "header__year": 2025,
-                "header__month": 3,
-                "header__timestamp": None,
-                "header__from_csv": FROM_CSV,
-                "edw_inserted_dtm": datetime(2025, 3, 20),
-            },
-        ],
-        schema=HISTORY_SCHEMA_DATED,
+    write_history(
+        dated_history_rows(
+            [
+                {
+                    "txn_id": 1,
+                    "amount": 10,
+                    "header__change_oper": "L",
+                    "edw_inserted_dtm": datetime(2025, 1, 15),
+                },
+                {
+                    "txn_id": 2,
+                    "amount": 20,
+                    "header__change_oper": "L",
+                    "edw_inserted_dtm": datetime(2025, 3, 20),
+                },
+            ]
+        )
     )
-    write_history(dated)
     pipeline._rebuild_silver()
 
     dt = DeltaTable(pipeline.silver_uri)
@@ -224,6 +232,80 @@ def test_rebuild_silver_partitions_by_year_and_month(job):
     out = pl.from_arrow(dt.to_pyarrow_table()).sort("txn_id")
     assert out.get_column("odin_year").to_list() == [2025, 2025]
     assert out.get_column("odin_month").to_list() == [1, 3]
+
+
+def test_merge_cdc_dated_table_derives_year_and_month(job):
+    """CDC merge on a partitioned table derives odin_year/odin_month from edw_inserted_dtm."""
+    from datetime import datetime
+
+    pipeline, write_history, _, _ = job
+    write_history(
+        dated_history_rows(
+            [
+                {
+                    "txn_id": 1,
+                    "amount": 10,
+                    "header__change_oper": "L",
+                    "edw_inserted_dtm": datetime(2025, 1, 15),
+                },
+                {
+                    "txn_id": 2,
+                    "amount": 20,
+                    "header__change_oper": "I",
+                    "header__change_seq": "0001",
+                    "edw_inserted_dtm": datetime(2025, 3, 20),
+                },
+                {
+                    "txn_id": 1,
+                    "amount": 99,
+                    "header__change_oper": "U",
+                    "header__change_seq": "0002",
+                    "edw_inserted_dtm": datetime(2025, 1, 15),
+                },
+            ]
+        )
+    )
+    pipeline._rebuild_silver()  # loads txn 1
+    pipeline._merge_cdc()  # inserts txn 2, updates txn 1
+
+    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table()).sort("txn_id")
+    assert out.get_column("txn_id").to_list() == [1, 2]
+    assert out.get_column("amount").to_list() == [99, 20]
+    assert out.get_column("odin_year").to_list() == [2025, 2025]
+    assert out.get_column("odin_month").to_list() == [1, 3]
+
+
+def test_snapshot_watermark_readable_on_wide_table(job):
+    """
+    odin_snapshot stays readable from stats even as a trailing column on a wide table.
+
+    delta-rs only indexes the first 32 columns by default; without sizing the
+    indexed-column count to the full width, column_max(odin_snapshot) returns 0
+    and run() rebuilds every time.
+    """
+    pipeline, write_history, _, _ = job
+    ncol = 40
+    schema = pa.schema(
+        [
+            pa.field("txn_id", pa.int64()),
+            pa.field("header__change_seq", pa.large_string()),
+            pa.field("header__change_oper", pa.large_string()),
+            *[pa.field(f"c{i}", pa.int64()) for i in range(ncol)],
+        ]
+    )
+    rows = [
+        {
+            "txn_id": k,
+            "header__change_seq": None,
+            "header__change_oper": "L",
+            **{f"c{i}": 0 for i in range(ncol)},
+        }
+        for k in (1, 2)
+    ]
+    write_history(pa.Table.from_pylist(rows, schema=schema))
+    pipeline._rebuild_silver()
+
+    assert column_max(pipeline.silver, "odin_snapshot") == TEST_SNAPSHOT
 
 
 def test_rebuild_silver_without_load_records_raises(job):
