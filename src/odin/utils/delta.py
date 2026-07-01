@@ -1,7 +1,5 @@
 """Shared helpers for delta-rs-backed jobs."""
 
-from typing import Any
-
 import pyarrow as pa
 import pyarrow.compute as pc
 

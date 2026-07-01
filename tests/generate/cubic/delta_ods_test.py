@@ -272,9 +272,7 @@ def test_merge_cdc_dated_table_derives_year_and_month(job):
 def test_rebuild_records_snapshot_and_initial_watermark(job):
     """Rebuild records the snapshot and a reset watermark in commit metadata."""
     pipeline, write_history, _, _ = job
-    write_history(
-        history_rows([{"txn_id": 1, "amount": 10, "header__change_oper": "L"}])
-    )
+    write_history(history_rows([{"txn_id": 1, "amount": 10, "header__change_oper": "L"}]))
     pipeline._rebuild_silver()
 
     assert pipeline._read_state() == (TEST_SNAPSHOT, "0")
