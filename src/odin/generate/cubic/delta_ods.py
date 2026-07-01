@@ -312,13 +312,14 @@ class CubicODSDelta(OdinJob):
         assert cdc_df.get_column("header__change_seq").null_count() == 0, (
             f"CDC records for {self.table} contain a null header__change_seq"
         )
-        max_seq_processed = cdc_df.get_column("header__change_seq").max()
-        assert max_seq_processed, f"No valid header__change_seq (.max() => {max_seq_processed})"
+        max_seq = cdc_df.get_column("header__change_seq").max()
+        assert max_seq, f"No valid header__change_seq (.max() => {max_seq})"
+        max_seq_processed = str(max_seq)
 
         keys = self._discover_keys(cdc_df)
         source = self._build_merge_source(cdc_df, keys)
         try:
-            metrics = self._merge_apply(source, keys, str(max_seq_processed))
+            metrics = self._merge_apply(source, keys, max_seq_processed)
         except SchemaMismatchError as exc:
             raise CDCSchemaIncompatibleError(
                 f"silver MERGE failed for {self.table}: {exc}"
@@ -423,7 +424,7 @@ class CubicODSDelta(OdinJob):
     def _merge_apply(self, source: pl.DataFrame, keys: list[str], watermark: str) -> dict:
         """Execute the delete/update/insert MERGE of `source` into silver."""
         assert self.silver is not None
-        target_cols = [f.name for f in self.silver.schema().to_arrow()]
+        target_cols = self.silver.schema().to_arrow().names
         missing = set(keys) - set(target_cols)
         assert not missing, (
             f"primary key columns {sorted(missing)} absent from silver table for {self.table}"
