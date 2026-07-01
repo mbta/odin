@@ -19,7 +19,9 @@ TABLES_BETA: list[str] = [
     "retail.activations",
 ]
 
-TABLES_GAMMA: list[str] = []
+TABLES_GAMMA: list[str] = [
+    "validation.scans"  # DUPLICATED FROM ABOVE, REMOVE ONCE DATA IS BACKFILLED (see https://github.com/mbta/odin/pull/204)
+]
 
 TABLES_BY_INSTANCE = {
     "alpha": TABLES_ALPHA,
