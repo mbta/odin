@@ -24,6 +24,8 @@ CUBIC_QLIK_IGNORED = f"{ODIN_ARCHIVE}/cubic_qlik/ignored"
 CUBIC_ODS_FACT_DATA = f"{ODIN_DATA}/cubic/ods"
 CUBIC_ODS_REPORTS = f"{ODIN_DATA}/cubic/reports"
 
+CUBIC_ODS_DELTA_DATA = f"{ODIN_DATA}/cubic/ods_delta"
+
 # AFC
 AFC_DATA = f"{ODIN_DATA}/sb/api"
 AFC_RESTRICTED = f"{ODIN_DATA}/sb/restricted"
