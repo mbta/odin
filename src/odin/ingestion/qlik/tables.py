@@ -168,9 +168,7 @@ CUBIC_ODS_TABLES = CUBIC_ODS_TABLES_ALPHA + CUBIC_ODS_TABLES_BETA + CUBIC_ODS_TA
 
 _ODIN_INSTANCE = get_odin_instance()
 
-CUBIC_ODS_TABLES_INSTANCE = (
-    CUBIC_ODS_TABLES_ALPHA if _ODIN_INSTANCE == "alpha" else CUBIC_ODS_TABLES_BETA
-)
+CUBIC_ODS_TABLES_INSTANCE = CUBIC_ODS_TABLES_BY_INSTANCE[_ODIN_INSTANCE]
 
 # Tables materialized by the Delta-based silver job (generate/cubic/delta_ods.py),
 # split by instance like CUBIC_ODS_TABLES so the Delta pipeline can be rolled out
