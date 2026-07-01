@@ -90,9 +90,7 @@ def dated_history_rows(rows: list[dict]) -> pa.Table:
         "header__from_csv": FROM_CSV,
         "edw_inserted_dtm": None,
     }
-    return pa.Table.from_pylist(
-        [{**defaults, **r} for r in rows], schema=HISTORY_SCHEMA_DATED
-    )
+    return pa.Table.from_pylist([{**defaults, **r} for r in rows], schema=HISTORY_SCHEMA_DATED)
 
 
 def silver_rows(rows: list[dict]) -> pa.Table:
@@ -142,22 +140,16 @@ def job(tmp_path):
         pq.write_table(table, str(history_file))
         # Populate history_columns the way _snapshot_check would (incl. hive snapshot).
         con = duckdb.connect()
-        describe = con.execute(
-            f"DESCRIBE SELECT * FROM {READ_HISTORY.format(glob=glob)}"
-        ).pl()
+        describe = con.execute(f"DESCRIBE SELECT * FROM {READ_HISTORY.format(glob=glob)}").pl()
         con.close()
         pipeline.history_columns = describe.get_column("column_name").to_list()
         # Mirror _snapshot_check: edw_inserted_dtm drives year/month partitioning.
         pipeline.part_columns = (
-            ["odin_year", "odin_month"]
-            if "edw_inserted_dtm" in pipeline.history_columns
-            else []
+            ["odin_year", "odin_month"] if "edw_inserted_dtm" in pipeline.history_columns else []
         )
 
     def write_silver(table: pa.Table) -> None:
-        write_deltalake(
-            str(silver_dir), table, mode="overwrite", schema_mode="overwrite"
-        )
+        write_deltalake(str(silver_dir), table, mode="overwrite", schema_mode="overwrite")
         pipeline.silver = DeltaTable(str(silver_dir))
 
     def read_silver() -> pl.DataFrame:
@@ -165,9 +157,12 @@ def job(tmp_path):
         assert isinstance(result, pl.DataFrame)
         return result.select(SILVER_VISIBLE).sort("txn_id")
 
-    with patch("odin.generate.cubic.delta_ods.sigterm_check"), patch(
-        "odin.generate.cubic.delta_ods.dfm_from_s3",
-        return_value=mock_dfm_for_keys(KEYS),
+    with (
+        patch("odin.generate.cubic.delta_ods.sigterm_check"),
+        patch(
+            "odin.generate.cubic.delta_ods.dfm_from_s3",
+            return_value=mock_dfm_for_keys(KEYS),
+        ),
     ):
         yield pipeline, write_history, write_silver, read_silver
 
@@ -330,9 +325,7 @@ def test_rebuild_silver_without_load_records_raises(job):
 def test_merge_cdc_insert_adds_new_key(job):
     """An I record for a new key is inserted into silver."""
     pipeline, write_history, write_silver, read_silver = job
-    write_silver(
-        silver_rows([{"txn_id": 1, "amount": 10, "status": "a"}])
-    )
+    write_silver(silver_rows([{"txn_id": 1, "amount": 10, "status": "a"}]))
     write_history(
         history_rows(
             [
@@ -357,9 +350,7 @@ def test_merge_cdc_insert_adds_new_key(job):
 def test_merge_cdc_update_coalesces_sparse_columns(job):
     """A U record updates supplied columns and retains existing values for nulls."""
     pipeline, write_history, write_silver, read_silver = job
-    write_silver(
-        silver_rows([{"txn_id": 1, "amount": 10, "status": "a"}])
-    )
+    write_silver(silver_rows([{"txn_id": 1, "amount": 10, "status": "a"}]))
     write_history(
         history_rows(
             [

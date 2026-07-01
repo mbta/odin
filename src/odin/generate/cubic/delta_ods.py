@@ -128,9 +128,7 @@ class CubicODSDelta(OdinJob):
         """Create CubicODSDelta instance for `table`."""
         self.table = table
         self.s3_source = os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DATA, table)
-        self.silver_uri = s3_file(
-            os.path.join(DATA_SPRINGBOARD, CUBIC_ODS_DELTA_DATA, table)
-        )
+        self.silver_uri = s3_file(os.path.join(DATA_SPRINGBOARD, CUBIC_ODS_DELTA_DATA, table))
         self.start_kwargs = {"table": table}
         self.silver: DeltaTable | None = None
         self.history_glob = f"{s3_folder(self.s3_source)}**/*.parquet"
@@ -171,9 +169,9 @@ class CubicODSDelta(OdinJob):
             log.failed(exception=exc)
             return NEXT_RUN_IMMEDIATE
         except CDCSchemaIncompatibleError as exc:
-            ProcessLog(
-                "cdc_schema_incompatible", table=self.table, error=str(exc)
-            ).failed(exception=exc)
+            ProcessLog("cdc_schema_incompatible", table=self.table, error=str(exc)).failed(
+                exception=exc
+            )
             return NEXT_RUN_LONG
 
     @property
@@ -207,9 +205,7 @@ class CubicODSDelta(OdinJob):
             f"history for {self.table} is missing required columns: {sorted(missing)}"
         )
         self.part_columns = (
-            ["odin_year", "odin_month"]
-            if "edw_inserted_dtm" in self.history_columns
-            else []
+            ["odin_year", "odin_month"] if "edw_inserted_dtm" in self.history_columns else []
         )
         ProcessLog(
             "delta_snapshot_check",
@@ -225,12 +221,8 @@ class CubicODSDelta(OdinJob):
 
     def _rebuild_silver(self) -> None:
         """Overwrite silver with the "L" (load) records of the current snapshot."""
-        log = ProcessLog(
-            "delta_rebuild_silver", table=self.table, snapshot=self.history_snapshot
-        )
-        data_columns = [
-            f'"{c}"' for c in self.history_columns if c not in META_DROP_COLUMNS
-        ]
+        log = ProcessLog("delta_rebuild_silver", table=self.table, snapshot=self.history_snapshot)
+        data_columns = [f'"{c}"' for c in self.history_columns if c not in META_DROP_COLUMNS]
         partition_columns = (
             [
                 "CAST(coalesce(strftime(edw_inserted_dtm, '%Y'), '0') AS INTEGER) AS odin_year",
@@ -322,8 +314,7 @@ class CubicODSDelta(OdinJob):
     def _read_cdc(self, after_seq: str, limit: int) -> pl.DataFrame:
         """Read up to `limit` CDC (I/U/D) records with seq > `after_seq`, seq-ascending."""
         opers = ", ".join(f"'{o}'" for o in CDC_OPERS)
-        conditions = ["snapshot = ?", f"header__change_oper IN ({opers})",
-                      "header__change_seq > ?"]
+        conditions = ["snapshot = ?", f"header__change_oper IN ({opers})", "header__change_seq > ?"]
         params = [self.history_snapshot, str(after_seq)]
         sql = (
             f"SELECT * FROM {self._read_history} "
@@ -341,9 +332,7 @@ class CubicODSDelta(OdinJob):
         """Return the primary-key column names (lowercased) from the table DFM."""
         dfm = self._dfm_from_records(cdc_df)
         keys = [
-            col["name"].lower()
-            for col in dfm["dataInfo"]["columns"]
-            if col["primaryKeyPos"] > 0
+            col["name"].lower() for col in dfm["dataInfo"]["columns"] if col["primaryKeyPos"] > 0
         ]
         assert keys, f"DFM for {self.table} declares no primary key columns"
         missing = set(keys) - set(cdc_df.columns)
@@ -376,16 +365,12 @@ class CubicODSDelta(OdinJob):
             yield s3_file(os.path.join(DATA_ARCHIVE, CUBIC_QLIK_PROCESSED, rel))
             yield s3_file(path)
 
-    def _build_merge_source(
-        self, cdc_df: pl.DataFrame, keys: list[str]
-    ) -> pl.DataFrame:
+    def _build_merge_source(self, cdc_df: pl.DataFrame, keys: list[str]) -> pl.DataFrame:
         """Resolve CDC records to one final row per key for the silver MERGE."""
         data_cols = [
             c
             for c in cdc_df.columns
-            if c not in keys
-            and c not in META_DROP_COLUMNS
-            and c != "header__change_seq"
+            if c not in keys and c not in META_DROP_COLUMNS and c != "header__change_seq"
         ]
         sorted_desc = cdc_df.sort(by="header__change_seq", descending=True)
         latest = sorted_desc.unique(keys, keep="first").select(
@@ -433,9 +418,7 @@ class CubicODSDelta(OdinJob):
         }
         source_cols = set(source.columns)
         update_set = {
-            col: f"source.{col}"
-            if col in passthrough
-            else f"COALESCE(source.{col}, target.{col})"
+            col: f"source.{col}" if col in passthrough else f"COALESCE(source.{col}, target.{col})"
             for col in target_cols
             if col not in keys and col in source_cols
         }
@@ -452,14 +435,9 @@ class CubicODSDelta(OdinJob):
         )
         return (
             merger.when_matched_delete(predicate="source.header__change_oper = 'D'")
-            .when_matched_update(
-                predicate="source.header__change_oper != 'D'", updates=update_set
-            )
+            .when_matched_update(predicate="source.header__change_oper != 'D'", updates=update_set)
             .when_not_matched_insert(
-                predicate=(
-                    "source.header__change_oper != 'D' "
-                    "AND source.has_insert_base = true"
-                ),
+                predicate=("source.header__change_oper != 'D' AND source.has_insert_base = true"),
                 updates=insert_set,
             )
             .execute()
