@@ -19,7 +19,6 @@ import pytest
 from deltalake import DeltaTable, write_deltalake
 
 from odin.generate.cubic.delta_ods import CubicODSDelta, READ_HISTORY
-from odin.utils.delta import column_max
 
 
 KEYS = ["txn_id"]
@@ -261,7 +260,7 @@ def test_merge_cdc_dated_table_derives_year_and_month(job):
         )
     )
     pipeline._rebuild_silver()  # loads txn 1
-    pipeline._merge_cdc()  # inserts txn 2, updates txn 1
+    pipeline._merge_cdc("0")  # inserts txn 2, updates txn 1
 
     out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table()).sort("txn_id")
     assert out.get_column("txn_id").to_list() == [1, 2]
@@ -270,13 +269,23 @@ def test_merge_cdc_dated_table_derives_year_and_month(job):
     assert out.get_column("odin_month").to_list() == [1, 3]
 
 
-def test_snapshot_watermark_readable_on_wide_table(job):
-    """
-    odin_snapshot stays readable from stats even as a trailing column on a wide table.
+def test_rebuild_records_snapshot_and_initial_watermark(job):
+    """Rebuild records the snapshot and a reset watermark in commit metadata."""
+    pipeline, write_history, _, _ = job
+    write_history(
+        history_rows([{"txn_id": 1, "amount": 10, "header__change_oper": "L"}])
+    )
+    pipeline._rebuild_silver()
 
-    delta-rs only indexes the first 32 columns by default; without sizing the
-    indexed-column count to the full width, column_max(odin_snapshot) returns 0
-    and run() rebuilds every time.
+    assert pipeline._read_state() == (TEST_SNAPSHOT, "0")
+
+
+def test_state_readable_on_wide_table(job):
+    """
+    Recorded position is read from commit metadata, so table width is irrelevant.
+
+    (Contrast with reading a trailing column's stats, which delta-rs only collects
+    for the first 32 columns by default.)
     """
     pipeline, write_history, _, _ = job
     ncol = 40
@@ -300,7 +309,43 @@ def test_snapshot_watermark_readable_on_wide_table(job):
     write_history(pa.Table.from_pylist(rows, schema=schema))
     pipeline._rebuild_silver()
 
-    assert column_max(pipeline.silver, "odin_snapshot") == TEST_SNAPSHOT
+    assert pipeline._read_state()[0] == TEST_SNAPSHOT
+
+
+def test_delete_only_batch_advances_watermark(job):
+    """
+    A CDC batch of only deletes still advances the recorded watermark.
+
+    The deleted row holds the max header__change_seq, so a contents-derived
+    watermark would regress and re-read the batch forever; the recorded position
+    must move past it.
+    """
+    pipeline, write_history, write_silver, read_silver = job
+    write_silver(
+        silver_rows(
+            [
+                {"txn_id": 1, "amount": 10, "status": "a"},
+                {"txn_id": 2, "amount": 20, "status": "b"},
+            ]
+        )
+    )
+    write_history(
+        history_rows(
+            [
+                {"txn_id": 1, "amount": 10, "status": "a", "header__change_oper": "L"},
+                {"txn_id": 2, "amount": 20, "status": "b", "header__change_oper": "L"},
+                {"txn_id": 2, "header__change_oper": "D", "header__change_seq": "0005"},
+            ]
+        )
+    )
+    pipeline._merge_cdc("0")
+
+    assert read_silver().get_column("txn_id").to_list() == [1]
+    # Watermark advanced past the delete even though its row is gone from silver.
+    assert pipeline._read_state() == (TEST_SNAPSHOT, "0005")
+    # Re-running from the recorded watermark is a no-op (batch not re-read).
+    pipeline._merge_cdc("0005")
+    assert read_silver().get_column("txn_id").to_list() == [1]
 
 
 def test_rebuild_silver_without_load_records_raises(job):
@@ -340,7 +385,7 @@ def test_merge_cdc_insert_adds_new_key(job):
             ]
         )
     )
-    pipeline._merge_cdc()
+    pipeline._merge_cdc("0")
 
     out = read_silver()
     assert out.get_column("txn_id").to_list() == [1, 2]
@@ -365,7 +410,7 @@ def test_merge_cdc_update_coalesces_sparse_columns(job):
             ]
         )
     )
-    pipeline._merge_cdc()
+    pipeline._merge_cdc("0")
 
     row = read_silver().filter(pl.col("txn_id") == 1)
     assert row.get_column("amount").to_list() == [99]
@@ -396,7 +441,7 @@ def test_merge_cdc_delete_removes_key(job):
             ]
         )
     )
-    pipeline._merge_cdc()
+    pipeline._merge_cdc("0")
 
     assert read_silver().get_column("txn_id").to_list() == [1]
 
@@ -429,7 +474,7 @@ def test_merge_cdc_no_pending_leaves_silver_untouched(job):
             ]
         )
     )
-    interval = pipeline._merge_cdc()
+    interval = pipeline._merge_cdc("0005")
 
     assert read_silver().get_column("amount").to_list() == [10]
     assert interval > 0

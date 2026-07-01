@@ -11,10 +11,13 @@ The history parquet is queried with DuckDB (read side) and the silver table is
 written with delta-rs (write side); no custom parquet utilities are involved.
 
 Crucially it never moves, deletes, or prunes any source files. Its position on
-the history input is tracked entirely by watermarks written into its own Delta
-output (``odin_snapshot`` for the snapshot generation and ``header__change_seq``
-for the CDC stream), so it can run concurrently with both ``cubic_archive.py``
-(which owns moving raw files) and ``ods_fact.py`` (the existing fact pipeline).
+the history input is recorded in the silver table's Delta commit metadata (the
+snapshot generation and the max processed ``header__change_seq``), so it can run
+concurrently with both ``cubic_archive.py`` (which owns moving raw files) and
+``ods_fact.py`` (the existing fact pipeline). Tracking the watermark in commit
+metadata rather than deriving it from the surviving rows is deliberate: a CDC
+batch of only deletes removes the row holding the max ``header__change_seq``, so
+a contents-derived watermark would regress and re-read that batch forever.
 
 The source data is treated as untrusted: every run asserts the invariants it
 depends on (required columns present, primary keys declared and present, CDC
@@ -36,6 +39,7 @@ from typing import Iterator
 import duckdb
 import polars as pl
 
+from deltalake import CommitProperties
 from deltalake import DeltaTable
 from deltalake import write_deltalake
 from deltalake.exceptions import CommitFailedError
@@ -46,7 +50,6 @@ from odin.job import job_proc_schedule
 from odin.utils.aws.s3 import list_partitions
 from odin.utils.aws.s3 import s3_file
 from odin.utils.aws.s3 import s3_folder
-from odin.utils.delta import column_max as delta_column_max
 from odin.utils.delta import open_delta
 from odin.utils.delta import row_count as delta_row_count
 from odin.utils.locations import CUBIC_ODS_DELTA_DATA
@@ -71,6 +74,14 @@ REBUILD_BATCH_SIZE = 10_000
 MAX_MERGE_RECORDS = 100_000
 
 CDC_OPERS = ("I", "U", "D")
+
+# Keys under which each Delta commit records the job's input position in its
+# custom metadata (readable via DeltaTable.history()). This is the source of
+# truth for "where the table is at", independent of the surviving row contents.
+STATE_SNAPSHOT_KEY = "odin_snapshot"
+STATE_WATERMARK_KEY = "odin_cdc_watermark"
+INITIAL_WATERMARK = "0"  # header__change_seq is a zero-padded string; all seqs > "0"
+HISTORY_SCAN_LIMIT = 50  # commits to scan back for the latest recorded position
 
 # DuckDB read expression over the snapshot-partitioned history parquet.
 READ_HISTORY = "read_parquet('{glob}', hive_partitioning = true, union_by_name = true)"
@@ -144,15 +155,12 @@ class CubicODSDelta(OdinJob):
             self.silver = open_delta(self.silver_uri)
             self._snapshot_check()
 
-            silver_snapshot = ""
-            if self.silver is not None:
-                existing = delta_column_max(self.silver, "odin_snapshot")
-                silver_snapshot = str(existing) if existing is not None else ""
-
+            silver_snapshot, cdc_watermark = self._read_state()
             if self.history_snapshot != silver_snapshot:
                 self._rebuild_silver()
+                cdc_watermark = INITIAL_WATERMARK
 
-            next_run = self._merge_cdc()
+            next_run = self._merge_cdc(cdc_watermark)
             log.complete(
                 run_interval=next_run,
                 history_snapshot=self.history_snapshot,
@@ -178,6 +186,31 @@ class CubicODSDelta(OdinJob):
     def _read_history(self) -> str:
         """Return the DuckDB read_parquet expression for this table's history."""
         return READ_HISTORY.format(glob=self.history_glob)
+
+    def _read_state(self) -> tuple[str, str]:
+        """
+        Return (snapshot, cdc_watermark) from the latest commit that recorded them.
+
+        A silver table with no recorded position (never built, or built by an
+        older version) reads as ("", INITIAL_WATERMARK), which forces a rebuild.
+        """
+        if self.silver is None:
+            return "", INITIAL_WATERMARK
+        for commit in self.silver.history(HISTORY_SCAN_LIMIT):
+            if STATE_SNAPSHOT_KEY in commit:
+                return commit[STATE_SNAPSHOT_KEY], commit.get(
+                    STATE_WATERMARK_KEY, INITIAL_WATERMARK
+                )
+        return "", INITIAL_WATERMARK
+
+    def _commit_state(self, watermark: str) -> CommitProperties:
+        """Commit metadata recording the current snapshot and CDC watermark."""
+        return CommitProperties(
+            custom_metadata={
+                STATE_SNAPSHOT_KEY: self.history_snapshot,
+                STATE_WATERMARK_KEY: watermark,
+            }
+        )
 
     # ------------------------------------------------------------------
     # Snapshot discovery
@@ -237,13 +270,6 @@ class CubicODSDelta(OdinJob):
             "WHERE snapshot = ? AND header__change_oper = 'L'"
         )
 
-        # delta-rs only collects file-level min/max stats for the first N columns
-        # (default 32). We read watermarks (odin_snapshot, header__change_seq) from
-        # those stats via column_max, and odin_snapshot is a trailing column, so we
-        # size the indexed-column count to the full silver width. Without this, a
-        # missing odin_snapshot stat reads as 0 and forces a rebuild on every run.
-        config = {"delta.dataSkippingNumIndexedCols": str(len(select_exprs))}
-
         sigterm_check()
         con = _connect(self.history_glob)
         try:
@@ -256,7 +282,7 @@ class CubicODSDelta(OdinJob):
                 mode="overwrite",
                 schema_mode="overwrite",
                 partition_by=self.part_columns or None,
-                configuration=config,
+                commit_properties=self._commit_state(INITIAL_WATERMARK),
             )
         finally:
             con.close()
@@ -272,14 +298,13 @@ class CubicODSDelta(OdinJob):
     # CDC MERGE (silver update from I/U/D records)
     # ------------------------------------------------------------------
 
-    def _merge_cdc(self) -> int:
-        """Apply pending CDC records to silver; return the next-run interval."""
+    def _merge_cdc(self, after_seq: str) -> int:
+        """Apply CDC records with seq > `after_seq` to silver; return the next-run interval."""
         if self.silver is None:
             return _long_run_interval()
         log = ProcessLog("delta_merge_cdc", table=self.table)
 
-        silver_max_seq = str(delta_column_max(self.silver, "header__change_seq"))
-        cdc_df = self._read_cdc(silver_max_seq, limit=MAX_MERGE_RECORDS)
+        cdc_df = self._read_cdc(after_seq, limit=MAX_MERGE_RECORDS)
         if cdc_df.height == 0:
             log.complete(cdc_records_found=0)
             return _long_run_interval()
@@ -293,7 +318,7 @@ class CubicODSDelta(OdinJob):
         keys = self._discover_keys(cdc_df)
         source = self._build_merge_source(cdc_df, keys)
         try:
-            metrics = self._merge_apply(source, keys)
+            metrics = self._merge_apply(source, keys, str(max_seq_processed))
         except SchemaMismatchError as exc:
             raise CDCSchemaIncompatibleError(
                 f"silver MERGE failed for {self.table}: {exc}"
@@ -306,6 +331,7 @@ class CubicODSDelta(OdinJob):
             cdc_records_processed=cdc_df.height,
             merge_source_rows=source.height,
             final_row_count=delta_row_count(self.silver),
+            cdc_watermark=max_seq_processed,
             more_pending=more_pending,
             **{f"merge_{k}": v for k, v in metrics.items()},
         )
@@ -394,7 +420,7 @@ class CubicODSDelta(OdinJob):
             )
         return source
 
-    def _merge_apply(self, source: pl.DataFrame, keys: list[str]) -> dict:
+    def _merge_apply(self, source: pl.DataFrame, keys: list[str], watermark: str) -> dict:
         """Execute the delete/update/insert MERGE of `source` into silver."""
         assert self.silver is not None
         target_cols = [f.name for f in self.silver.schema().to_arrow()]
@@ -432,6 +458,7 @@ class CubicODSDelta(OdinJob):
             target_alias="target",
             error_on_type_mismatch=False,
             merge_schema=False,
+            commit_properties=self._commit_state(watermark),
         )
         return (
             merger.when_matched_delete(predicate="source.header__change_oper = 'D'")
