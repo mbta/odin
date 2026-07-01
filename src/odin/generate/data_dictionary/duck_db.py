@@ -11,6 +11,7 @@ from odin.utils.aws.s3 import upload_file
 from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import CUBIC_ODS_FACT_DATA
 from odin.utils.locations import CUBIC_QLIK_DATA
+from odin.utils.locations import CUBIC_ODS_DELTA_DATA
 from odin.utils.locations import AFC_DATA
 from odin.utils.locations import AFC_RESTRICTED
 from odin.utils.locations import CUBIC_ODS_REPORTS
@@ -33,6 +34,7 @@ class ViewBuilder:
 
 DROP_VIEW = "DROP VIEW IF EXISTS $schema.$table;"
 READ_PQ = "read_parquet('$s3_path/**/*.parquet', union_by_name = true)"
+READ_D = "delta_scan('$s3_path')"
 
 dataset_views = [
     ViewBuilder(
@@ -64,6 +66,13 @@ dataset_views = [
                 f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT $columns FROM {READ_PQ} "
                 f"WHERE snapshot=(SELECT max(snapshot) FROM {READ_PQ});"
             )
+        ),
+    ),
+    ViewBuilder(
+        s3_prefix=os.path.join(DATA_SPRINGBOARD, CUBIC_ODS_DELTA_DATA),
+        schema="cubic_delta",
+        template=Template(
+            f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT $columns FROM {READ_D};"
         ),
     ),
     ViewBuilder(

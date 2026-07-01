@@ -24,7 +24,6 @@ CUBIC_QLIK_IGNORED = f"{ODIN_ARCHIVE}/cubic_qlik/ignored"
 CUBIC_ODS_FACT_DATA = f"{ODIN_DATA}/cubic/ods"
 CUBIC_ODS_REPORTS = f"{ODIN_DATA}/cubic/reports"
 
-# CUBIC ODS DELTA (lakehouse silver table; parallel to CUBIC_ODS_FACT_DATA)
 CUBIC_ODS_DELTA_DATA = f"{ODIN_DATA}/cubic/ods_delta"
 
 # AFC
