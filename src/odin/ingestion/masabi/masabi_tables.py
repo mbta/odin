@@ -19,7 +19,17 @@ TABLES_BETA: list[str] = [
     "retail.activations",
 ]
 
-TABLES_GAMMA: list[str] = []
+# TEMPORARY BACKFILLING WORK (see https://github.com/mbta/odin/pull/204)
+TABLES_GAMMA: list[str] = [
+    "retail.rider_entitlement_events",
+    "validation.telemetry",
+    "retail.account_actions",
+    "retail.tickets",
+    "retail.ticket_refunds",
+    "validation.scans",
+    "retail.ticket_purchases",
+    "retail.activations",
+]
 
 TABLES_BY_INSTANCE = {
     "alpha": TABLES_ALPHA,
