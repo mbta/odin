@@ -157,6 +157,9 @@ class CubicODSFact(OdinJob):
 
         try:
             self.fact_snapshot = str(fast_last_mod_ds_max(self.s3_export, "odin_snapshot"))
+            if self.fact_snapshot is None:
+                # Fail to prevent data loss case
+                raise ValueError("Data exists but found invalid fact_snapshot.")
         except IndexError:
             self.fact_snapshot = ""
 
