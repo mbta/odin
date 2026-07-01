@@ -10,6 +10,7 @@ TABLES_ALPHA = [
     # "view.validators",
     "retail.account_actions",
     "retail.tickets",
+    "retail.ticket_refunds",
     "validation.scans",
 ]
 
@@ -18,7 +19,15 @@ TABLES_BETA: list[str] = [
     "retail.activations",
 ]
 
-TABLES = TABLES_ALPHA + TABLES_BETA
+TABLES_GAMMA: list[str] = []
+
+TABLES_BY_INSTANCE = {
+    "alpha": TABLES_ALPHA,
+    "beta": TABLES_BETA,
+    "gamma": TABLES_GAMMA,
+}
+
+TABLES = TABLES_ALPHA + TABLES_BETA + TABLES_GAMMA
 
 _ODIN_INSTANCE = get_odin_instance()
-TABLES_INSTANCE = TABLES_ALPHA if _ODIN_INSTANCE == "alpha" else TABLES_BETA
+TABLES_INSTANCE = TABLES_BY_INSTANCE[_ODIN_INSTANCE]

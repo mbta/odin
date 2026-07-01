@@ -1,6 +1,7 @@
 from abc import ABC
 from abc import abstractmethod
 from multiprocessing import get_context
+from multiprocessing.process import BaseProcess
 from multiprocessing.sharedctypes import Synchronized
 from typing import Dict
 import glob
@@ -9,6 +10,7 @@ import shutil
 import tempfile
 import sched
 
+import psutil
 
 from odin.utils.logger import ProcessLog
 from odin.utils.logger import MdValues
@@ -16,6 +18,9 @@ from odin.utils.runtime import sigterm_check
 
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 NEXT_RUN_FAILED = 60 * 60 * 24  # 24 hours
+
+# How often the parent samples a running job subprocess' memory, in seconds
+MEM_POLL_INTERVAL_SECS = 1.0
 
 # Prefix for Odin temp directories to avoid conflicts with other processes
 ODINJOB_TMPDIR_PREFIX = "odinjob_tmp_"
@@ -110,6 +115,51 @@ class OdinJob(ABC):
             return_val.value = run_delay_secs
 
 
+def _proc_tree_rss_mb(proc: psutil.Process) -> float:
+    """Resident set size of ``proc`` and all of its children, in MB."""
+    rss = proc.memory_info().rss
+    for child in proc.children(recursive=True):
+        try:
+            rss += child.memory_info().rss
+        except psutil.NoSuchProcess:
+            # A child proc died mid-sample
+            continue
+    return rss / (1024 * 1024)
+
+
+def _monitor_proc_peak_rss_mb(proc: BaseProcess, poll_interval_secs: float) -> float:
+    """
+    Track the peak resident memory of a running job Process (and its children).
+
+    Sampling is done from the parent so the final reading survives an OOM kill of the
+    child. Blocks until ``proc`` exits, then returns the high-water mark in MB.
+
+    :param proc: the started job subprocess to monitor
+    :param poll_interval_secs: seconds between memory samples
+
+    :return: peak resident memory observed, in MB
+    """
+    peak_mem_mb = 0.0
+    try:
+        mon = psutil.Process(proc.pid)
+    except psutil.NoSuchProcess:
+        # Job finished before we could attach; nothing to sample
+        proc.join()
+        return peak_mem_mb
+
+    while True:
+        try:
+            peak_mem_mb = max(peak_mem_mb, _proc_tree_rss_mb(mon))
+        except psutil.NoSuchProcess:
+            break
+        if not proc.is_alive():
+            break
+        proc.join(timeout=poll_interval_secs)
+
+    proc.join()
+    return peak_mem_mb
+
+
 def job_proc_schedule(job: OdinJob, schedule: sched.scheduler | None) -> None:
     """
     Odin Job Runner as Process.
@@ -134,12 +184,25 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler | None) -> None:
     proc_return_val = return_manager.Value("i", NEXT_RUN_FAILED)
     proc = get_context("spawn").Process(target=job.start, args=(proc_return_val,))
     proc.start()
-    proc.join()
+
+    # Track the job subprocess' peak memory from the parent so OOM-prone jobs can be
+    # identified by name and arguments (e.g. which table's update job is OOMing). This
+    # blocks until the job finishes, replacing a plain proc.join().
+    peak_mem_mb = _monitor_proc_peak_rss_mb(proc, MEM_POLL_INTERVAL_SECS)
+
+    ProcessLog(
+        "odin_job_peak_mem",
+        job_type=job.__class__.__name__,
+        peak_mem_mb=f"{peak_mem_mb:.2f}",
+        **job.start_kwargs,
+    ).complete()
+
     if proc.exitcode != 0:
         fail_log = ProcessLog(
             "odin_job_died",
             job_type=job.__class__.__name__,
             job_exit_code=proc.exitcode,
+            peak_mem_mb=f"{peak_mem_mb:.2f}",
             **job.start_kwargs,
         )
         fail_log.failed(SystemError("OdinJob killed by ECS."))
