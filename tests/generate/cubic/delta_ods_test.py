@@ -8,6 +8,7 @@ local Delta silver table, then call the steps directly and assert on silver's
 contents. DuckDB reads the parquet; delta-rs writes the silver table.
 """
 
+from typing import Any
 from unittest.mock import patch
 
 import duckdb
@@ -26,29 +27,29 @@ TEST_SNAPSHOT = "20250101T000000Z"
 FROM_CSV = "s3://archive/cubic/ods_qlik/EDW.TEST_TABLE__ct/test.csv.gz"
 
 # History file schema (the hive ``snapshot`` column is derived from the path).
-HISTORY_SCHEMA = pa.schema(
-    [
-        pa.field("txn_id", pa.int64()),
-        pa.field("amount", pa.int64()),
-        pa.field("status", pa.large_string()),
-        pa.field("header__change_seq", pa.large_string()),
-        pa.field("header__change_oper", pa.large_string()),
-        pa.field("header__year", pa.int32()),
-        pa.field("header__month", pa.int32()),
-        pa.field("header__timestamp", pa.timestamp("us")),
-        pa.field("header__from_csv", pa.large_string()),
-    ]
-)
+# The lists are annotated so mypy keeps them as list[pa.Field[Any]] rather than
+# widening the heterogeneous ``pa.field(...)`` element types to list[object].
+_HISTORY_FIELDS: "list[pa.Field[Any]]" = [
+    pa.field("txn_id", pa.int64()),
+    pa.field("amount", pa.int64()),
+    pa.field("status", pa.large_string()),
+    pa.field("header__change_seq", pa.large_string()),
+    pa.field("header__change_oper", pa.large_string()),
+    pa.field("header__year", pa.int32()),
+    pa.field("header__month", pa.int32()),
+    pa.field("header__timestamp", pa.timestamp("us")),
+    pa.field("header__from_csv", pa.large_string()),
+]
+HISTORY_SCHEMA = pa.schema(_HISTORY_FIELDS)
 
-SILVER_SCHEMA = pa.schema(
-    [
-        pa.field("txn_id", pa.int64()),
-        pa.field("amount", pa.int64()),
-        pa.field("status", pa.large_string()),
-        pa.field("header__change_seq", pa.large_string()),
-        pa.field("odin_snapshot", pa.large_string()),
-    ]
-)
+_SILVER_FIELDS: "list[pa.Field[Any]]" = [
+    pa.field("txn_id", pa.int64()),
+    pa.field("amount", pa.int64()),
+    pa.field("status", pa.large_string()),
+    pa.field("header__change_seq", pa.large_string()),
+    pa.field("odin_snapshot", pa.large_string()),
+]
+SILVER_SCHEMA = pa.schema(_SILVER_FIELDS)
 
 # History schema variant carrying edw_inserted_dtm, which drives year/month
 # partitioning of the silver table.
