@@ -167,4 +167,19 @@ CUBIC_ODS_TABLES_BY_INSTANCE = {
 CUBIC_ODS_TABLES = CUBIC_ODS_TABLES_ALPHA + CUBIC_ODS_TABLES_BETA + CUBIC_ODS_TABLES_GAMMA
 
 _ODIN_INSTANCE = get_odin_instance()
+
 CUBIC_ODS_TABLES_INSTANCE = CUBIC_ODS_TABLES_BY_INSTANCE[_ODIN_INSTANCE]
+
+# Tables materialized by the Delta-based silver job (generate/cubic/delta_ods.py),
+# split by instance like CUBIC_ODS_TABLES so the Delta pipeline can be rolled out
+# and verified table-by-table in parallel with the existing ODS fact pipeline.
+# Emptying an instance's list disables the Delta job on that instance. Each list
+# must be a subset of that instance's CUBIC_ODS_TABLES (the source history must
+# exist on the instance running the Delta job).
+CUBIC_ODS_DELTA_TABLES_ALPHA = [
+    "EDW.FAREREV_RECOVERY_TXN",
+]
+CUBIC_ODS_DELTA_TABLES_BETA: list[str] = []
+CUBIC_ODS_DELTA_TABLES_INSTANCE = (
+    CUBIC_ODS_DELTA_TABLES_ALPHA if _ODIN_INSTANCE == "alpha" else CUBIC_ODS_DELTA_TABLES_BETA
+)
