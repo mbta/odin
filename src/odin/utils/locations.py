@@ -32,3 +32,6 @@ AFC_RESTRICTED = f"{ODIN_DATA}/sb/restricted"
 MASABI_DATA = f"{ODIN_DATA}/masabi/api"
 MASABI_RESTRICTED = f"{ODIN_DATA}/masabi/restricted"
 MASABI_TEMP = f"{ODIN_DATA}/masabi/temporary"
+# Destination for the historical backfill job. Kept separate from MASABI_DATA
+# so the live pipeline is undisturbed until the backfill is swapped in.
+MASABI_BACKFILL = f"{ODIN_DATA}/masabi/backfill"

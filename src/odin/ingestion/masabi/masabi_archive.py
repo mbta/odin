@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 
 from odin.utils.logger import ProcessLog
 from odin.job import OdinJob, job_proc_schedule
-from odin.utils.locations import DATA_SPRINGBOARD, MASABI_DATA, MASABI_RESTRICTED
+from odin.utils.locations import DATA_SPRINGBOARD, MASABI_DATA, MASABI_RESTRICTED, MASABI_BACKFILL
 from odin.utils.aws.s3 import s3_folder
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import list_objects
@@ -60,8 +60,11 @@ NEXT_RUN_BETA = 60 * 15  # 15 minutes
 NEXT_RUN_IMMEDIATE = 60  # 1 minute
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
-# Exclusive lower bound for the initial historical backfill: 2025-06-01 00:00:00 UTC (ms).
+# Exclusive lower bound for the live pipeline: 2025-06-01 00:00:00 UTC (ms).
 MASABI_START_TIMESTAMP_MS: int = 1_748_736_000_000
+
+# Exclusive lower bound for the gamma historical backfill: 2021-01-01 00:00:00 UTC (ms).
+MASABI_BACKFILL_START_TIMESTAMP_MS: int = 1_609_459_200_000
 
 _YAML_TYPE_MAP: dict[str, pl.DataType] = {
     "string": pl.String(),
@@ -472,12 +475,22 @@ class ArchiveMasabi(OdinJob):
     """Basic Odin job stub for Masabi ingestion."""
 
     def __init__(self, table: str, restricted: bool = False) -> None:
-        """Create Job instance."""
+        """
+        Create Job instance.
+
+        On the gamma instance the job targets the historical backfill prefix
+        (MASABI_BACKFILL) instead of the live MASABI_DATA, so gamma can rebuild
+        the dataset from further back without disturbing the live pipeline.
+        The result will be swapped into MASABI_DATA by an odin-alpha-*
+        migration once caught up.
+        """
         self.table = table
         self.restricted = restricted
         self.start_kwargs = {"table": table, "restricted": restricted}
         if restricted:
             self.export_folder = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_RESTRICTED, table))
+        elif _ODIN_INSTANCE == "gamma":
+            self.export_folder = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_BACKFILL, table))
         else:
             self.export_folder = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_DATA, table))
         self._last_request_time: float = 0.0
@@ -741,7 +754,11 @@ class ArchiveMasabi(OdinJob):
         """Read the pre-existing parquet files to get the start time for data."""
         log = ProcessLog("masabi_setup_job", table=self.table)
 
-        from_ts = MASABI_START_TIMESTAMP_MS
+        from_ts = (
+            MASABI_BACKFILL_START_TIMESTAMP_MS
+            if _ODIN_INSTANCE == "gamma"
+            else MASABI_START_TIMESTAMP_MS
+        )
         existing_ds = ds_from_path(self.export_folder)
         existing_ds_rows = existing_ds.count_rows()
         if existing_ds_rows:
