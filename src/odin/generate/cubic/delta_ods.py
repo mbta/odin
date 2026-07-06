@@ -24,6 +24,16 @@ depends on (required columns present, primary keys declared and present, CDC
 records carry a change sequence, a load snapshot is non-empty). Violations raise
 rather than silently producing a corrupt silver table.
 
+Two Qlik Replicate behaviors are relied on without a runtime check:
+  - ``header__change_seq`` is unique per change record, so paging with
+    ``ORDER BY header__change_seq LIMIT n`` and a strictly-greater watermark
+    can never split records sharing a sequence across batches (which would
+    permanently skip the cut-off records).
+  - "I" records are full row images (only "U" records may be sparse), so
+    resolving a delete-then-reinsert within one batch to its final "I" record
+    yields the reinserted values; batch-level column coalescing only backfills
+    columns that are NULL in that final image.
+
 Steps per run:
   1. Find the latest history ``snapshot=`` partition.
   2. If it differs from the silver table's ``odin_snapshot``, rebuild silver from
@@ -116,10 +126,10 @@ def _long_run_interval() -> int:
     return NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_LONG
 
 
-def _connect(glob: str) -> duckdb.DuckDBPyConnection:
-    """Open a DuckDB connection, configuring S3 access for s3:// globs."""
+def _connect(path: str) -> duckdb.DuckDBPyConnection:
+    """Open a DuckDB connection, configuring S3 access for s3:// paths."""
     con = duckdb.connect()
-    if glob.startswith("s3://"):
+    if path.startswith("s3://"):
         con.execute("CREATE OR REPLACE SECRET secret (TYPE s3, PROVIDER credential_chain);")
     return con
 
@@ -142,7 +152,7 @@ class CubicODSDelta(OdinJob):
         self.silver_uri = s3_file(os.path.join(DATA_SPRINGBOARD, CUBIC_ODS_DELTA_DATA, table))
         self.start_kwargs = {"table": table}
         self.silver: DeltaTable | None = None
-        self.history_glob = f"{s3_folder(self.s3_source)}**/*.parquet"
+        self.history_root = s3_folder(self.s3_source)
         self.history_columns: list[str] = []
         self.history_snapshot = ""
         self.part_columns: list[str] = []
@@ -177,15 +187,24 @@ class CubicODSDelta(OdinJob):
             log.failed(exception=exc)
             return NEXT_RUN_IMMEDIATE
         except CDCSchemaIncompatibleError as exc:
-            ProcessLog("cdc_schema_incompatible", table=self.table, error=str(exc)).failed(
-                exception=exc
-            )
-            return NEXT_RUN_LONG
+            self.start_kwargs["cdc_schema_incompatible"] = "True"
+            log.failed(exception=exc)
+            return _long_run_interval()
 
     @property
     def _read_history(self) -> str:
-        """Return the DuckDB read_parquet expression for this table's history."""
-        return READ_HISTORY.format(glob=self.history_glob)
+        """
+        Return the DuckDB read_parquet expression for the current snapshot's history.
+
+        The glob is restricted to the ``snapshot=`` partition being materialized
+        (DuckDB's ``**`` matches zero or more directories, and hive partitioning
+        still derives the ``snapshot`` column from the path). Reading the whole
+        table root instead would union columns across every historical snapshot,
+        letting columns dropped from the current snapshot leak into silver as
+        phantom all-null columns.
+        """
+        glob = f"{self.history_root}snapshot={self.history_snapshot}/**/*.parquet"
+        return READ_HISTORY.format(glob=glob)
 
     def _read_state(self) -> tuple[str, str]:
         """
@@ -226,7 +245,7 @@ class CubicODSDelta(OdinJob):
             f"unexpected snapshot partition name for {self.table}: {self.history_snapshot!r}"
         )
 
-        con = _connect(self.history_glob)
+        con = _connect(self.history_root)
         try:
             describe = con.execute(f"DESCRIBE SELECT * FROM {self._read_history}").pl()
         finally:
@@ -271,7 +290,7 @@ class CubicODSDelta(OdinJob):
         )
 
         sigterm_check()
-        con = _connect(self.history_glob)
+        con = _connect(self.history_root)
         try:
             reader = con.execute(
                 sql, [self.history_snapshot, self.history_snapshot]
@@ -341,15 +360,23 @@ class CubicODSDelta(OdinJob):
     def _read_cdc(self, after_seq: str, limit: int) -> pl.DataFrame:
         """Read up to `limit` CDC (I/U/D) records with seq > `after_seq`, seq-ascending."""
         opers = ", ".join(f"'{o}'" for o in CDC_OPERS)
-        conditions = ["snapshot = ?", f"header__change_oper IN ({opers})", "header__change_seq > ?"]
+        # The IS NULL arm plus NULLS FIRST puts any null-seq CDC record at the
+        # head of the very next batch, where the null_count assertion in
+        # _merge_cdc rejects it. With a bare `>` comparison NULL never matches,
+        # so such records would be silently skipped forever instead of raising.
+        conditions = [
+            "snapshot = ?",
+            f"header__change_oper IN ({opers})",
+            "(header__change_seq > ? OR header__change_seq IS NULL)",
+        ]
         params = [self.history_snapshot, str(after_seq)]
         sql = (
             f"SELECT * FROM {self._read_history} "
             f"WHERE {' AND '.join(conditions)} "
-            f"ORDER BY header__change_seq LIMIT {limit}"
+            f"ORDER BY header__change_seq NULLS FIRST LIMIT {limit}"
         )
 
-        con = _connect(self.history_glob)
+        con = _connect(self.history_root)
         try:
             return con.execute(sql, params).pl()
         finally:
@@ -431,25 +458,34 @@ class CubicODSDelta(OdinJob):
         )
 
         predicate = " AND ".join(
-            f"(target.{k} = source.{k} OR (target.{k} IS NULL AND source.{k} IS NULL))"
+            f'(target."{k}" = source."{k}" OR (target."{k}" IS NULL AND source."{k}" IS NULL))'
             for k in keys
         )
 
-        # Watermark/partition columns are taken verbatim from the resolved CDC row;
-        # data columns coalesce so a sparse update preserves untouched values.
-        passthrough = {
-            "odin_snapshot",
-            "header__change_seq",
-            "odin_year",
-            "odin_month",
-        }
+        # Watermark columns are taken verbatim from the resolved CDC row; data
+        # columns coalesce so a sparse update preserves untouched values.
+        # Partition columns follow edw_inserted_dtm: when no CDC record in the
+        # batch carried it for a key, source odin_year/odin_month degrade to 0
+        # while the coalesce keeps the target's edw_inserted_dtm — so the
+        # target's partition values must be kept too, or the row would silently
+        # move to the 0/0 partition and out of partition-pruned query results.
+        passthrough = {"odin_snapshot", "header__change_seq"}
+        partition_cols = {"odin_year", "odin_month"}
         source_cols = set(source.columns)
-        update_set = {
-            col: f"source.{col}" if col in passthrough else f"COALESCE(source.{col}, target.{col})"
-            for col in target_cols
-            if col not in keys and col in source_cols
-        }
-        insert_set = {col: f"source.{col}" for col in target_cols if col in source_cols}
+        update_set: dict[str, str] = {}
+        for col in target_cols:
+            if col in keys or col not in source_cols:
+                continue
+            if col in passthrough:
+                update_set[col] = f'source."{col}"'
+            elif col in partition_cols:
+                update_set[col] = (
+                    'CASE WHEN source."edw_inserted_dtm" IS NOT NULL '
+                    f'THEN source."{col}" ELSE target."{col}" END'
+                )
+            else:
+                update_set[col] = f'COALESCE(source."{col}", target."{col}")'
+        insert_set = {col: f'source."{col}"' for col in target_cols if col in source_cols}
 
         sigterm_check()
         merger = self.silver.merge(

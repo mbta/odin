@@ -19,7 +19,7 @@ import pytest
 
 from deltalake import DeltaTable, write_deltalake
 
-from odin.generate.cubic.delta_ods import CubicODSDelta, READ_HISTORY
+from odin.generate.cubic.delta_ods import CubicODSDelta
 
 
 KEYS = ["txn_id"]
@@ -127,20 +127,19 @@ def job(tmp_path):
     snapshot_dir = tmp_path / "history" / f"snapshot={TEST_SNAPSHOT}"
     snapshot_dir.mkdir(parents=True)
     history_file = snapshot_dir / "part.parquet"
-    glob = str(tmp_path / "history" / "**" / "*.parquet")
     silver_dir = tmp_path / "silver"
 
     pipeline = CubicODSDelta("EDW.TEST_TABLE")
     pipeline.silver_uri = str(silver_dir)
     pipeline.history_snapshot = TEST_SNAPSHOT
-    pipeline.history_glob = glob
+    pipeline.history_root = f"{tmp_path}/history/"
     pipeline.part_columns = []
 
     def write_history(table: pa.Table) -> None:
         pq.write_table(table, str(history_file))
         # Populate history_columns the way _snapshot_check would (incl. hive snapshot).
         con = duckdb.connect()
-        describe = con.execute(f"DESCRIBE SELECT * FROM {READ_HISTORY.format(glob=glob)}").pl()
+        describe = con.execute(f"DESCRIBE SELECT * FROM {pipeline._read_history}").pl()
         con.close()
         pipeline.history_columns = describe.get_column("column_name").to_list()
         # Mirror _snapshot_check: edw_inserted_dtm drives year/month partitioning.
@@ -477,3 +476,118 @@ def test_merge_cdc_no_pending_leaves_silver_untouched(job):
 
     assert read_silver().get_column("amount").to_list() == [10]
     assert interval > 0
+
+
+def test_merge_cdc_sparse_update_keeps_partition_values(job):
+    """
+    A sparse U without edw_inserted_dtm must not move the row to partition 0/0.
+
+    The merge source derives odin_year/odin_month from the batch's coalesced
+    edw_inserted_dtm, which is null here (degrading to 0), while the data-column
+    coalesce keeps the target's real edw_inserted_dtm. The update must keep the
+    target's partition values so partition and data stay consistent.
+    """
+    from datetime import datetime
+
+    pipeline, write_history, _, _ = job
+    write_history(
+        dated_history_rows(
+            [
+                {
+                    "txn_id": 1,
+                    "amount": 10,
+                    "header__change_oper": "L",
+                    "edw_inserted_dtm": datetime(2025, 1, 15),
+                },
+                {
+                    "txn_id": 1,
+                    "amount": 99,
+                    "header__change_oper": "U",
+                    "header__change_seq": "0001",
+                    # edw_inserted_dtm omitted: sparse update
+                },
+            ]
+        )
+    )
+    pipeline._rebuild_silver()
+    pipeline._merge_cdc("0")
+
+    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table())
+    assert out.get_column("amount").to_list() == [99]
+    assert out.get_column("edw_inserted_dtm").to_list() == [datetime(2025, 1, 15)]
+    assert out.get_column("odin_year").to_list() == [2025]
+    assert out.get_column("odin_month").to_list() == [1]
+
+
+def test_merge_cdc_null_change_seq_raises(job):
+    """
+    A CDC record with a null header__change_seq raises instead of being skipped.
+
+    The watermark comparison (seq > ?) would silently exclude NULL sequences in
+    SQL; the read must surface them so the invariant assertion can reject the
+    batch rather than dropping the record forever.
+    """
+    pipeline, write_history, write_silver, _ = job
+    write_silver(silver_rows([{"txn_id": 1, "amount": 10, "status": "a"}]))
+    write_history(
+        history_rows(
+            [
+                {"txn_id": 1, "amount": 10, "status": "a", "header__change_oper": "L"},
+                {
+                    "txn_id": 2,
+                    "amount": 20,
+                    "header__change_oper": "I",
+                    "header__change_seq": None,
+                },
+            ]
+        )
+    )
+    with pytest.raises(AssertionError, match="null header__change_seq"):
+        pipeline._merge_cdc("0")
+
+
+def test_merge_cdc_quotes_reserved_word_columns(job):
+    """MERGE expressions must quote identifiers so reserved-word columns work."""
+    pipeline, write_history, _, _ = job
+    schema = pa.schema(
+        [
+            pa.field("txn_id", pa.int64()),
+            pa.field("order", pa.large_string()),
+            pa.field("header__change_seq", pa.large_string()),
+            pa.field("header__change_oper", pa.large_string()),
+            pa.field("header__from_csv", pa.large_string()),
+        ]
+    )
+    write_history(
+        pa.Table.from_pylist(
+            [
+                {
+                    "txn_id": 1,
+                    "order": "a",
+                    "header__change_oper": "L",
+                    "header__from_csv": FROM_CSV,
+                },
+                {
+                    "txn_id": 1,
+                    "order": "b",
+                    "header__change_oper": "U",
+                    "header__change_seq": "0001",
+                    "header__from_csv": FROM_CSV,
+                },
+                {
+                    "txn_id": 2,
+                    "order": "c",
+                    "header__change_oper": "I",
+                    "header__change_seq": "0002",
+                    "header__from_csv": FROM_CSV,
+                },
+            ],
+            schema=schema,
+        )
+    )
+    pipeline._rebuild_silver()
+    pipeline._merge_cdc("0")
+
+    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table()).sort("txn_id")
+    assert out.get_column("txn_id").to_list() == [1, 2]
+    assert out.get_column("order").to_list() == ["b", "c"]
