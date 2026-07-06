@@ -45,9 +45,7 @@ def migration() -> None:
         log.failed(exception)
         raise exception
 
-    copy_jobs = [
-        (obj, obj.replace(backfill_prefix, data_prefix, 1)) for obj in backfill_objects
-    ]
+    copy_jobs = [(obj, obj.replace(backfill_prefix, data_prefix, 1)) for obj in backfill_objects]
     copy_failures = copy_objects(copy_jobs)
 
     log.add_metadata(
