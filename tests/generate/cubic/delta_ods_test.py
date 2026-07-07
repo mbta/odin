@@ -269,6 +269,102 @@ def test_merge_cdc_dated_table_derives_year_and_month(job):
     assert out.get_column("odin_month").to_list() == [1, 3]
 
 
+# Two partitions, each holding two keys whose ranges overlap the source key, so
+# only a partition constraint (not key-stat pruning) can skip a file.
+def _two_partition_history() -> "pa.Table":
+    from datetime import datetime
+
+    return dated_history_rows(
+        [
+            {"txn_id": 1, "amount": 10, "header__change_oper": "L",
+             "edw_inserted_dtm": datetime(2024, 1, 5)},
+            {"txn_id": 3, "amount": 30, "header__change_oper": "L",
+             "edw_inserted_dtm": datetime(2024, 1, 6)},
+            {"txn_id": 2, "amount": 20, "header__change_oper": "L",
+             "edw_inserted_dtm": datetime(2025, 3, 5)},
+            {"txn_id": 4, "amount": 40, "header__change_oper": "L",
+             "edw_inserted_dtm": datetime(2025, 3, 6)},
+        ]
+    )
+
+
+def test_merge_prunes_untouched_partitions(job):
+    """A CDC update carrying edw_inserted_dtm skips files outside its partition."""
+    from datetime import datetime
+
+    pipeline, write_history, _, _ = job
+    base = _two_partition_history()
+    update = dated_history_rows(
+        [{"txn_id": 2, "amount": 99, "header__change_oper": "U",
+          "header__change_seq": "0001", "edw_inserted_dtm": datetime(2025, 3, 5)}]
+    )
+    write_history(pa.concat_tables([base, update]))
+    pipeline._rebuild_silver()
+
+    cdc_df = pipeline._read_cdc("0", limit=100)
+    source = pipeline._build_merge_source(cdc_df, KEYS)
+    metrics = pipeline._merge_apply(source, KEYS, "0001")
+
+    # The (2024, 1) file is skipped by the partition constraint, not key stats.
+    assert metrics["num_target_files_skipped_during_scan"] >= 1
+    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table()).sort("txn_id")
+    assert out.get_column("txn_id").to_list() == [1, 2, 3, 4]
+    assert out.filter(pl.col("txn_id") == 2).get_column("amount").to_list() == [99]
+
+
+def test_read_cdc_keeps_tied_boundary_seqs_together(job):
+    """The <= ceiling read returns all rows sharing the boundary seq, not a truncated k."""
+    pipeline, write_history, _, _ = job
+    write_history(
+        history_rows(
+            [
+                {"txn_id": 1, "header__change_oper": "I", "header__change_seq": "0001"},
+                {"txn_id": 2, "header__change_oper": "I", "header__change_seq": "0002"},
+                {"txn_id": 3, "header__change_oper": "I", "header__change_seq": "0002"},
+            ]
+        )
+    )
+    # limit=2 lands the ceiling on the tied 0002; the whole <= 0002 range comes back.
+    batch = pipeline._read_cdc("0", limit=2)
+    assert batch.height == 3
+    assert sorted(batch.get_column("header__change_seq").to_list()) == ["0001", "0002", "0002"]
+
+
+def test_read_cdc_empty_when_caught_up(job):
+    """No records past the watermark yields an empty batch (single narrow probe)."""
+    pipeline, write_history, _, _ = job
+    write_history(
+        history_rows(
+            [{"txn_id": 1, "header__change_oper": "I", "header__change_seq": "0001"}]
+        )
+    )
+    assert pipeline._read_cdc("0005", limit=100).height == 0
+
+
+def test_merge_no_prune_when_edw_missing(job):
+    """A CDC update missing edw_inserted_dtm falls back to an unpruned scan, still correct."""
+    pipeline, write_history, _, _ = job
+    base = _two_partition_history()
+    update = dated_history_rows(
+        [{"txn_id": 2, "amount": 99, "header__change_oper": "U", "header__change_seq": "0001"}]
+    )
+    write_history(pa.concat_tables([base, update]))
+    pipeline._rebuild_silver()
+
+    cdc_df = pipeline._read_cdc("0", limit=100)
+    source = pipeline._build_merge_source(cdc_df, KEYS)
+    metrics = pipeline._merge_apply(source, KEYS, "0001")
+
+    # No partition constraint, and key ranges overlap, so no file can be skipped.
+    assert metrics["num_target_files_skipped_during_scan"] == 0
+    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table()).sort("txn_id")
+    row2 = out.filter(pl.col("txn_id") == 2)
+    assert row2.get_column("amount").to_list() == [99]
+    # Partition preserved from the retained edw_inserted_dtm (not clobbered to 0).
+    assert row2.get_column("odin_year").to_list() == [2025]
+    assert row2.get_column("odin_month").to_list() == [3]
+
+
 def test_rebuild_records_snapshot_and_initial_watermark(job):
     """Rebuild records the snapshot and a reset watermark in commit metadata."""
     pipeline, write_history, _, _ = job
