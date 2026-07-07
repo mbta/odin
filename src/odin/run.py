@@ -14,6 +14,7 @@ from odin.utils.aws.ecs import check_for_parallel_tasks
 from odin.utils.runtime import schedule_sigterm_check
 from odin.ingestion.qlik.cubic_archive import schedule_cubic_archive_qlik
 from odin.generate.cubic.ods_fact import schedule_cubic_ods_fact_gen
+
 # from odin.generate.cubic.delta_ods import schedule_delta_ods
 from odin.ingestion.afc.afc_archive import schedule_afc_archive
 from odin.ingestion.afc.afc_restricted import schedule_restricted_afc_archive
