@@ -75,7 +75,7 @@ def start():
         schedule_cubic_ods_fact_gen(schedule)
         # Delta-based silver pipeline; per-instance enablement is controlled by the
         # CUBIC_ODS_DELTA_TABLES_* lists (an empty list schedules nothing).
-        schedule_delta_ods(schedule)
+        # schedule_delta_ods(schedule)
         schedule_masabi_archive(schedule)
         schedule_afc_archive(schedule)
 
