@@ -276,14 +276,30 @@ def _two_partition_history() -> "pa.Table":
 
     return dated_history_rows(
         [
-            {"txn_id": 1, "amount": 10, "header__change_oper": "L",
-             "edw_inserted_dtm": datetime(2024, 1, 5)},
-            {"txn_id": 3, "amount": 30, "header__change_oper": "L",
-             "edw_inserted_dtm": datetime(2024, 1, 6)},
-            {"txn_id": 2, "amount": 20, "header__change_oper": "L",
-             "edw_inserted_dtm": datetime(2025, 3, 5)},
-            {"txn_id": 4, "amount": 40, "header__change_oper": "L",
-             "edw_inserted_dtm": datetime(2025, 3, 6)},
+            {
+                "txn_id": 1,
+                "amount": 10,
+                "header__change_oper": "L",
+                "edw_inserted_dtm": datetime(2024, 1, 5),
+            },
+            {
+                "txn_id": 3,
+                "amount": 30,
+                "header__change_oper": "L",
+                "edw_inserted_dtm": datetime(2024, 1, 6),
+            },
+            {
+                "txn_id": 2,
+                "amount": 20,
+                "header__change_oper": "L",
+                "edw_inserted_dtm": datetime(2025, 3, 5),
+            },
+            {
+                "txn_id": 4,
+                "amount": 40,
+                "header__change_oper": "L",
+                "edw_inserted_dtm": datetime(2025, 3, 6),
+            },
         ]
     )
 
@@ -295,8 +311,15 @@ def test_merge_prunes_untouched_partitions(job):
     pipeline, write_history, _, _ = job
     base = _two_partition_history()
     update = dated_history_rows(
-        [{"txn_id": 2, "amount": 99, "header__change_oper": "U",
-          "header__change_seq": "0001", "edw_inserted_dtm": datetime(2025, 3, 5)}]
+        [
+            {
+                "txn_id": 2,
+                "amount": 99,
+                "header__change_oper": "U",
+                "header__change_seq": "0001",
+                "edw_inserted_dtm": datetime(2025, 3, 5),
+            }
+        ]
     )
     write_history(pa.concat_tables([base, update]))
     pipeline._rebuild_silver()
@@ -334,9 +357,7 @@ def test_read_cdc_empty_when_caught_up(job):
     """No records past the watermark yields an empty batch (single narrow probe)."""
     pipeline, write_history, _, _ = job
     write_history(
-        history_rows(
-            [{"txn_id": 1, "header__change_oper": "I", "header__change_seq": "0001"}]
-        )
+        history_rows([{"txn_id": 1, "header__change_oper": "I", "header__change_seq": "0001"}])
     )
     assert pipeline._read_cdc("0005", limit=100).height == 0
 

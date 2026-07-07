@@ -505,10 +505,7 @@ class CubicODSDelta(OdinJob):
             return ""
         years_sql = ", ".join(str(y) for y in years)
         months_sql = ", ".join(str(m) for m in months)
-        return (
-            f' AND target."odin_year" IN ({years_sql})'
-            f' AND target."odin_month" IN ({months_sql})'
-        )
+        return f' AND target."odin_year" IN ({years_sql}) AND target."odin_month" IN ({months_sql})'
 
     def _merge_apply(self, source: pl.DataFrame, keys: list[str], watermark: str) -> dict:
         """Execute the delete/update/insert MERGE of `source` into silver."""
