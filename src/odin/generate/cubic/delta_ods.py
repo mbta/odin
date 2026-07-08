@@ -496,47 +496,60 @@ class CubicODSDelta(OdinJob):
         """
         Resolve CDC records to one final row per key for the silver MERGE.
 
-        Data-column values follow the legacy ods_fact semantics per winning op:
-          - final op "I": the insert image verbatim — I records are full row
+        Each key's winning (highest-seq) record decides the row's fate, and its
+        op decides how the data-column values are resolved — mirroring the
+        legacy ods_fact semantics:
+
+          - winner "I": the insert image verbatim. I records are full row
             images, so a NULL there means NULL and must not be backfilled from
             older records (e.g. the pre-delete image of a delete-then-reinsert).
-          - final op "U": per-column latest non-null value folded across the
+          - winner "U": per-column latest non-null value folded across the
             key's I/U records (sparse updates overlay the batch's insert base;
             the MERGE coalesces against the target row for the rest). D-record
             images never contribute values.
-          - final op "D": values are irrelevant (the MERGE deletes the row).
+          - winner "D": values are irrelevant (the MERGE deletes the row).
+
+        Only U winners take the fold/join path; I and D winners pass through
+        verbatim, so peak memory scales with the update keys, not the batch.
         """
         data_cols = [
             c
             for c in cdc_df.columns
             if c not in keys and c not in META_DROP_COLUMNS and c != "header__change_seq"
         ]
+        out_cols = [*keys, "header__change_seq", "header__change_oper", *data_cols]
         sorted_desc = cdc_df.sort(by="header__change_seq", descending=True)
-        latest = sorted_desc.unique(keys, keep="first").select(
-            keys + ["header__change_seq", "header__change_oper", *data_cols]
-        )
+
+        # One winning record per key: the highest header__change_seq.
+        winners = sorted_desc.unique(keys, keep="first").select(out_cols)
+
+        # I and D winners: values verbatim from the winning record.
+        verbatim = winners.filter(pl.col("header__change_oper") != "U")
+
+        # U winners: fold the latest non-null value per column across the key's
+        # I/U records, then re-attach the winner's seq/oper.
+        u_winners = winners.filter(pl.col("header__change_oper") == "U")
         folded = (
             sorted_desc.filter(pl.col("header__change_oper").is_in(("I", "U")))
+            .join(u_winners.select(keys), on=keys, how="semi", nulls_equal=True)
             .group_by(keys)
-            .agg(
-                *[pl.col(c).drop_nulls().first() for c in data_cols],
-                pl.col("header__change_oper").eq("I").any().alias("has_insert_base"),
-            )
+            .agg(pl.col(c).drop_nulls().first() for c in data_cols)
         )
+        updates = u_winners.select(*keys, "header__change_seq", "header__change_oper").join(
+            folded, on=keys, how="left", nulls_equal=True
+        )
+
+        # Insert gate: whether ANY record for the key is an "I" (false for keys
+        # seen only as U/D). Computed on a keys+oper projection to stay narrow.
+        has_insert = (
+            cdc_df.select(*keys, "header__change_oper")
+            .group_by(keys)
+            .agg(pl.col("header__change_oper").eq("I").any().alias("has_insert_base"))
+        )
+
         source = (
-            latest.join(folded, on=keys, how="left", nulls_equal=True, suffix="_folded")
-            .with_columns(
-                *[
-                    pl.when(pl.col("header__change_oper") == "U")
-                    .then(pl.col(f"{c}_folded"))
-                    .otherwise(pl.col(c))
-                    .alias(c)
-                    for c in data_cols
-                ],
-                # D-only keys have no I/U record to fold, hence no insert base.
-                pl.col("has_insert_base").fill_null(False),
-            )
-            .drop([f"{c}_folded" for c in data_cols])
+            pl.concat([verbatim, updates.select(out_cols)], how="vertical")
+            .join(has_insert, on=keys, how="left", nulls_equal=True)
             .with_columns(pl.lit(self.history_snapshot, dtype=pl.String).alias("odin_snapshot"))
         )
         if "edw_inserted_dtm" in source.columns:
