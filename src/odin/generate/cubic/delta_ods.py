@@ -345,7 +345,7 @@ class CubicODSDelta(OdinJob):
             ) from exc
 
         self.silver = DeltaTable(self.silver_uri)
-        more_pending = self._read_cdc(max_seq_processed, limit=1).height
+        more_pending = cdc_df.height >= MAX_MERGE_RECORDS
 
         log.complete(
             cdc_records_processed=cdc_df.height,
@@ -355,30 +355,61 @@ class CubicODSDelta(OdinJob):
             more_pending=more_pending,
             **{f"merge_{k}": v for k, v in metrics.items()},
         )
-        return NEXT_RUN_IMMEDIATE if more_pending > 0 else _default_run_interval()
+        return NEXT_RUN_IMMEDIATE if more_pending else _default_run_interval()
 
     def _read_cdc(self, after_seq: str, limit: int) -> pl.DataFrame:
-        """Read up to `limit` CDC (I/U/D) records with seq > `after_seq`, seq-ascending."""
-        opers = ", ".join(f"'{o}'" for o in CDC_OPERS)
-        # The IS NULL arm plus NULLS FIRST puts any null-seq CDC record at the
-        # head of the very next batch, where the null_count assertion in
-        # _merge_cdc rejects it. With a bare `>` comparison NULL never matches,
-        # so such records would be silently skipped forever instead of raising.
-        conditions = [
-            "snapshot = ?",
-            f"header__change_oper IN ({opers})",
-            "(header__change_seq > ? OR header__change_seq IS NULL)",
-        ]
-        params = [self.history_snapshot, str(after_seq)]
-        sql = (
-            f"SELECT * FROM {self._read_history} "
-            f"WHERE {' AND '.join(conditions)} "
-            f"ORDER BY header__change_seq NULLS FIRST LIMIT {limit}"
-        )
+        """
+        Read the next batch of CDC (I/U/D) records with seq > `after_seq`.
 
+        Two steps so the wide read stays bounded no matter how well the parquet
+        prunes: first find the ceiling seq of the next `limit` records reading only
+        the seq column (a narrow top-k scan), then read full rows for
+        `after_seq < seq <= ceiling`. Taking the whole `<= ceiling` range (no LIMIT)
+        keeps records sharing the boundary seq in one batch, so the advancing
+        watermark can never strand tied rows.
+
+        The `IS NULL` arm surfaces any null-seq record (a data error) into
+        the batch, where the null_count assertion in _merge_cdc rejects it
+        instead of skipping it forever.
+        """
+        opers = ", ".join(f"'{o}'" for o in CDC_OPERS)
+        snap = self.history_snapshot
         con = _connect(self.history_root)
         try:
-            return con.execute(sql, params).pl()
+            # Step 1 — narrow: ceiling seq of the next `limit` records. Doubles as
+            # the "is there anything past the watermark?" probe.
+            window = (
+                con.execute(
+                    f"SELECT header__change_seq AS seq FROM {self._read_history} "
+                    f"WHERE snapshot = ? AND header__change_oper IN ({opers}) "
+                    "AND (header__change_seq > ? OR header__change_seq IS NULL) "
+                    f"ORDER BY header__change_seq NULLS FIRST LIMIT {limit}",
+                    [snap, str(after_seq)],
+                )
+                .pl()
+                .get_column("seq")
+            )
+            if window.len() == 0:
+                return pl.DataFrame()
+
+            # Step 2 — wide: full rows bounded to the window's seq range.
+            ceiling = window.drop_nulls().max()
+            conditions = ["snapshot = ?", f"header__change_oper IN ({opers})"]
+            params: list[str] = [snap]
+            if ceiling is None:
+                conditions.append("header__change_seq IS NULL")
+            else:
+                conditions.append(
+                    "((header__change_seq > ? AND header__change_seq <= ?) "
+                    "OR header__change_seq IS NULL)"
+                )
+                params += [str(after_seq), str(ceiling)]
+            return con.execute(
+                f"SELECT * FROM {self._read_history} "
+                f"WHERE {' AND '.join(conditions)} "
+                "ORDER BY header__change_seq NULLS FIRST",
+                params,
+            ).pl()
         finally:
             con.close()
 
@@ -448,6 +479,34 @@ class CubicODSDelta(OdinJob):
             )
         return source
 
+    def _merge_predicate(self, keys: list[str], source: pl.DataFrame) -> str:
+        """Build the MERGE match predicate (keys + optional partition constraint)."""
+        key_pred = " AND ".join(
+            f'(target."{k}" = source."{k}" OR (target."{k}" IS NULL AND source."{k}" IS NULL))'
+            for k in keys
+        )
+        return key_pred + self._partition_constraint(source)
+
+    def _partition_constraint(self, source: pl.DataFrame) -> str:
+        """
+        Return a partition-pruning clause for the merge, or '' when unsafe.
+
+        ` AND target.odin_year IN (...) AND target.odin_month IN (...)` restricts the
+        scan to the partitions the source touches. If any edw_inserted_dtm
+        is missing  we fall back to an unpruned full scan.
+        """
+        if "odin_year" not in source.columns or "odin_month" not in source.columns:
+            return ""
+        if source.get_column("edw_inserted_dtm").null_count() > 0:
+            return ""
+        years = sorted(source.get_column("odin_year").unique().to_list())
+        months = sorted(source.get_column("odin_month").unique().to_list())
+        if not years or not months:
+            return ""
+        years_sql = ", ".join(str(y) for y in years)
+        months_sql = ", ".join(str(m) for m in months)
+        return f' AND target."odin_year" IN ({years_sql}) AND target."odin_month" IN ({months_sql})'
+
     def _merge_apply(self, source: pl.DataFrame, keys: list[str], watermark: str) -> dict:
         """Execute the delete/update/insert MERGE of `source` into silver."""
         assert self.silver is not None
@@ -457,10 +516,7 @@ class CubicODSDelta(OdinJob):
             f"primary key columns {sorted(missing)} absent from silver table for {self.table}"
         )
 
-        predicate = " AND ".join(
-            f'(target."{k}" = source."{k}" OR (target."{k}" IS NULL AND source."{k}" IS NULL))'
-            for k in keys
-        )
+        predicate = self._merge_predicate(keys, source)
 
         # Watermark columns are taken verbatim from the resolved CDC row; data
         # columns coalesce so a sparse update preserves untouched values.
