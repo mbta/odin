@@ -726,6 +726,71 @@ def test_merge_cdc_null_change_seq_raises(job):
         pipeline._merge_cdc("0")
 
 
+def test_build_merge_source_one_row_per_key_with_correct_ops(job):
+    """
+    The merge source carries exactly one row per key across all op mixes.
+
+    Guards the verbatim/updates split: every key must land in exactly one of
+    the two paths, with the winning op and the insert gate resolved correctly.
+    """
+    pipeline, write_history, _, _ = job
+    write_history(
+        history_rows(
+            [
+                # key 1: I then sparse U -> winner U, insert base present
+                {
+                    "txn_id": 1,
+                    "amount": 10,
+                    "status": "a",
+                    "header__change_oper": "I",
+                    "header__change_seq": "0001",
+                },
+                {
+                    "txn_id": 1,
+                    "amount": 99,
+                    "header__change_oper": "U",
+                    "header__change_seq": "0002",
+                },
+                # key 2: U only -> winner U, no insert base
+                {
+                    "txn_id": 2,
+                    "amount": 20,
+                    "header__change_oper": "U",
+                    "header__change_seq": "0003",
+                },
+                # key 3: I only -> winner I
+                {
+                    "txn_id": 3,
+                    "amount": 30,
+                    "status": "c",
+                    "header__change_oper": "I",
+                    "header__change_seq": "0004",
+                },
+                # key 4: I then D -> winner D, insert base present
+                {
+                    "txn_id": 4,
+                    "amount": 40,
+                    "header__change_oper": "I",
+                    "header__change_seq": "0005",
+                },
+                {"txn_id": 4, "header__change_oper": "D", "header__change_seq": "0006"},
+                # key 5: D only -> winner D, no insert base
+                {"txn_id": 5, "header__change_oper": "D", "header__change_seq": "0007"},
+            ]
+        )
+    )
+    cdc_df = pipeline._read_cdc("0", limit=100)
+    source = pipeline._build_merge_source(cdc_df, KEYS).sort("txn_id")
+
+    assert source.get_column("txn_id").to_list() == [1, 2, 3, 4, 5]
+    assert source.get_column("header__change_oper").to_list() == ["U", "U", "I", "D", "D"]
+    assert source.get_column("has_insert_base").to_list() == [True, False, True, True, False]
+    # Key 1's fold: latest non-null amount wins, status backfilled from the I base.
+    row1 = source.filter(pl.col("txn_id") == 1)
+    assert row1.get_column("amount").to_list() == [99]
+    assert row1.get_column("status").to_list() == ["a"]
+
+
 def test_merge_cdc_reinsert_applies_insert_image_verbatim(job):
     """
     D→I for an existing key in one batch: the row becomes exactly the I image.
@@ -803,6 +868,98 @@ def test_merge_cdc_reinsert_new_key_not_backfilled_from_older_records(job):
 
     row = read_silver().filter(pl.col("txn_id") == 1)
     assert row.get_column("amount").to_list() == [50]
+    assert row.get_column("status").to_list() == [None]
+
+
+def test_merge_cdc_fold_does_not_reach_behind_insert_reset(job):
+    """
+    U→D→I→U in one batch: values older than the I must not leak forward.
+
+    The I is a full-image reset. A column that is NULL in the I and untouched
+    by the later sparse U is genuinely NULL — it must not be backfilled from
+    the pre-reset U record, nor from the matched target row.
+    """
+    pipeline, write_history, write_silver, read_silver = job
+    write_silver(silver_rows([{"txn_id": 1, "amount": 10, "status": "a"}]))
+    write_history(
+        history_rows(
+            [
+                {"txn_id": 1, "amount": 10, "status": "a", "header__change_oper": "L"},
+                # Pre-reset update sets a status that must NOT survive the reset.
+                {
+                    "txn_id": 1,
+                    "status": "zzz",
+                    "header__change_oper": "U",
+                    "header__change_seq": "0001",
+                },
+                {"txn_id": 1, "header__change_oper": "D", "header__change_seq": "0002"},
+                # Reinsert with status legitimately NULL.
+                {
+                    "txn_id": 1,
+                    "amount": 50,
+                    "status": None,
+                    "header__change_oper": "I",
+                    "header__change_seq": "0003",
+                },
+                # Post-reset sparse update touching only amount.
+                {
+                    "txn_id": 1,
+                    "amount": 60,
+                    "header__change_oper": "U",
+                    "header__change_seq": "0004",
+                },
+            ]
+        )
+    )
+    pipeline._merge_cdc("0")
+
+    row = read_silver()
+    assert row.get_column("txn_id").to_list() == [1]
+    assert row.get_column("amount").to_list() == [60]
+    # NULL from the reinserted image: not "zzz" (pre-reset U), not "a" (target).
+    assert row.get_column("status").to_list() == [None]
+
+
+def test_merge_cdc_insert_reset_new_key_uses_final_image(job):
+    """
+    I→D→I→U for a new key: the inserted row is the second image plus the U.
+
+    The first insert's values must not backfill NULLs in the reinserted image.
+    """
+    pipeline, write_history, write_silver, read_silver = job
+    write_silver(silver_rows([{"txn_id": 9, "amount": 90, "status": "z"}]))
+    write_history(
+        history_rows(
+            [
+                {"txn_id": 9, "amount": 90, "status": "z", "header__change_oper": "L"},
+                {
+                    "txn_id": 1,
+                    "amount": 10,
+                    "status": "a",
+                    "header__change_oper": "I",
+                    "header__change_seq": "0001",
+                },
+                {"txn_id": 1, "header__change_oper": "D", "header__change_seq": "0002"},
+                {
+                    "txn_id": 1,
+                    "amount": 50,
+                    "status": None,
+                    "header__change_oper": "I",
+                    "header__change_seq": "0003",
+                },
+                {
+                    "txn_id": 1,
+                    "amount": 60,
+                    "header__change_oper": "U",
+                    "header__change_seq": "0004",
+                },
+            ]
+        )
+    )
+    pipeline._merge_cdc("0")
+
+    row = read_silver().filter(pl.col("txn_id") == 1)
+    assert row.get_column("amount").to_list() == [60]
     assert row.get_column("status").to_list() == [None]
 
 
