@@ -464,8 +464,15 @@ def test_delete_only_batch_advances_watermark(job):
 
 
 def test_rebuild_silver_without_load_records_raises(job):
-    """A snapshot containing no L records is treated as an error."""
-    pipeline, write_history, _, _ = job
+    """
+    A snapshot containing no L records raises BEFORE silver is overwritten.
+
+    The check must precede the overwrite: a post-write failure would leave an
+    empty silver whose recorded snapshot has already advanced, so the next run
+    would not know to rebuild it.
+    """
+    pipeline, write_history, write_silver, read_silver = job
+    write_silver(silver_rows([{"txn_id": 7, "amount": 70, "status": "z"}]))
     write_history(
         history_rows(
             [
@@ -480,6 +487,62 @@ def test_rebuild_silver_without_load_records_raises(job):
     )
     with pytest.raises(AssertionError, match="no L"):
         pipeline._rebuild_silver()
+    # The existing silver table was not touched.
+    assert read_silver().get_column("txn_id").to_list() == [7]
+
+
+def test_rebuild_silver_null_edw_on_partitioned_table_raises(job):
+    """On a partitioned table, an L record with a null edw_inserted_dtm raises pre-write."""
+    from datetime import datetime
+
+    pipeline, write_history, _, _ = job
+    write_history(
+        dated_history_rows(
+            [
+                {
+                    "txn_id": 1,
+                    "amount": 10,
+                    "header__change_oper": "L",
+                    "edw_inserted_dtm": datetime(2025, 1, 15),
+                },
+                # Null edw_inserted_dtm would land this row in the unreachable
+                # odin_year=0 partition.
+                {"txn_id": 2, "amount": 20, "header__change_oper": "L"},
+            ]
+        )
+    )
+    with pytest.raises(AssertionError, match="edw_inserted_dtm"):
+        pipeline._rebuild_silver()
+
+
+def test_merge_cdc_insert_with_null_edw_raises(job):
+    """On a partitioned table, an insertable CDC record with null edw_inserted_dtm raises."""
+    from datetime import datetime
+
+    pipeline, write_history, _, _ = job
+    write_history(
+        dated_history_rows(
+            [
+                {
+                    "txn_id": 1,
+                    "amount": 10,
+                    "header__change_oper": "L",
+                    "edw_inserted_dtm": datetime(2025, 1, 15),
+                },
+                # Full-image I record missing edw_inserted_dtm: inserting it would
+                # put the row in the unreachable odin_year=0 partition.
+                {
+                    "txn_id": 2,
+                    "amount": 20,
+                    "header__change_oper": "I",
+                    "header__change_seq": "0001",
+                },
+            ]
+        )
+    )
+    pipeline._rebuild_silver()
+    with pytest.raises(AssertionError, match="edw_inserted_dtm"):
+        pipeline._merge_cdc("0")
 
 
 def test_merge_cdc_insert_adds_new_key(job):
@@ -661,6 +724,171 @@ def test_merge_cdc_null_change_seq_raises(job):
     )
     with pytest.raises(AssertionError, match="null header__change_seq"):
         pipeline._merge_cdc("0")
+
+
+def test_merge_cdc_reinsert_applies_insert_image_verbatim(job):
+    """
+    D→I for an existing key in one batch: the row becomes exactly the I image.
+
+    I records are full row images, so a NULL in the reinserted image means NULL.
+    The matched-update must not coalesce against the target (which would
+    resurrect the pre-delete status), and the batch fold must not backfill from
+    the D record's pre-delete image.
+    """
+    pipeline, write_history, write_silver, read_silver = job
+    write_silver(silver_rows([{"txn_id": 1, "amount": 10, "status": "a"}]))
+    write_history(
+        history_rows(
+            [
+                {"txn_id": 1, "amount": 10, "status": "a", "header__change_oper": "L"},
+                # D carries the full pre-delete image, as Qlik deletes often do.
+                {
+                    "txn_id": 1,
+                    "amount": 10,
+                    "status": "a",
+                    "header__change_oper": "D",
+                    "header__change_seq": "0001",
+                },
+                # Reinsert with status legitimately NULL.
+                {
+                    "txn_id": 1,
+                    "amount": 50,
+                    "status": None,
+                    "header__change_oper": "I",
+                    "header__change_seq": "0002",
+                },
+            ]
+        )
+    )
+    pipeline._merge_cdc("0")
+
+    row = read_silver()
+    assert row.get_column("txn_id").to_list() == [1]
+    assert row.get_column("amount").to_list() == [50]
+    assert row.get_column("status").to_list() == [None]
+
+
+def test_merge_cdc_reinsert_new_key_not_backfilled_from_older_records(job):
+    """
+    I→D→I for a new key in one batch: the inserted row is the final I image only.
+
+    NULLs in the winning insert image must not be backfilled from the key's
+    earlier records in the batch (the first insert's values).
+    """
+    pipeline, write_history, write_silver, read_silver = job
+    write_silver(silver_rows([{"txn_id": 9, "amount": 90, "status": "z"}]))
+    write_history(
+        history_rows(
+            [
+                {"txn_id": 9, "amount": 90, "status": "z", "header__change_oper": "L"},
+                {
+                    "txn_id": 1,
+                    "amount": 10,
+                    "status": "a",
+                    "header__change_oper": "I",
+                    "header__change_seq": "0001",
+                },
+                {"txn_id": 1, "header__change_oper": "D", "header__change_seq": "0002"},
+                {
+                    "txn_id": 1,
+                    "amount": 50,
+                    "status": None,
+                    "header__change_oper": "I",
+                    "header__change_seq": "0003",
+                },
+            ]
+        )
+    )
+    pipeline._merge_cdc("0")
+
+    row = read_silver().filter(pl.col("txn_id") == 1)
+    assert row.get_column("amount").to_list() == [50]
+    assert row.get_column("status").to_list() == [None]
+
+
+def test_merge_cdc_delete_image_never_contributes_values(job):
+    """
+    D→U (no I) for an existing key: sparse U nulls coalesce from the TARGET row.
+
+    The D record's image must not participate in the fold — legacy ods_fact
+    builds update overlays from U records only, on top of the existing fact row.
+    """
+    pipeline, write_history, write_silver, read_silver = job
+    write_silver(silver_rows([{"txn_id": 1, "amount": 10, "status": "a"}]))
+    write_history(
+        history_rows(
+            [
+                {"txn_id": 1, "amount": 10, "status": "a", "header__change_oper": "L"},
+                # D image carries a status that differs from the target row.
+                {
+                    "txn_id": 1,
+                    "amount": 10,
+                    "status": "zzz",
+                    "header__change_oper": "D",
+                    "header__change_seq": "0001",
+                },
+                # Sparse U: only amount supplied; status must come from target.
+                {
+                    "txn_id": 1,
+                    "amount": 99,
+                    "header__change_oper": "U",
+                    "header__change_seq": "0002",
+                },
+            ]
+        )
+    )
+    pipeline._merge_cdc("0")
+
+    row = read_silver()
+    assert row.get_column("amount").to_list() == [99]
+    assert row.get_column("status").to_list() == ["a"]
+
+
+def test_merge_predicate_plain_equality_for_null_free_keys(job):
+    """
+    Null-free source keys produce a plain-equality predicate.
+
+    delta-rs only derives an early-pruning predicate from source key stats for
+    simple equality conjunctions; the null-safe OR form must appear only when
+    the batch actually contains a null key value (and only on that key).
+    """
+    pipeline, _, _, _ = job
+    clean = pl.DataFrame({"txn_id": [1, 2], "other_id": [5, 6]})
+    assert pipeline._merge_predicate(["txn_id"], clean) == 'target."txn_id" = source."txn_id"'
+    assert pipeline._merge_predicate(["txn_id", "other_id"], clean) == (
+        'target."txn_id" = source."txn_id" AND target."other_id" = source."other_id"'
+    )
+
+    with_null = pl.DataFrame({"txn_id": [1, None], "other_id": [5, 6]})
+    assert pipeline._merge_predicate(["txn_id", "other_id"], with_null) == (
+        '(target."txn_id" = source."txn_id" '
+        'OR (target."txn_id" IS NULL AND source."txn_id" IS NULL)) '
+        'AND target."other_id" = source."other_id"'
+    )
+
+
+def test_merge_cdc_null_key_still_matches(job):
+    """A null primary key falls back to null-safe matching (update, not duplicate)."""
+    pipeline, write_history, write_silver, _ = job
+    write_silver(silver_rows([{"txn_id": None, "amount": 10, "status": "a"}]))
+    write_history(
+        history_rows(
+            [
+                {"txn_id": None, "amount": 10, "status": "a", "header__change_oper": "L"},
+                {
+                    "txn_id": None,
+                    "amount": 99,
+                    "header__change_oper": "U",
+                    "header__change_seq": "0001",
+                },
+            ]
+        )
+    )
+    pipeline._merge_cdc("0")
+
+    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table())
+    assert out.height == 1
+    assert out.get_column("amount").to_list() == [99]
 
 
 def test_merge_cdc_quotes_reserved_word_columns(job):
