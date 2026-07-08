@@ -32,10 +32,11 @@ Two Qlik Replicate behaviors are relied on without a runtime check:
     ``ORDER BY header__change_seq LIMIT n`` and a strictly-greater watermark
     can never split records sharing a sequence across batches (which would
     permanently skip the cut-off records).
-  - "I" records are full row images (only "U" records may be sparse), so
-    resolving a delete-then-reinsert within one batch to its final "I" record
-    yields the reinserted values; batch-level column coalescing only backfills
-    columns that are NULL in that final image.
+  - "I" records are full row images (only "U" records may be sparse). A key
+    whose winning record is an "I" takes that image verbatim — a NULL there
+    means NULL. Only "U" records apply sparsely (fold across the key's I/U
+    records, then coalesce against the target row); "D" images never
+    contribute values. This mirrors the legacy ods_fact semantics.
 
 Steps per run:
   1. Find the latest history ``snapshot=`` partition.
@@ -492,7 +493,19 @@ class CubicODSDelta(OdinJob):
             yield s3_file(path)
 
     def _build_merge_source(self, cdc_df: pl.DataFrame, keys: list[str]) -> pl.DataFrame:
-        """Resolve CDC records to one final row per key for the silver MERGE."""
+        """
+        Resolve CDC records to one final row per key for the silver MERGE.
+
+        Data-column values follow the legacy ods_fact semantics per winning op:
+          - final op "I": the insert image verbatim — I records are full row
+            images, so a NULL there means NULL and must not be backfilled from
+            older records (e.g. the pre-delete image of a delete-then-reinsert).
+          - final op "U": per-column latest non-null value folded across the
+            key's I/U records (sparse updates overlay the batch's insert base;
+            the MERGE coalesces against the target row for the rest). D-record
+            images never contribute values.
+          - final op "D": values are irrelevant (the MERGE deletes the row).
+        """
         data_cols = [
             c
             for c in cdc_df.columns
@@ -500,14 +513,31 @@ class CubicODSDelta(OdinJob):
         ]
         sorted_desc = cdc_df.sort(by="header__change_seq", descending=True)
         latest = sorted_desc.unique(keys, keep="first").select(
-            keys + ["header__change_seq", "header__change_oper"]
+            keys + ["header__change_seq", "header__change_oper", *data_cols]
         )
-        merged = sorted_desc.group_by(keys).agg(
-            *[pl.col(c).drop_nulls().first() for c in data_cols],
-            pl.col("header__change_oper").eq("I").any().alias("has_insert_base"),
+        folded = (
+            sorted_desc.filter(pl.col("header__change_oper").is_in(("I", "U")))
+            .group_by(keys)
+            .agg(
+                *[pl.col(c).drop_nulls().first() for c in data_cols],
+                pl.col("header__change_oper").eq("I").any().alias("has_insert_base"),
+            )
         )
-        source = latest.join(merged, on=keys, how="left", nulls_equal=True).with_columns(
-            pl.lit(self.history_snapshot, dtype=pl.String).alias("odin_snapshot")
+        source = (
+            latest.join(folded, on=keys, how="left", nulls_equal=True, suffix="_folded")
+            .with_columns(
+                *[
+                    pl.when(pl.col("header__change_oper") == "U")
+                    .then(pl.col(f"{c}_folded"))
+                    .otherwise(pl.col(c))
+                    .alias(c)
+                    for c in data_cols
+                ],
+                # D-only keys have no I/U record to fold, hence no insert base.
+                pl.col("has_insert_base").fill_null(False),
+            )
+            .drop([f"{c}_folded" for c in data_cols])
+            .with_columns(pl.lit(self.history_snapshot, dtype=pl.String).alias("odin_snapshot"))
         )
         if "edw_inserted_dtm" in source.columns:
             source = source.with_columns(
@@ -586,8 +616,8 @@ class CubicODSDelta(OdinJob):
 
         predicate = self._merge_predicate(keys, source)
 
-        # Watermark columns are taken verbatim from the resolved CDC row; data
-        # columns coalesce so a sparse update preserves untouched values.
+        # Matched "U" rows: watermark columns verbatim from the resolved CDC row;
+        # data columns coalesce so a sparse update preserves untouched values.
         # Partition columns follow edw_inserted_dtm: when no CDC record in the
         # batch carried it for a key, source odin_year/odin_month degrade to 0
         # while the coalesce keeps the target's edw_inserted_dtm — so the
@@ -609,6 +639,16 @@ class CubicODSDelta(OdinJob):
                 )
             else:
                 update_set[col] = f'COALESCE(source."{col}", target."{col}")'
+        # Matched "I" rows (delete-then-reinsert in one batch, or a duplicate
+        # insert) replace the row wholesale: the insert image is a full row
+        # image, so a NULL means NULL — coalescing against the target would
+        # resurrect pre-delete values. Matches the legacy ods_fact behavior
+        # (old row dropped, I record inserted verbatim). Partition columns are
+        # safe verbatim: insertable rows are asserted above to carry
+        # edw_inserted_dtm, so they never degrade to the 0/0 partition.
+        replace_set = {
+            col: f'source."{col}"' for col in target_cols if col in source_cols and col not in keys
+        }
         insert_set = {col: f'source."{col}"' for col in target_cols if col in source_cols}
 
         sigterm_check()
@@ -624,7 +664,8 @@ class CubicODSDelta(OdinJob):
         )
         return (
             merger.when_matched_delete(predicate="source.header__change_oper = 'D'")
-            .when_matched_update(predicate="source.header__change_oper != 'D'", updates=update_set)
+            .when_matched_update(predicate="source.header__change_oper = 'I'", updates=replace_set)
+            .when_matched_update(predicate="source.header__change_oper = 'U'", updates=update_set)
             .when_not_matched_insert(
                 predicate=("source.header__change_oper != 'D' AND source.has_insert_base = true"),
                 updates=insert_set,
