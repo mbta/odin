@@ -552,6 +552,7 @@ class CubicODSDelta(OdinJob):
             error_on_type_mismatch=False,
             merge_schema=False,
             commit_properties=self._commit_state(watermark),
+            streamed_exec=False,
         )
         return (
             merger.when_matched_delete(predicate="source.header__change_oper = 'D'")
