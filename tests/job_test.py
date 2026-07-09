@@ -111,9 +111,7 @@ def test_monitor_proc_peak_usage(tmp_path) -> None:
     """A running subprocess' peak resident memory and disk spill are captured."""
     manager = get_context("spawn").Manager()
     tmpdir_val = manager.Value("u", "")
-    proc = get_context("spawn").Process(
-        target=_mem_and_disk_hog, args=(tmpdir_val, str(tmp_path))
-    )
+    proc = get_context("spawn").Process(target=_mem_and_disk_hog, args=(tmpdir_val, str(tmp_path)))
     proc.start()
     peak_mem_mb, peak_spill_mb = _monitor_proc_peak_usage(proc, tmpdir_val, 0.05)
 

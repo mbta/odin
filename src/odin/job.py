@@ -223,9 +223,7 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler | None) -> None:
     return_manager = get_context("spawn").Manager()
     proc_return_val = return_manager.Value("i", NEXT_RUN_FAILED)
     proc_tmpdir_val = return_manager.Value("u", "")
-    proc = get_context("spawn").Process(
-        target=job.start, args=(proc_return_val, proc_tmpdir_val)
-    )
+    proc = get_context("spawn").Process(target=job.start, args=(proc_return_val, proc_tmpdir_val))
     proc.start()
 
     # Track the job subprocess' peak memory and disk spill from the parent so
