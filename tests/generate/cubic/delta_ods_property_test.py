@@ -35,15 +35,15 @@ DATA_COLS = ("amount", "status")
 N_CASES = 60
 TEST_SNAPSHOT = "20250101T000000Z"
 
-SILVER_SCHEMA = pa.schema(
-    [
-        pa.field("txn_id", pa.int64()),
-        pa.field("amount", pa.int64()),
-        pa.field("status", pa.large_string()),
-        pa.field("header__change_seq", pa.large_string()),
-        pa.field("odin_snapshot", pa.large_string()),
-    ]
-)
+
+_SILVER_SCHEMA_FIELDS: "list[pa.Field[Any]]" = [
+    pa.field("txn_id", pa.int64()),
+    pa.field("amount", pa.int64()),
+    pa.field("status", pa.large_string()),
+    pa.field("header__change_seq", pa.large_string()),
+    pa.field("odin_snapshot", pa.large_string()),
+]
+SILVER_SCHEMA = pa.schema(_SILVER_SCHEMA_FIELDS)
 
 BATCH_SCHEMA = {
     "txn_id": pl.Int64,
