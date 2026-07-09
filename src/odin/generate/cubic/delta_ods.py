@@ -21,18 +21,24 @@ a contents-derived watermark would regress and re-read that batch forever.
 
 The source data is treated as untrusted: every run asserts the invariants it
 depends on (required columns present, primary keys declared and present, CDC
-records carry a change sequence, a load snapshot is non-empty). Violations raise
-rather than silently producing a corrupt silver table.
+records carry a change sequence, a load snapshot is non-empty, and — on
+year/month-partitioned tables — load and insert images carry a non-null
+``edw_inserted_dtm``, since a row without one would land in an odin_year=0
+partition that the pruned merge scan never revisits). Violations raise rather
+than silently producing a corrupt silver table.
 
 Two Qlik Replicate behaviors are relied on without a runtime check:
   - ``header__change_seq`` is unique per change record, so paging with
     ``ORDER BY header__change_seq LIMIT n`` and a strictly-greater watermark
     can never split records sharing a sequence across batches (which would
     permanently skip the cut-off records).
-  - "I" records are full row images (only "U" records may be sparse), so
-    resolving a delete-then-reinsert within one batch to its final "I" record
-    yields the reinserted values; batch-level column coalescing only backfills
-    columns that are NULL in that final image.
+  - "I" records are full row images (only "U" records may be sparse). Both
+    "I" and "D" are therefore per-key *reset events*, and each key's latest
+    one alone decides its action: D deletes the row (trailing orphan updates
+    are dropped), I replaces/inserts it as the image plus trailing sparse
+    updates (NULL means NULL), and a key with neither patches the target row
+    sparsely. This resolution is batch-split invariant — see the reference
+    interpreter in delta_ods_property_test.py.
 
 Steps per run:
   1. Find the latest history ``snapshot=`` partition.
@@ -44,6 +50,7 @@ Steps per run:
 
 import os
 import sched
+import tempfile
 from typing import Iterator
 
 import duckdb
@@ -126,9 +133,22 @@ def _long_run_interval() -> int:
     return NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_LONG
 
 
-def _connect(path: str) -> duckdb.DuckDBPyConnection:
+def _connect(path: str, spill_dir: str) -> duckdb.DuckDBPyConnection:
     """Open a DuckDB connection, configuring S3 access for s3:// paths."""
     con = duckdb.connect()
+    # An in-memory DuckDB has no temp_directory, so memory-heavy queries OOM
+    # instead of spilling; point it at a job-scoped scratch folder.
+    os.makedirs(spill_dir, exist_ok=True)
+    con.execute(f"SET temp_directory = '{spill_dir}'")
+    # Progress bar output would spam the logging system.
+    con.execute("PRAGMA disable_progress_bar;")
+    con.execute("PRAGMA disable_print_progress_bar;")
+    # Several queries per run read the same history files (schema describe, then
+    # the narrow and wide CDC scans); cache parquet footers so they are fetched
+    # from S3 once. The cache lives only as long as this run-scoped connection,
+    # so a history file rewritten mid-run by cubic_archive is no worse than
+    # today: the in-flight read errors and the run is retried.
+    con.execute("SET parquet_metadata_cache = true;")
     if path.startswith("s3://"):
         con.execute("CREATE OR REPLACE SECRET secret (TYPE s3, PROVIDER credential_chain);")
     return con
@@ -156,6 +176,7 @@ class CubicODSDelta(OdinJob):
         self.history_columns: list[str] = []
         self.history_snapshot = ""
         self.part_columns: list[str] = []
+        self._con: duckdb.DuckDBPyConnection | None = None
 
     def run(self) -> int:
         """Materialize the latest snapshot + CDC into silver; return seconds to next run."""
@@ -190,6 +211,23 @@ class CubicODSDelta(OdinJob):
             self.start_kwargs["cdc_schema_incompatible"] = "True"
             log.failed(exception=exc)
             return _long_run_interval()
+        finally:
+            self._close_db()
+
+    def _db(self) -> duckdb.DuckDBPyConnection:
+        """Return the run-scoped DuckDB connection, creating it on first use."""
+        if self._con is None:
+            # OdinJob.start() provides tmpdir (cleaned after each run); direct
+            # step calls (tests) fall back to the system temp folder.
+            scratch = getattr(self, "tmpdir", None) or tempfile.gettempdir()
+            self._con = _connect(self.history_root, os.path.join(scratch, "duckdb_spill"))
+        return self._con
+
+    def _close_db(self) -> None:
+        """Close the run-scoped DuckDB connection, if open."""
+        if self._con is not None:
+            self._con.close()
+            self._con = None
 
     @property
     def _read_history(self) -> str:
@@ -245,11 +283,7 @@ class CubicODSDelta(OdinJob):
             f"unexpected snapshot partition name for {self.table}: {self.history_snapshot!r}"
         )
 
-        con = _connect(self.history_root)
-        try:
-            describe = con.execute(f"DESCRIBE SELECT * FROM {self._read_history}").pl()
-        finally:
-            con.close()
+        describe = self._db().execute(f"DESCRIBE SELECT * FROM {self._read_history}").pl()
         self.history_columns = describe.get_column("column_name").to_list()
 
         missing = set(REQUIRED_HISTORY_COLUMNS) - set(self.history_columns)
@@ -289,29 +323,53 @@ class CubicODSDelta(OdinJob):
             "WHERE snapshot = ? AND header__change_oper = 'L'"
         )
 
+        # Validate the load records BEFORE the overwrite: once write_deltalake
+        # commits, silver's contents and recorded snapshot have already advanced,
+        # so a post-write failure would leave a wedged (empty or mispartitioned)
+        # table that the next run no longer knows to rebuild.
+        self._check_load_records()
+
         sigterm_check()
-        con = _connect(self.history_root)
-        try:
-            reader = con.execute(
-                sql, [self.history_snapshot, self.history_snapshot]
-            ).fetch_record_batch(REBUILD_BATCH_SIZE)
-            write_deltalake(
-                self.silver_uri,
-                reader,
-                mode="overwrite",
-                schema_mode="overwrite",
-                partition_by=self.part_columns or None,
-                commit_properties=self._commit_state(INITIAL_WATERMARK),
-            )
-        finally:
-            con.close()
+        reader = (
+            self._db()
+            .execute(sql, [self.history_snapshot, self.history_snapshot])
+            .fetch_record_batch(REBUILD_BATCH_SIZE)
+        )
+        write_deltalake(
+            self.silver_uri,
+            reader,
+            mode="overwrite",
+            schema_mode="overwrite",
+            partition_by=self.part_columns or None,
+            commit_properties=self._commit_state(INITIAL_WATERMARK),
+        )
 
         self.silver = DeltaTable(self.silver_uri)
-        rows_loaded = delta_row_count(self.silver)
-        assert rows_loaded > 0, (
+        log.complete(rows_loaded=delta_row_count(self.silver))
+
+    def _check_load_records(self) -> None:
+        """Assert the snapshot's "L" records can produce a valid silver table."""
+        checks = ["count(*)"]
+        if self.part_columns:
+            checks.append('count(*) FILTER (WHERE "edw_inserted_dtm" IS NULL)')
+        row = (
+            self._db()
+            .execute(
+                f"SELECT {', '.join(checks)} FROM {self._read_history} "
+                "WHERE snapshot = ? AND header__change_oper = 'L'",
+                [self.history_snapshot],
+            )
+            .fetchone()
+        )
+        assert row is not None and row[0] > 0, (
             f"snapshot {self.history_snapshot} for {self.table} has no L (load) records"
         )
-        log.complete(rows_loaded=rows_loaded)
+        if self.part_columns:
+            assert row[1] == 0, (
+                f"snapshot {self.history_snapshot} for {self.table} has {row[1]} L (load) "
+                "records with a null edw_inserted_dtm; rows would land in the odin_year=0 "
+                "partition, which partition-pruned merges never revisit"
+            )
 
     # ------------------------------------------------------------------
     # CDC MERGE (silver update from I/U/D records)
@@ -354,8 +412,46 @@ class CubicODSDelta(OdinJob):
             cdc_watermark=max_seq_processed,
             more_pending=more_pending,
             **{f"merge_{k}": v for k, v in metrics.items()},
+            **self._partition_metrics(source),
         )
         return NEXT_RUN_IMMEDIATE if more_pending else _default_run_interval()
+
+    # How many per-partition row counts to spell out in the merge log line;
+    # beyond this the list is truncated (partitions_touched stays exact).
+    PARTITION_LOG_LIMIT = 24
+
+    def _partition_metrics(self, source: pl.DataFrame) -> dict:
+        """
+        Log fields describing the partitions a merge touches (dated tables only).
+
+        Reported from the merge source (the same values _partition_constraint
+        prunes by): how many distinct odin_year/odin_month partitions the batch
+        reaches and the row count landing in each, oldest first — the signal
+        for pathological update patterns (e.g. frequent history-wide sweeps).
+        Rows without edw_inserted_dtm have an unknown target partition; they
+        are counted separately and disable pruning for the whole merge.
+        """
+        if "odin_year" not in source.columns:
+            return {}
+        parts = (
+            source.filter(pl.col("edw_inserted_dtm").is_not_null())
+            .group_by("odin_year", "odin_month")
+            .len()
+            .sort("odin_year", "odin_month")
+        )
+        labels = [f"{y:04d}-{m:02d}={n}" for y, m, n in parts.iter_rows()]
+        if len(labels) > self.PARTITION_LOG_LIMIT:
+            hidden = len(labels) - self.PARTITION_LOG_LIMIT
+            labels = labels[: self.PARTITION_LOG_LIMIT] + [f"+{hidden} more"]
+        metrics = {
+            "partitions_touched": parts.height,
+            "partition_rows": ",".join(labels),
+            "partition_scan_pruned": bool(self._partition_constraint(source)),
+        }
+        unknown = source.get_column("edw_inserted_dtm").null_count()
+        if unknown:
+            metrics["partition_rows_unknown"] = unknown
+        return metrics
 
     def _read_cdc(self, after_seq: str, limit: int) -> pl.DataFrame:
         """
@@ -374,44 +470,41 @@ class CubicODSDelta(OdinJob):
         """
         opers = ", ".join(f"'{o}'" for o in CDC_OPERS)
         snap = self.history_snapshot
-        con = _connect(self.history_root)
-        try:
-            # Step 1 — narrow: ceiling seq of the next `limit` records. Doubles as
-            # the "is there anything past the watermark?" probe.
-            window = (
-                con.execute(
-                    f"SELECT header__change_seq AS seq FROM {self._read_history} "
-                    f"WHERE snapshot = ? AND header__change_oper IN ({opers}) "
-                    "AND (header__change_seq > ? OR header__change_seq IS NULL) "
-                    f"ORDER BY header__change_seq NULLS FIRST LIMIT {limit}",
-                    [snap, str(after_seq)],
-                )
-                .pl()
-                .get_column("seq")
+        con = self._db()
+        # Step 1 — narrow: ceiling seq of the next `limit` records. Doubles as
+        # the "is there anything past the watermark?" probe.
+        window = (
+            con.execute(
+                f"SELECT header__change_seq AS seq FROM {self._read_history} "
+                f"WHERE snapshot = ? AND header__change_oper IN ({opers}) "
+                "AND (header__change_seq > ? OR header__change_seq IS NULL) "
+                f"ORDER BY header__change_seq NULLS FIRST LIMIT {limit}",
+                [snap, str(after_seq)],
             )
-            if window.len() == 0:
-                return pl.DataFrame()
+            .pl()
+            .get_column("seq")
+        )
+        if window.len() == 0:
+            return pl.DataFrame()
 
-            # Step 2 — wide: full rows bounded to the window's seq range.
-            ceiling = window.drop_nulls().max()
-            conditions = ["snapshot = ?", f"header__change_oper IN ({opers})"]
-            params: list[str] = [snap]
-            if ceiling is None:
-                conditions.append("header__change_seq IS NULL")
-            else:
-                conditions.append(
-                    "((header__change_seq > ? AND header__change_seq <= ?) "
-                    "OR header__change_seq IS NULL)"
-                )
-                params += [str(after_seq), str(ceiling)]
-            return con.execute(
-                f"SELECT * FROM {self._read_history} "
-                f"WHERE {' AND '.join(conditions)} "
-                "ORDER BY header__change_seq NULLS FIRST",
-                params,
-            ).pl()
-        finally:
-            con.close()
+        # Step 2 — wide: full rows bounded to the window's seq range.
+        ceiling = window.drop_nulls().max()
+        conditions = ["snapshot = ?", f"header__change_oper IN ({opers})"]
+        params: list[str] = [snap]
+        if ceiling is None:
+            conditions.append("header__change_seq IS NULL")
+        else:
+            conditions.append(
+                "((header__change_seq > ? AND header__change_seq <= ?) "
+                "OR header__change_seq IS NULL)"
+            )
+            params += [str(after_seq), str(ceiling)]
+        return con.execute(
+            f"SELECT * FROM {self._read_history} "
+            f"WHERE {' AND '.join(conditions)} "
+            "ORDER BY header__change_seq NULLS FIRST",
+            params,
+        ).pl()
 
     def _discover_keys(self, cdc_df: pl.DataFrame) -> list[str]:
         """Return the primary-key column names (lowercased) from the table DFM."""
@@ -451,22 +544,78 @@ class CubicODSDelta(OdinJob):
             yield s3_file(path)
 
     def _build_merge_source(self, cdc_df: pl.DataFrame, keys: list[str]) -> pl.DataFrame:
-        """Resolve CDC records to one final row per key for the silver MERGE."""
+        """
+        Resolve CDC records to one final row per key for the silver MERGE.
+
+        Each key resolves to a single action, ``odin_resolved_oper``, decided by
+        the key's latest I or D record. Both are *reset events* — a delete ends
+        the row and an insert image wholly replaces it — so nothing recorded
+        before the latest one can affect the final row:
+
+          - "D" (latest reset is a delete): the row is deleted. Any trailing U
+            records are orphans (updates to a row that no longer exists) and
+            are dropped — the same outcome those events produce when a batch
+            boundary separates them from the delete.
+          - "I" (latest reset is an insert): the row becomes the insert image
+            overlaid with the non-null values of the trailing U records. A NULL
+            in that result means NULL (I images are full row images); on a
+            matched target row it replaces, never coalesces.
+          - "U" (no I or D in the batch): sparse update — per-column latest
+            non-null value across the key's U records; the MERGE coalesces the
+            remaining NULLs against the target row. Keys with no target row
+            are dropped.
+
+        This resolution is batch-split invariant: cutting the same event stream
+        into batches at different points yields the same final table. Verified
+        against the reference interpreter in delta_ods_property_test.py.
+        """
         data_cols = [
             c
             for c in cdc_df.columns
             if c not in keys and c not in META_DROP_COLUMNS and c != "header__change_seq"
         ]
-        sorted_desc = cdc_df.sort(by="header__change_seq", descending=True)
-        latest = sorted_desc.unique(keys, keep="first").select(
-            keys + ["header__change_seq", "header__change_oper"]
+
+        # Watermark lineage: each key's row carries its highest processed seq.
+        winners = cdc_df.group_by(keys).agg(pl.col("header__change_seq").max())
+
+        # The reset event (latest I or D) per key; keys with neither resolve "U".
+        resets = (
+            cdc_df.select(*keys, "header__change_seq", "header__change_oper")
+            .filter(pl.col("header__change_oper").is_in(("I", "D")))
+            .group_by(keys)
+            .agg(
+                pl.col("header__change_oper")
+                .sort_by("header__change_seq")
+                .last()
+                .alias("odin_resolved_oper"),
+                pl.col("header__change_seq").max().alias("_reset_seq"),
+            )
         )
-        merged = sorted_desc.group_by(keys).agg(
-            *[pl.col(c).drop_nulls().first() for c in data_cols],
-            pl.col("header__change_oper").eq("I").any().alias("has_insert_base"),
+
+        # Data values: latest non-null per column across the key's records at or
+        # after its reset (all records when there is none). By construction this
+        # folds I + trailing Us for "I" keys and only Us for "U" keys; for "D"
+        # keys it starts at the delete image itself, whose values are unused by
+        # the delete except edw_inserted_dtm, which _partition_constraint needs
+        # to keep the merge scan pruned (it names the deleted row's partition).
+        folded = (
+            cdc_df.join(resets.select(*keys, "_reset_seq"), on=keys, how="left", nulls_equal=True)
+            .filter(
+                pl.col("_reset_seq").is_null()
+                | (pl.col("header__change_seq") >= pl.col("_reset_seq"))
+            )
+            .sort(by="header__change_seq", descending=True)
+            .group_by(keys)
+            .agg(pl.col(c).drop_nulls().first() for c in data_cols)
         )
-        source = latest.join(merged, on=keys, how="left", nulls_equal=True).with_columns(
-            pl.lit(self.history_snapshot, dtype=pl.String).alias("odin_snapshot")
+
+        source = (
+            winners.join(
+                resets.select(*keys, "odin_resolved_oper"), on=keys, how="left", nulls_equal=True
+            )
+            .with_columns(pl.col("odin_resolved_oper").fill_null("U"))
+            .join(folded, on=keys, how="left", nulls_equal=True)
+            .with_columns(pl.lit(self.history_snapshot, dtype=pl.String).alias("odin_snapshot"))
         )
         if "edw_inserted_dtm" in source.columns:
             source = source.with_columns(
@@ -480,9 +629,20 @@ class CubicODSDelta(OdinJob):
         return source
 
     def _merge_predicate(self, keys: list[str], source: pl.DataFrame) -> str:
-        """Build the MERGE match predicate (keys + optional partition constraint)."""
+        """
+        Build the MERGE match predicate (keys + optional partition constraint).
+
+        Each key uses plain equality when the source column carries no nulls:
+        with ``streamed_exec=False``, delta-rs derives an early-pruning predicate
+        from the source key min/max stats and skips target files whose key range
+        can't match — but only for simple equality conjunctions. The null-safe
+        ``OR (both NULL)`` form defeats that analysis, so it is emitted per key
+        and only when a null key value is actually present in the batch.
+        """
         key_pred = " AND ".join(
-            f'(target."{k}" = source."{k}" OR (target."{k}" IS NULL AND source."{k}" IS NULL))'
+            f'target."{k}" = source."{k}"'
+            if source.get_column(k).null_count() == 0
+            else f'(target."{k}" = source."{k}" OR (target."{k}" IS NULL AND source."{k}" IS NULL))'
             for k in keys
         )
         return key_pred + self._partition_constraint(source)
@@ -503,12 +663,26 @@ class CubicODSDelta(OdinJob):
         months = sorted(source.get_column("odin_month").unique().to_list())
         if not years or not months:
             return ""
-        years_sql = ", ".join(str(y) for y in years)
-        months_sql = ", ".join(str(m) for m in months)
+        # Literals are cast to INT (Int32) to match the partition columns' type
+        # exactly: bare integer literals parse as Int64, and while DataFusion's
+        # planner coerces that, delta-rs also evaluates this predicate in strict
+        # non-coercing paths (kernel data skipping, concurrent-commit conflict
+        # checks) where an Int32/Int64 comparison is a hard error
+        # ("Invalid comparison operation: Int32 <= Int64").
+        years_sql = ", ".join(f"CAST({y} AS INT)" for y in years)
+        months_sql = ", ".join(f"CAST({m} AS INT)" for m in months)
         return f' AND target."odin_year" IN ({years_sql}) AND target."odin_month" IN ({months_sql})'
 
     def _merge_apply(self, source: pl.DataFrame, keys: list[str], watermark: str) -> dict:
-        """Execute the delete/update/insert MERGE of `source` into silver."""
+        """
+        Execute the MERGE of `source` into silver, one action per resolved op.
+
+        odin_resolved_oper maps directly onto the MERGE branches:
+          - "D": delete the matched row (unmatched: nothing to delete).
+          - "I": replace the matched row verbatim / insert when unmatched.
+          - "U": coalesce onto the matched row; unmatched U keys are orphan
+            updates (no live row to patch) and fall through untouched.
+        """
         assert self.silver is not None
         target_cols = self.silver.schema().to_arrow().names
         missing = set(keys) - set(target_cols)
@@ -516,15 +690,30 @@ class CubicODSDelta(OdinJob):
             f"primary key columns {sorted(missing)} absent from silver table for {self.table}"
         )
 
+        # On partitioned tables, every "I"-resolved row (replaced or inserted
+        # with verbatim partition values) must carry edw_inserted_dtm: without
+        # it the row would land in the odin_year=0 partition, which
+        # partition-pruned merge scans never revisit. "U" rows are exempt —
+        # they keep the target's partition (see update_set below).
+        if "odin_year" in source.columns:
+            inserts = source.filter(pl.col("odin_resolved_oper") == "I")
+            null_edw = inserts.get_column("edw_inserted_dtm").null_count()
+            assert null_edw == 0, (
+                f"{null_edw} insert-resolved CDC records for {self.table} carry a null "
+                "edw_inserted_dtm; inserted rows would land in the odin_year=0 "
+                "partition, which partition-pruned merges never revisit"
+            )
+
         predicate = self._merge_predicate(keys, source)
 
-        # Watermark columns are taken verbatim from the resolved CDC row; data
-        # columns coalesce so a sparse update preserves untouched values.
-        # Partition columns follow edw_inserted_dtm: when no CDC record in the
-        # batch carried it for a key, source odin_year/odin_month degrade to 0
-        # while the coalesce keeps the target's edw_inserted_dtm — so the
-        # target's partition values must be kept too, or the row would silently
-        # move to the 0/0 partition and out of partition-pruned query results.
+        # "U" rows (sparse update): watermark columns verbatim from the
+        # resolved CDC row; data columns coalesce so untouched target values
+        # survive. Partition columns follow edw_inserted_dtm: when no CDC
+        # record in the batch carried it for a key, source odin_year/odin_month
+        # degrade to 0 while the coalesce keeps the target's edw_inserted_dtm —
+        # so the target's partition values must be kept too, or the row would
+        # silently move to the 0/0 partition and out of partition-pruned
+        # query results.
         passthrough = {"odin_snapshot", "header__change_seq"}
         partition_cols = {"odin_year", "odin_month"}
         source_cols = set(source.columns)
@@ -541,6 +730,15 @@ class CubicODSDelta(OdinJob):
                 )
             else:
                 update_set[col] = f'COALESCE(source."{col}", target."{col}")'
+        # "I" rows replace a matched row wholesale (delete-then-reinsert within
+        # one batch, or a duplicate/replayed insert — the spec's idempotent
+        # upsert): the fold is anchored at the insert image, so a NULL in the
+        # source means NULL — coalescing against the target would resurrect
+        # pre-reset values. Partition columns are safe verbatim per the assert
+        # above.
+        replace_set = {
+            col: f'source."{col}"' for col in target_cols if col in source_cols and col not in keys
+        }
         insert_set = {col: f'source."{col}"' for col in target_cols if col in source_cols}
 
         sigterm_check()
@@ -555,11 +753,11 @@ class CubicODSDelta(OdinJob):
             streamed_exec=False,
         )
         return (
-            merger.when_matched_delete(predicate="source.header__change_oper = 'D'")
-            .when_matched_update(predicate="source.header__change_oper != 'D'", updates=update_set)
+            merger.when_matched_delete(predicate="source.odin_resolved_oper = 'D'")
+            .when_matched_update(predicate="source.odin_resolved_oper = 'I'", updates=replace_set)
+            .when_matched_update(predicate="source.odin_resolved_oper = 'U'", updates=update_set)
             .when_not_matched_insert(
-                predicate=("source.header__change_oper != 'D' AND source.has_insert_base = true"),
-                updates=insert_set,
+                predicate="source.odin_resolved_oper = 'I'", updates=insert_set
             )
             .execute()
         )
