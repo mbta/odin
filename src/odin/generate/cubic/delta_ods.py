@@ -32,11 +32,13 @@ Two Qlik Replicate behaviors are relied on without a runtime check:
     ``ORDER BY header__change_seq LIMIT n`` and a strictly-greater watermark
     can never split records sharing a sequence across batches (which would
     permanently skip the cut-off records).
-  - "I" records are full row images (only "U" records may be sparse), so an
-    "I" is a per-key reset point: a winning "I" applies verbatim (NULL means
-    NULL), a winning "U" folds only across records at or after the key's
-    latest "I", and a batch containing an "I" replaces a matched target row
-    rather than coalescing with it. "D" images never contribute values.
+  - "I" records are full row images (only "U" records may be sparse). Both
+    "I" and "D" are therefore per-key *reset events*, and each key's latest
+    one alone decides its action: D deletes the row (trailing orphan updates
+    are dropped), I replaces/inserts it as the image plus trailing sparse
+    updates (NULL means NULL), and a key with neither patches the target row
+    sparsely. This resolution is batch-split invariant — see the reference
+    interpreter in delta_ods_property_test.py.
 
 Steps per run:
   1. Find the latest history ``snapshot=`` partition.
@@ -496,79 +498,74 @@ class CubicODSDelta(OdinJob):
         """
         Resolve CDC records to one final row per key for the silver MERGE.
 
-        Each key's winning (highest-seq) record decides the row's fate, and its
-        op decides how the data-column values are resolved — mirroring the
-        legacy ods_fact semantics:
+        Each key resolves to a single action, ``odin_resolved_oper``, decided by
+        the key's latest I or D record. Both are *reset events* — a delete ends
+        the row and an insert image wholly replaces it — so nothing recorded
+        before the latest one can affect the final row:
 
-          - winner "I": the insert image verbatim. I records are full row
-            images, so a NULL there means NULL and must not be backfilled from
-            older records (e.g. the pre-delete image of a delete-then-reinsert).
-          - winner "U": per-column latest non-null value folded across the
-            key's I/U records **at or after the key's latest I** — an insert
-            image is a full-image reset, so records behind it describe a row
-            version that no longer exists and must not leak values forward.
-            With no I in the batch, all U records fold and the MERGE coalesces
-            the remaining NULLs against the target row; with an I, the folded
-            row replaces the target verbatim. D-record images never contribute
-            values.
-          - winner "D": values are irrelevant (the MERGE deletes the row).
+          - "D" (latest reset is a delete): the row is deleted. Any trailing U
+            records are orphans (updates to a row that no longer exists) and
+            are dropped — the same outcome those events produce when a batch
+            boundary separates them from the delete.
+          - "I" (latest reset is an insert): the row becomes the insert image
+            overlaid with the non-null values of the trailing U records. A NULL
+            in that result means NULL (I images are full row images); on a
+            matched target row it replaces, never coalesces.
+          - "U" (no I or D in the batch): sparse update — per-column latest
+            non-null value across the key's U records; the MERGE coalesces the
+            remaining NULLs against the target row. Keys with no target row
+            are dropped.
 
-        Only U winners take the fold/join path; I and D winners pass through
-        verbatim, so peak memory scales with the update keys, not the batch.
+        This resolution is batch-split invariant: cutting the same event stream
+        into batches at different points yields the same final table. Verified
+        against the reference interpreter in delta_ods_property_test.py.
         """
         data_cols = [
             c
             for c in cdc_df.columns
             if c not in keys and c not in META_DROP_COLUMNS and c != "header__change_seq"
         ]
-        out_cols = [*keys, "header__change_seq", "header__change_oper", *data_cols]
-        sorted_desc = cdc_df.sort(by="header__change_seq", descending=True)
 
-        # One winning record per key: the highest header__change_seq.
-        winners = sorted_desc.unique(keys, keep="first").select(out_cols)
+        # Watermark lineage: each key's row carries its highest processed seq.
+        winners = cdc_df.group_by(keys).agg(pl.col("header__change_seq").max())
 
-        # I and D winners: values verbatim from the winning record.
-        verbatim = winners.filter(pl.col("header__change_oper") != "U")
-
-        # U winners: fold the latest non-null value per column across the key's
-        # I/U records, then re-attach the winner's seq/oper. The fold is anchored
-        # at the key's latest I record (its seq is the per-key reset point):
-        # an insert image is a full row image, so records behind it — including
-        # a pre-delete U's values — must not leak forward past it.
-        u_winners = winners.filter(pl.col("header__change_oper") == "U")
-        iu_records = sorted_desc.filter(pl.col("header__change_oper").is_in(("I", "U"))).join(
-            u_winners.select(keys), on=keys, how="semi", nulls_equal=True
+        # The reset event (latest I or D) per key; keys with neither resolve "U".
+        resets = (
+            cdc_df.select(*keys, "header__change_seq", "header__change_oper")
+            .filter(pl.col("header__change_oper").is_in(("I", "D")))
+            .group_by(keys)
+            .agg(
+                pl.col("header__change_oper")
+                .sort_by("header__change_seq")
+                .last()
+                .alias("odin_resolved_oper"),
+                pl.col("header__change_seq").max().alias("_reset_seq"),
+            )
         )
-        reset_seq = iu_records.group_by(keys).agg(
-            pl.col("header__change_seq")
-            .filter(pl.col("header__change_oper") == "I")
-            .max()
-            .alias("_reset_seq")
-        )
+
+        # Data values: latest non-null per column across the key's records at or
+        # after its reset (all records when there is none). By construction this
+        # folds I + trailing Us for "I" keys and only Us for "U" keys; for "D"
+        # keys it starts at the delete image itself, whose values are unused by
+        # the delete except edw_inserted_dtm, which _partition_constraint needs
+        # to keep the merge scan pruned (it names the deleted row's partition).
         folded = (
-            iu_records.join(reset_seq, on=keys, how="left", nulls_equal=True)
+            cdc_df.join(resets.select(*keys, "_reset_seq"), on=keys, how="left", nulls_equal=True)
             .filter(
                 pl.col("_reset_seq").is_null()
                 | (pl.col("header__change_seq") >= pl.col("_reset_seq"))
             )
+            .sort(by="header__change_seq", descending=True)
             .group_by(keys)
             .agg(pl.col(c).drop_nulls().first() for c in data_cols)
         )
-        updates = u_winners.select(*keys, "header__change_seq", "header__change_oper").join(
-            folded, on=keys, how="left", nulls_equal=True
-        )
-
-        # Insert gate: whether ANY record for the key is an "I" (false for keys
-        # seen only as U/D). Computed on a keys+oper projection to stay narrow.
-        has_insert = (
-            cdc_df.select(*keys, "header__change_oper")
-            .group_by(keys)
-            .agg(pl.col("header__change_oper").eq("I").any().alias("has_insert_base"))
-        )
 
         source = (
-            pl.concat([verbatim, updates.select(out_cols)], how="vertical")
-            .join(has_insert, on=keys, how="left", nulls_equal=True)
+            winners.join(
+                resets.select(*keys, "odin_resolved_oper"), on=keys, how="left", nulls_equal=True
+            )
+            .with_columns(pl.col("odin_resolved_oper").fill_null("U"))
+            .join(folded, on=keys, how="left", nulls_equal=True)
             .with_columns(pl.lit(self.history_snapshot, dtype=pl.String).alias("odin_snapshot"))
         )
         if "edw_inserted_dtm" in source.columns:
@@ -622,7 +619,15 @@ class CubicODSDelta(OdinJob):
         return f' AND target."odin_year" IN ({years_sql}) AND target."odin_month" IN ({months_sql})'
 
     def _merge_apply(self, source: pl.DataFrame, keys: list[str], watermark: str) -> dict:
-        """Execute the delete/update/insert MERGE of `source` into silver."""
+        """
+        Execute the MERGE of `source` into silver, one action per resolved op.
+
+        odin_resolved_oper maps directly onto the MERGE branches:
+          - "D": delete the matched row (unmatched: nothing to delete).
+          - "I": replace the matched row verbatim / insert when unmatched.
+          - "U": coalesce onto the matched row; unmatched U keys are orphan
+            updates (no live row to patch) and fall through untouched.
+        """
         assert self.silver is not None
         target_cols = self.silver.schema().to_arrow().names
         missing = set(keys) - set(target_cols)
@@ -630,32 +635,30 @@ class CubicODSDelta(OdinJob):
             f"primary key columns {sorted(missing)} absent from silver table for {self.table}"
         )
 
-        # On partitioned tables, any row this merge could INSERT (non-D with an
-        # insert base) must carry edw_inserted_dtm: an insert without it would
-        # land in the odin_year=0 partition, which partition-pruned merge scans
-        # never revisit (the pruning IN-lists are built from non-null source
-        # timestamps). Updates are exempt — they keep the target's partition.
+        # On partitioned tables, every "I"-resolved row (replaced or inserted
+        # with verbatim partition values) must carry edw_inserted_dtm: without
+        # it the row would land in the odin_year=0 partition, which
+        # partition-pruned merge scans never revisit. "U" rows are exempt —
+        # they keep the target's partition (see update_set below).
         if "odin_year" in source.columns:
-            insertable = source.filter(
-                pl.col("header__change_oper").ne("D") & pl.col("has_insert_base")
-            )
-            null_edw = insertable.get_column("edw_inserted_dtm").null_count()
+            inserts = source.filter(pl.col("odin_resolved_oper") == "I")
+            null_edw = inserts.get_column("edw_inserted_dtm").null_count()
             assert null_edw == 0, (
-                f"{null_edw} insertable CDC records for {self.table} carry a null "
+                f"{null_edw} insert-resolved CDC records for {self.table} carry a null "
                 "edw_inserted_dtm; inserted rows would land in the odin_year=0 "
                 "partition, which partition-pruned merges never revisit"
             )
 
         predicate = self._merge_predicate(keys, source)
 
-        # Matched rows with NO insert image in the batch (sparse update):
-        # watermark columns verbatim from the resolved CDC row; data columns
-        # coalesce so a sparse update preserves untouched target values.
-        # Partition columns follow edw_inserted_dtm: when no CDC record in the
-        # batch carried it for a key, source odin_year/odin_month degrade to 0
-        # while the coalesce keeps the target's edw_inserted_dtm — so the
-        # target's partition values must be kept too, or the row would silently
-        # move to the 0/0 partition and out of partition-pruned query results.
+        # "U" rows (sparse update): watermark columns verbatim from the
+        # resolved CDC row; data columns coalesce so untouched target values
+        # survive. Partition columns follow edw_inserted_dtm: when no CDC
+        # record in the batch carried it for a key, source odin_year/odin_month
+        # degrade to 0 while the coalesce keeps the target's edw_inserted_dtm —
+        # so the target's partition values must be kept too, or the row would
+        # silently move to the 0/0 partition and out of partition-pruned
+        # query results.
         passthrough = {"odin_snapshot", "header__change_seq"}
         partition_cols = {"odin_year", "odin_month"}
         source_cols = set(source.columns)
@@ -672,13 +675,12 @@ class CubicODSDelta(OdinJob):
                 )
             else:
                 update_set[col] = f'COALESCE(source."{col}", target."{col}")'
-        # Matched rows WITH an insert image in the batch (winner I, or winner U
-        # over a same-batch I) replace the row wholesale: the insert image is a
-        # full-image reset and the fold is anchored at it, so a NULL in the
+        # "I" rows replace a matched row wholesale (delete-then-reinsert within
+        # one batch, or a duplicate/replayed insert — the spec's idempotent
+        # upsert): the fold is anchored at the insert image, so a NULL in the
         # source means NULL — coalescing against the target would resurrect
-        # pre-reset values. Partition columns are safe verbatim: insertable
-        # rows are asserted above to carry edw_inserted_dtm, so they never
-        # degrade to the 0/0 partition.
+        # pre-reset values. Partition columns are safe verbatim per the assert
+        # above.
         replace_set = {
             col: f'source."{col}"' for col in target_cols if col in source_cols and col not in keys
         }
@@ -696,18 +698,11 @@ class CubicODSDelta(OdinJob):
             streamed_exec=False,
         )
         return (
-            merger.when_matched_delete(predicate="source.header__change_oper = 'D'")
-            .when_matched_update(
-                predicate=("source.header__change_oper != 'D' AND source.has_insert_base = true"),
-                updates=replace_set,
-            )
-            .when_matched_update(
-                predicate=("source.header__change_oper = 'U' AND source.has_insert_base = false"),
-                updates=update_set,
-            )
+            merger.when_matched_delete(predicate="source.odin_resolved_oper = 'D'")
+            .when_matched_update(predicate="source.odin_resolved_oper = 'I'", updates=replace_set)
+            .when_matched_update(predicate="source.odin_resolved_oper = 'U'", updates=update_set)
             .when_not_matched_insert(
-                predicate=("source.header__change_oper != 'D' AND source.has_insert_base = true"),
-                updates=insert_set,
+                predicate="source.odin_resolved_oper = 'I'", updates=insert_set
             )
             .execute()
         )

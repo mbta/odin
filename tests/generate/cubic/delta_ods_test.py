@@ -726,18 +726,18 @@ def test_merge_cdc_null_change_seq_raises(job):
         pipeline._merge_cdc("0")
 
 
-def test_build_merge_source_one_row_per_key_with_correct_ops(job):
+def test_build_merge_source_one_row_per_key_with_correct_resolution(job):
     """
     The merge source carries exactly one row per key across all op mixes.
 
-    Guards the verbatim/updates split: every key must land in exactly one of
-    the two paths, with the winning op and the insert gate resolved correctly.
+    Guards the reset-event resolution: each key's latest I or D decides its
+    odin_resolved_oper (U when the batch has neither), with folded values.
     """
     pipeline, write_history, _, _ = job
     write_history(
         history_rows(
             [
-                # key 1: I then sparse U -> winner U, insert base present
+                # key 1: I then sparse U -> resolves I (insert image + overlay)
                 {
                     "txn_id": 1,
                     "amount": 10,
@@ -751,14 +751,14 @@ def test_build_merge_source_one_row_per_key_with_correct_ops(job):
                     "header__change_oper": "U",
                     "header__change_seq": "0002",
                 },
-                # key 2: U only -> winner U, no insert base
+                # key 2: U only -> resolves U (sparse patch)
                 {
                     "txn_id": 2,
                     "amount": 20,
                     "header__change_oper": "U",
                     "header__change_seq": "0003",
                 },
-                # key 3: I only -> winner I
+                # key 3: I only -> resolves I
                 {
                     "txn_id": 3,
                     "amount": 30,
@@ -766,7 +766,7 @@ def test_build_merge_source_one_row_per_key_with_correct_ops(job):
                     "header__change_oper": "I",
                     "header__change_seq": "0004",
                 },
-                # key 4: I then D -> winner D, insert base present
+                # key 4: I then D -> resolves D
                 {
                     "txn_id": 4,
                     "amount": 40,
@@ -774,8 +774,14 @@ def test_build_merge_source_one_row_per_key_with_correct_ops(job):
                     "header__change_seq": "0005",
                 },
                 {"txn_id": 4, "header__change_oper": "D", "header__change_seq": "0006"},
-                # key 5: D only -> winner D, no insert base
+                # key 5: D then orphan U -> resolves D (trailing U dropped)
                 {"txn_id": 5, "header__change_oper": "D", "header__change_seq": "0007"},
+                {
+                    "txn_id": 5,
+                    "amount": 50,
+                    "header__change_oper": "U",
+                    "header__change_seq": "0008",
+                },
             ]
         )
     )
@@ -783,9 +789,16 @@ def test_build_merge_source_one_row_per_key_with_correct_ops(job):
     source = pipeline._build_merge_source(cdc_df, KEYS).sort("txn_id")
 
     assert source.get_column("txn_id").to_list() == [1, 2, 3, 4, 5]
-    assert source.get_column("header__change_oper").to_list() == ["U", "U", "I", "D", "D"]
-    assert source.get_column("has_insert_base").to_list() == [True, False, True, True, False]
-    # Key 1's fold: latest non-null amount wins, status backfilled from the I base.
+    assert source.get_column("odin_resolved_oper").to_list() == ["I", "U", "I", "D", "D"]
+    # Watermark lineage: each key carries its highest seq, even for D keys.
+    assert source.get_column("header__change_seq").to_list() == [
+        "0002",
+        "0003",
+        "0004",
+        "0006",
+        "0008",
+    ]
+    # Key 1's fold: latest non-null amount wins, status from the I base image.
     row1 = source.filter(pl.col("txn_id") == 1)
     assert row1.get_column("amount").to_list() == [99]
     assert row1.get_column("status").to_list() == ["a"]
@@ -963,20 +976,30 @@ def test_merge_cdc_insert_reset_new_key_uses_final_image(job):
     assert row.get_column("status").to_list() == [None]
 
 
-def test_merge_cdc_delete_image_never_contributes_values(job):
+def test_merge_cdc_orphan_update_after_delete_drops_row(job):
     """
-    D→U (no I) for an existing key: sparse U nulls coalesce from the TARGET row.
+    D→U (no I) for an existing key: the delete wins; the orphan U is dropped.
 
-    The D record's image must not participate in the fold — legacy ods_fact
-    builds update overlays from U records only, on top of the existing fact row.
+    The latest reset event (the D) decides the key's action. A U with no
+    subsequent insert image has no live row to patch — the same events split
+    across two batches would delete the row and drop the U, and resolution
+    must be batch-split invariant. (Legacy let the U resurrect the row when
+    both fell in one batch — a batch-boundary-dependent outcome.)
     """
     pipeline, write_history, write_silver, read_silver = job
-    write_silver(silver_rows([{"txn_id": 1, "amount": 10, "status": "a"}]))
+    write_silver(
+        silver_rows(
+            [
+                {"txn_id": 1, "amount": 10, "status": "a"},
+                {"txn_id": 2, "amount": 20, "status": "b"},
+            ]
+        )
+    )
     write_history(
         history_rows(
             [
                 {"txn_id": 1, "amount": 10, "status": "a", "header__change_oper": "L"},
-                # D image carries a status that differs from the target row.
+                {"txn_id": 2, "amount": 20, "status": "b", "header__change_oper": "L"},
                 {
                     "txn_id": 1,
                     "amount": 10,
@@ -984,7 +1007,6 @@ def test_merge_cdc_delete_image_never_contributes_values(job):
                     "header__change_oper": "D",
                     "header__change_seq": "0001",
                 },
-                # Sparse U: only amount supplied; status must come from target.
                 {
                     "txn_id": 1,
                     "amount": 99,
@@ -996,9 +1018,10 @@ def test_merge_cdc_delete_image_never_contributes_values(job):
     )
     pipeline._merge_cdc("0")
 
-    row = read_silver()
-    assert row.get_column("amount").to_list() == [99]
-    assert row.get_column("status").to_list() == ["a"]
+    # Row 1 deleted (orphan U dropped); row 2 untouched.
+    assert read_silver().get_column("txn_id").to_list() == [2]
+    # Watermark still advanced past the orphan U.
+    assert pipeline._read_state() == (TEST_SNAPSHOT, "0002")
 
 
 def test_merge_predicate_plain_equality_for_null_free_keys(job):
