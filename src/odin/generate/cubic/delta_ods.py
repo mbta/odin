@@ -411,6 +411,7 @@ class CubicODSDelta(OdinJob):
             final_row_count=delta_row_count(self.silver),
             cdc_watermark=max_seq_processed,
             more_pending=more_pending,
+            key_cols=",".join(keys),
             **{f"merge_{k}": v for k, v in metrics.items()},
             **self._partition_metrics(source),
         )
