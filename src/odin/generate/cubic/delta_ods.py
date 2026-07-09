@@ -401,8 +401,46 @@ class CubicODSDelta(OdinJob):
             cdc_watermark=max_seq_processed,
             more_pending=more_pending,
             **{f"merge_{k}": v for k, v in metrics.items()},
+            **self._partition_metrics(source),
         )
         return NEXT_RUN_IMMEDIATE if more_pending else _default_run_interval()
+
+    # How many per-partition row counts to spell out in the merge log line;
+    # beyond this the list is truncated (partitions_touched stays exact).
+    PARTITION_LOG_LIMIT = 24
+
+    def _partition_metrics(self, source: pl.DataFrame) -> dict:
+        """
+        Log fields describing the partitions a merge touches (dated tables only).
+
+        Reported from the merge source (the same values _partition_constraint
+        prunes by): how many distinct odin_year/odin_month partitions the batch
+        reaches and the row count landing in each, oldest first — the signal
+        for pathological update patterns (e.g. frequent history-wide sweeps).
+        Rows without edw_inserted_dtm have an unknown target partition; they
+        are counted separately and disable pruning for the whole merge.
+        """
+        if "odin_year" not in source.columns:
+            return {}
+        parts = (
+            source.filter(pl.col("edw_inserted_dtm").is_not_null())
+            .group_by("odin_year", "odin_month")
+            .len()
+            .sort("odin_year", "odin_month")
+        )
+        labels = [f"{y:04d}-{m:02d}={n}" for y, m, n in parts.iter_rows()]
+        if len(labels) > self.PARTITION_LOG_LIMIT:
+            hidden = len(labels) - self.PARTITION_LOG_LIMIT
+            labels = labels[: self.PARTITION_LOG_LIMIT] + [f"+{hidden} more"]
+        metrics = {
+            "partitions_touched": parts.height,
+            "partition_rows": ",".join(labels),
+            "partition_scan_pruned": bool(self._partition_constraint(source)),
+        }
+        unknown = source.get_column("edw_inserted_dtm").null_count()
+        if unknown:
+            metrics["partition_rows_unknown"] = unknown
+        return metrics
 
     def _read_cdc(self, after_seq: str, limit: int) -> pl.DataFrame:
         """

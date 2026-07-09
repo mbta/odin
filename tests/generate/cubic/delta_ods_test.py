@@ -1024,6 +1024,71 @@ def test_merge_cdc_orphan_update_after_delete_drops_row(job):
     assert pipeline._read_state() == (TEST_SNAPSHOT, "0002")
 
 
+def test_partition_metrics_reports_touched_partitions(job):
+    """Merge logging reports distinct partitions with row counts, oldest first."""
+    from datetime import datetime
+
+    pipeline, _, _, _ = job
+    source = pl.DataFrame(
+        {
+            "edw_inserted_dtm": [
+                datetime(2025, 3, 1),
+                datetime(2024, 1, 5),
+                datetime(2024, 1, 6),
+            ],
+            "odin_year": [2025, 2024, 2024],
+            "odin_month": [3, 1, 1],
+        }
+    )
+    metrics = pipeline._partition_metrics(source)
+    assert metrics == {
+        "partitions_touched": 2,
+        "partition_rows": "2024-01=2,2025-03=1",
+        "partition_scan_pruned": True,
+    }
+
+
+def test_partition_metrics_counts_unknown_partition_rows(job):
+    """Rows without edw_inserted_dtm are counted as unknown and disable pruning."""
+    from datetime import datetime
+
+    pipeline, _, _, _ = job
+    source = pl.DataFrame(
+        {
+            "edw_inserted_dtm": [datetime(2025, 3, 1), None],
+            "odin_year": [2025, 0],
+            "odin_month": [3, 0],
+        }
+    )
+    metrics = pipeline._partition_metrics(source)
+    assert metrics["partitions_touched"] == 1
+    assert metrics["partition_rows"] == "2025-03=1"
+    assert metrics["partition_scan_pruned"] is False
+    assert metrics["partition_rows_unknown"] == 1
+
+
+def test_partition_metrics_truncates_long_lists_and_skips_undated(job):
+    """The per-partition list truncates beyond the limit; undated tables log nothing."""
+    from datetime import datetime
+
+    pipeline, _, _, _ = job
+    n = pipeline.PARTITION_LOG_LIMIT + 2
+    months = [datetime(2000 + i, 1 + i % 12, 1) for i in range(n)]
+    source = pl.DataFrame(
+        {
+            "edw_inserted_dtm": months,
+            "odin_year": [d.year for d in months],
+            "odin_month": [d.month for d in months],
+        }
+    )
+    metrics = pipeline._partition_metrics(source)
+    assert metrics["partitions_touched"] == n
+    assert metrics["partition_rows"].endswith(",+2 more")
+    assert metrics["partition_rows"].count(",") == pipeline.PARTITION_LOG_LIMIT
+
+    assert pipeline._partition_metrics(pl.DataFrame({"txn_id": [1]})) == {}
+
+
 def test_merge_predicate_plain_equality_for_null_free_keys(job):
     """
     Null-free source keys produce a plain-equality predicate.
