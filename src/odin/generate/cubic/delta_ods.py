@@ -50,6 +50,7 @@ Steps per run:
 
 import os
 import sched
+import tempfile
 from typing import Iterator
 
 import duckdb
@@ -132,9 +133,16 @@ def _long_run_interval() -> int:
     return NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_LONG
 
 
-def _connect(path: str) -> duckdb.DuckDBPyConnection:
+def _connect(path: str, spill_dir: str) -> duckdb.DuckDBPyConnection:
     """Open a DuckDB connection, configuring S3 access for s3:// paths."""
     con = duckdb.connect()
+    # An in-memory DuckDB has no temp_directory, so memory-heavy queries OOM
+    # instead of spilling; point it at a job-scoped scratch folder.
+    os.makedirs(spill_dir, exist_ok=True)
+    con.execute(f"SET temp_directory = '{spill_dir}'")
+    # Progress bar output would spam the logging system.
+    con.execute("PRAGMA disable_progress_bar;")
+    con.execute("PRAGMA disable_print_progress_bar;")
     # Several queries per run read the same history files (schema describe, then
     # the narrow and wide CDC scans); cache parquet footers so they are fetched
     # from S3 once. The cache lives only as long as this run-scoped connection,
@@ -209,7 +217,10 @@ class CubicODSDelta(OdinJob):
     def _db(self) -> duckdb.DuckDBPyConnection:
         """Return the run-scoped DuckDB connection, creating it on first use."""
         if self._con is None:
-            self._con = _connect(self.history_root)
+            # OdinJob.start() provides tmpdir (cleaned after each run); direct
+            # step calls (tests) fall back to the system temp folder.
+            scratch = getattr(self, "tmpdir", None) or tempfile.gettempdir()
+            self._con = _connect(self.history_root, os.path.join(scratch, "duckdb_spill"))
         return self._con
 
     def _close_db(self) -> None:

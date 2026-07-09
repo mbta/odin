@@ -1024,6 +1024,20 @@ def test_merge_cdc_orphan_update_after_delete_drops_row(job):
     assert pipeline._read_state() == (TEST_SNAPSHOT, "0002")
 
 
+def test_db_connection_spills_to_disk_without_progress_bar(job):
+    """The run-scoped connection can spill to disk and never prints progress."""
+    pipeline, _, _, _ = job
+    con = pipeline._db()
+
+    def setting(name: str) -> object:
+        return con.execute(f"SELECT current_setting('{name}')").fetchone()[0]
+
+    assert str(setting("temp_directory")).endswith("duckdb_spill")
+    assert setting("enable_progress_bar") is False
+    # Run-scoped: repeated calls reuse the same connection.
+    assert pipeline._db() is con
+
+
 def test_partition_metrics_reports_touched_partitions(job):
     """Merge logging reports distinct partitions with row counts, oldest first."""
     from datetime import datetime
