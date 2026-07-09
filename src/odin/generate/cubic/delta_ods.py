@@ -663,8 +663,14 @@ class CubicODSDelta(OdinJob):
         months = sorted(source.get_column("odin_month").unique().to_list())
         if not years or not months:
             return ""
-        years_sql = ", ".join(str(y) for y in years)
-        months_sql = ", ".join(str(m) for m in months)
+        # Literals are cast to INT (Int32) to match the partition columns' type
+        # exactly: bare integer literals parse as Int64, and while DataFusion's
+        # planner coerces that, delta-rs also evaluates this predicate in strict
+        # non-coercing paths (kernel data skipping, concurrent-commit conflict
+        # checks) where an Int32/Int64 comparison is a hard error
+        # ("Invalid comparison operation: Int32 <= Int64").
+        years_sql = ", ".join(f"CAST({y} AS INT)" for y in years)
+        months_sql = ", ".join(f"CAST({m} AS INT)" for m in months)
         return f' AND target."odin_year" IN ({years_sql}) AND target."odin_month" IN ({months_sql})'
 
     def _merge_apply(self, source: pl.DataFrame, keys: list[str], watermark: str) -> dict:
