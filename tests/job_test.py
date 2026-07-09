@@ -1,3 +1,4 @@
+import os
 import pytest
 import sched
 import time
@@ -5,7 +6,7 @@ from multiprocessing import get_context
 
 from odin.job import OdinJob
 from odin.job import job_proc_schedule as real_job_proc_schedule
-from odin.job import _monitor_proc_peak_rss_mb
+from odin.job import _monitor_proc_peak_usage
 
 
 # caplog doesn't work in multiprocessing. this should be ok for now, but could be improved
@@ -22,7 +23,8 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler) -> None:
     """
     manager = get_context("spawn").Manager()
     return_val = manager.Value("i", 0)
-    job.start(return_val)
+    tmpdir_val = manager.Value("u", "")
+    job.start(return_val, tmpdir_val)
     schedule.enter(return_val.value, 1, job_proc_schedule, (job, schedule))
 
 
@@ -85,10 +87,14 @@ def test_odin_job(caplog, monkeypatch) -> None:
 
 
 # Defined at module level so the spawn context can pickle them
-def _mem_hog() -> None:
-    """Allocate ~50MB and hold it briefly so the parent can sample the footprint."""
+def _mem_and_disk_hog(tmpdir_val, spill_dir: str) -> None:
+    """Allocate ~50MB and spill ~20MB to ``spill_dir`` so the parent can sample both."""
+    tmpdir_val.value = spill_dir
     blob = bytearray(50 * 1024 * 1024)  # noqa: F841 -- keep ref so it stays resident
-    time.sleep(0.5)
+    with open(os.path.join(spill_dir, "spill.bin"), "wb") as spill_file:
+        spill_file.write(b"\0" * 20 * 1024 * 1024)
+        spill_file.flush()
+        time.sleep(0.5)
 
 
 class PeakMemJob(OdinJob):
@@ -101,15 +107,20 @@ class PeakMemJob(OdinJob):
         return 1000
 
 
-def test_monitor_proc_peak_rss_mb() -> None:
-    """A running subprocess' peak resident memory is captured from the parent."""
-    proc = get_context("spawn").Process(target=_mem_hog)
+def test_monitor_proc_peak_usage(tmp_path) -> None:
+    """A running subprocess' peak resident memory and disk spill are captured."""
+    manager = get_context("spawn").Manager()
+    tmpdir_val = manager.Value("u", "")
+    proc = get_context("spawn").Process(
+        target=_mem_and_disk_hog, args=(tmpdir_val, str(tmp_path))
+    )
     proc.start()
-    peak_mem_mb = _monitor_proc_peak_rss_mb(proc, 0.05)
+    peak_mem_mb, peak_spill_mb = _monitor_proc_peak_usage(proc, tmpdir_val, 0.05)
 
-    # Process is fully reaped and we observed a non-trivial footprint
+    # Process is fully reaped and we observed a non-trivial memory and disk footprint
     assert proc.exitcode == 0
     assert peak_mem_mb > 10.0
+    assert peak_spill_mb > 10.0
 
 
 def test_job_proc_schedule_logs_peak_mem(caplog) -> None:
@@ -122,5 +133,6 @@ def test_job_proc_schedule_logs_peak_mem(caplog) -> None:
     assert any("job_type=PeakMemJob" in m for m in peak_logs)
     assert any("table=retail.tickets" in m for m in peak_logs)
     assert any("peak_mem_mb=" in m for m in peak_logs)
+    assert any("peak_spill_mb=" in m for m in peak_logs)
 
     scheduler.cancel(scheduler.queue[0])
