@@ -570,6 +570,7 @@ class CubicODSDelta(OdinJob):
         into batches at different points yields the same final table. Verified
         against the reference interpreter in delta_ods_property_test.py.
         """
+        log = ProcessLog("_build_merge_source", table=self.table, cdc_size=len(cdc_df))
         data_cols = [
             c
             for c in cdc_df.columns
@@ -627,6 +628,8 @@ class CubicODSDelta(OdinJob):
                 .cast(pl.Int32)
                 .alias("odin_month"),
             )
+
+        log.complete(merge_size=len(source))
         return source
 
     def _merge_predicate(self, keys: list[str], source: pl.DataFrame) -> str:
@@ -684,6 +687,9 @@ class CubicODSDelta(OdinJob):
           - "U": coalesce onto the matched row; unmatched U keys are orphan
             updates (no live row to patch) and fall through untouched.
         """
+        log = ProcessLog(
+            "_merge_apply", table=self.table, watermark=watermark, merge_size=len(source)
+        )
         assert self.silver is not None
         target_cols = self.silver.schema().to_arrow().names
         missing = set(keys) - set(target_cols)
@@ -753,7 +759,7 @@ class CubicODSDelta(OdinJob):
             commit_properties=self._commit_state(watermark),
             streamed_exec=False,
         )
-        return (
+        result_stats = (
             merger.when_matched_delete(predicate="source.odin_resolved_oper = 'D'")
             .when_matched_update(predicate="source.odin_resolved_oper = 'I'", updates=replace_set)
             .when_matched_update(predicate="source.odin_resolved_oper = 'U'", updates=update_set)
@@ -762,6 +768,9 @@ class CubicODSDelta(OdinJob):
             )
             .execute()
         )
+
+        log.complete()
+        return result_stats
 
 
 def schedule_delta_ods(schedule: sched.scheduler) -> None:
