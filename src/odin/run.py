@@ -71,14 +71,15 @@ def start():
 
     # Schedule ODIN Jobs
     schedule_sigterm_check(schedule)
-    if odin_instance in ["alpha", "beta", "gamma"]:
+    if odin_instance in ["alpha", "beta"]:
         schedule_cubic_archive_qlik(schedule)
         schedule_cubic_ods_fact_gen(schedule)
-        # Delta-based silver pipeline; per-instance enablement is controlled by the
-        # CUBIC_ODS_DELTA_TABLES_* lists (an empty list schedules nothing).
         schedule_delta_ods(schedule)
         schedule_masabi_archive(schedule)
         schedule_afc_archive(schedule)
+
+    if odin_instance in ["gamma"]:
+        schedule_delta_ods(schedule)
 
     if odin_instance in ["alpha"]:
         schedule_restricted_afc_archive(schedule)
