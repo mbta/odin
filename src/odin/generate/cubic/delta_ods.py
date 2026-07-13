@@ -59,7 +59,6 @@ import polars as pl
 from deltalake import CommitProperties
 from deltalake import DeltaTable
 from deltalake import write_deltalake
-from deltalake.exceptions import CommitFailedError
 from deltalake.exceptions import SchemaMismatchError
 
 from odin.job import OdinJob
@@ -192,10 +191,12 @@ class CubicODSDelta(OdinJob):
 
             next_run = self._merge_cdc(cdc_watermark)
 
-            self.start_kwargs.update({
-                'history_snapshot': self.history_snapshot,
-                'new_snapshot': self.history_snapshot != silver_snapshot,
-            })
+            self.start_kwargs.update(
+                {
+                    "history_snapshot": self.history_snapshot,
+                    "new_snapshot": str(self.history_snapshot != silver_snapshot),
+                }
+            )
             return next_run
         finally:
             self._close_db()
