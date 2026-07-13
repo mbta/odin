@@ -1,6 +1,7 @@
 from abc import ABC
 from abc import abstractmethod
 from multiprocessing import get_context
+from multiprocessing.managers import ValueProxy
 from multiprocessing.process import BaseProcess
 from multiprocessing.sharedctypes import Synchronized
 from typing import Dict
@@ -19,7 +20,7 @@ from odin.utils.runtime import sigterm_check
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 NEXT_RUN_FAILED = 60 * 60 * 24  # 24 hours
 
-# How often the parent samples a running job subprocess' memory, in seconds
+# How often the parent samples a running job subprocess' memory and disk spill, in seconds
 MEM_POLL_INTERVAL_SECS = 1.0
 
 # Prefix for Odin temp directories to avoid conflicts with other processes
@@ -81,10 +82,17 @@ class OdinJob(ABC):
         :return: seconds to delay until next run of job
         """
 
-    def start(self, return_val: "Synchronized[int]") -> None:
+    def start(
+        self,
+        return_val: "Synchronized[int]",
+        tmpdir_val: "ValueProxy[str]",
+    ) -> None:
         """Start Odin job with logging."""
         sigterm_check()
         self.reset_tmpdir()
+        # Publish the tmpdir path so the parent can sample its on-disk size (DuckDB and
+        # other scratch spill into here) even after an OOM kill of this subprocess.
+        tmpdir_val.value = self.tmpdir
         run_delay_secs = NEXT_RUN_DEFAULT
         log = ProcessLog(
             process=self.__class__.__name__,
@@ -127,27 +135,59 @@ def _proc_tree_rss_mb(proc: psutil.Process) -> float:
     return rss / (1024 * 1024)
 
 
-def _monitor_proc_peak_rss_mb(proc: BaseProcess, poll_interval_secs: float) -> float:
-    """
-    Track the peak resident memory of a running job Process (and its children).
+def _dir_size_bytes(path: str) -> int:
+    """Total on-disk size of all regular files under ``path``, in bytes."""
+    total = 0
+    try:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        total += _dir_size_bytes(entry.path)
+                    elif entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    # Entry vanished mid-walk (temp files churn quickly)
+                    continue
+    except OSError:
+        # Directory doesn't exist yet or was already cleaned up
+        return 0
+    return total
 
-    Sampling is done from the parent so the final reading survives an OOM kill of the
-    child. Blocks until ``proc`` exits, then returns the high-water mark in MB.
+
+def _monitor_proc_peak_usage(
+    proc: BaseProcess,
+    tmpdir_val: "ValueProxy[str]",
+    poll_interval_secs: float,
+) -> tuple[float, float]:
+    """
+    Track peak resident memory and peak temp-dir disk spill of a running job Process.
+
+    Sampling is done from the parent so the final readings survive an OOM kill of the
+    child (Fargate has no swap, so an over-budget job is killed outright rather than
+    paged out). DuckDB and other scratch spill into the job's tmpdir, so its on-disk
+    size is the disk-spill high-water mark. Blocks until ``proc`` exits.
 
     :param proc: the started job subprocess to monitor
-    :param poll_interval_secs: seconds between memory samples
+    :param tmpdir_val: shared value holding the child's tmpdir path (empty until the
+        child publishes it early in ``start``)
+    :param poll_interval_secs: seconds between samples
 
-    :return: peak resident memory observed, in MB
+    :return: (peak resident memory MB, peak tmpdir disk spill MB)
     """
     peak_mem_mb = 0.0
+    peak_spill_mb = 0.0
     try:
         mon = psutil.Process(proc.pid)
     except psutil.NoSuchProcess:
         # Job finished before we could attach; nothing to sample
         proc.join()
-        return peak_mem_mb
+        return peak_mem_mb, peak_spill_mb
 
     while True:
+        tmpdir = tmpdir_val.value
+        if tmpdir:
+            peak_spill_mb = max(peak_spill_mb, _dir_size_bytes(tmpdir) / (1024 * 1024))
         try:
             peak_mem_mb = max(peak_mem_mb, _proc_tree_rss_mb(mon))
         except psutil.NoSuchProcess:
@@ -157,7 +197,7 @@ def _monitor_proc_peak_rss_mb(proc: BaseProcess, poll_interval_secs: float) -> f
         proc.join(timeout=poll_interval_secs)
 
     proc.join()
-    return peak_mem_mb
+    return peak_mem_mb, peak_spill_mb
 
 
 def job_proc_schedule(job: OdinJob, schedule: sched.scheduler | None) -> None:
@@ -182,19 +222,24 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler | None) -> None:
 
     return_manager = get_context("spawn").Manager()
     proc_return_val = return_manager.Value("i", NEXT_RUN_FAILED)
-    proc = get_context("spawn").Process(target=job.start, args=(proc_return_val,))
+    proc_tmpdir_val = return_manager.Value("u", "")
+    proc = get_context("spawn").Process(target=job.start, args=(proc_return_val, proc_tmpdir_val))
     proc.start()
 
-    # Track the job subprocess' peak memory from the parent so OOM-prone jobs can be
-    # identified by name and arguments (e.g. which table's update job is OOMing). This
-    # blocks until the job finishes, replacing a plain proc.join().
-    peak_mem_mb = _monitor_proc_peak_rss_mb(proc, MEM_POLL_INTERVAL_SECS)
+    # Track the job subprocess' peak memory and disk spill from the parent so
+    # resource-hungry jobs can be identified by name and arguments (e.g. which table's
+    # update job is OOMing or spilling). This blocks until the job finishes, replacing a
+    # plain proc.join().
+    peak_mem_mb, peak_spill_mb = _monitor_proc_peak_usage(
+        proc, proc_tmpdir_val, MEM_POLL_INTERVAL_SECS
+    )
 
     ProcessLog(
         "odin_job_peak_mem",
         auto_start=False,
         job_type=job.__class__.__name__,
         peak_mem_mb=f"{peak_mem_mb:.2f}",
+        peak_spill_mb=f"{peak_spill_mb:.2f}",
         **job.start_kwargs,
     ).complete()
 
@@ -204,6 +249,7 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler | None) -> None:
             job_type=job.__class__.__name__,
             job_exit_code=proc.exitcode,
             peak_mem_mb=f"{peak_mem_mb:.2f}",
+            peak_spill_mb=f"{peak_spill_mb:.2f}",
             **job.start_kwargs,
         )
         fail_log.failed(SystemError("OdinJob killed by ECS."))
