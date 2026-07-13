@@ -55,6 +55,7 @@ from typing import Iterator
 
 import duckdb
 import polars as pl
+import psutil
 
 from deltalake import CommitProperties
 from deltalake import DeltaTable
@@ -139,15 +140,23 @@ def _connect(path: str, spill_dir: str) -> duckdb.DuckDBPyConnection:
     # instead of spilling; point it at a job-scoped scratch folder.
     os.makedirs(spill_dir, exist_ok=True)
     con.execute(f"SET temp_directory = '{spill_dir}'")
+    # DuckDB's default budget is 80% of RAM, but this process also holds the
+    # polars CDC batch and runs the delta-rs merge afterwards; cap DuckDB at
+    # half so those stages keep headroom (excess spills to disk instead).
+    con.execute(f"SET memory_limit = '{psutil.virtual_memory().total // (2 * 1024**2)}MB'")
+    # No query depends on row order (downstream sorts where it matters), so
+    # let scans stream instead of buffering to preserve insertion order.
+    con.execute("SET preserve_insertion_order = false")
     # Progress bar output would spam the logging system.
     con.execute("PRAGMA disable_progress_bar;")
     con.execute("PRAGMA disable_print_progress_bar;")
-    # Several queries per run read the same history files (schema describe, then
-    # the narrow and wide CDC scans); cache parquet footers so they are fetched
-    # from S3 once. The cache lives only as long as this run-scoped connection,
-    # so a history file rewritten mid-run by cubic_archive is no worse than
-    # today: the in-flight read errors and the run is retried.
-    con.execute("SET parquet_metadata_cache = true;")
+    # parquet_metadata_cache is deliberately NOT enabled: it is documented to
+    # never invalidate, and cubic_archive rewrites history files in place on
+    # S3, so a footer cached early in the run can go stale and decode garbage
+    # byte ranges from the rewritten file (seen as absurd petabyte "OOM"
+    # allocations). Footers are re-fetched per query instead. DuckDB's
+    # external file cache stays on — it validates cached data against the
+    # file's etag before reuse, so it is safe with mutable files.
     if path.startswith("s3://"):
         con.execute("CREATE OR REPLACE SECRET secret (TYPE s3, PROVIDER credential_chain);")
     return con
@@ -459,24 +468,27 @@ class CubicODSDelta(OdinJob):
         opers = ", ".join(f"'{o}'" for o in CDC_OPERS)
         snap = self.history_snapshot
         con = self._db()
-        # Step 1 — narrow: ceiling seq of the next `limit` records. Doubles as
-        # the "is there anything past the watermark?" probe.
-        window = (
-            con.execute(
-                f"SELECT header__change_seq AS seq FROM {self._read_history} "
-                f"WHERE snapshot = ? AND header__change_oper IN ({opers}) "
-                "AND (header__change_seq > ? OR header__change_seq IS NULL) "
-                f"ORDER BY header__change_seq NULLS FIRST LIMIT {limit}",
-                [snap, str(after_seq)],
-            )
-            .pl()
-            .get_column("seq")
-        )
-        if window.len() == 0:
+        # Step 1 — narrow: ceiling seq of the next `limit` records, aggregated
+        # server-side so only (count, max) crosses to the client instead of up
+        # to `limit` seq strings. Doubles as the "anything past the watermark?"
+        # probe; a non-empty window with a NULL ceiling means every pending
+        # record has a null seq.
+        window = con.execute(
+            "SELECT count(*), max(seq) FROM ("
+            f"SELECT header__change_seq AS seq FROM {self._read_history} "
+            f"WHERE snapshot = ? AND header__change_oper IN ({opers}) "
+            "AND (header__change_seq > ? OR header__change_seq IS NULL) "
+            f"ORDER BY header__change_seq NULLS FIRST LIMIT {limit})",
+            [snap, str(after_seq)],
+        ).fetchone()
+        assert window is not None
+        window_rows, ceiling = window
+        if window_rows == 0:
             return pl.DataFrame()
 
-        # Step 2 — wide: full rows bounded to the window's seq range.
-        ceiling = window.drop_nulls().max()
+        # Step 2 — wide: full rows bounded to the window's seq range. No ORDER
+        # BY: sorting the wide batch would buffer/spill the whole result inside
+        # DuckDB, and _build_merge_source orders by seq itself where it matters.
         conditions = ["snapshot = ?", f"header__change_oper IN ({opers})"]
         params: list[str] = [snap]
         if ceiling is None:
@@ -488,9 +500,7 @@ class CubicODSDelta(OdinJob):
             )
             params += [str(after_seq), str(ceiling)]
         return con.execute(
-            f"SELECT * FROM {self._read_history} "
-            f"WHERE {' AND '.join(conditions)} "
-            "ORDER BY header__change_seq NULLS FIRST",
+            f"SELECT * FROM {self._read_history} WHERE {' AND '.join(conditions)}",
             params,
         ).pl()
 
