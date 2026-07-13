@@ -59,7 +59,6 @@ def pq_rows_and_bytes(path: str, num_rows: Optional[int] = None) -> Tuple[int, i
 
     :return: (num_rows, size_in_bytes)
     """
-    log = ProcessLog("pq_rows_and_bytes", path=path)
     if num_rows is None:
         num_rows = pq.read_metadata(path).num_rows
 
@@ -70,7 +69,6 @@ def pq_rows_and_bytes(path: str, num_rows: Optional[int] = None) -> Tuple[int, i
     else:
         size_bytes = os.path.getsize(path)
 
-    log.complete(num_rows=num_rows, size_bytes=size_bytes)
     return (num_rows, size_bytes)
 
 
@@ -85,7 +83,6 @@ def pq_rows_per_mb(source: Union[str, Sequence[str]], num_rows: Optional[int] = 
 
     :return: approximate number of rows equal to 1MB of parquet disk space
     """
-    log = ProcessLog("pq_rows_per_mb")
     paths = []
     if isinstance(source, str):
         if not source.endswith(".parquet"):
@@ -95,10 +92,8 @@ def pq_rows_per_mb(source: Union[str, Sequence[str]], num_rows: Optional[int] = 
             paths += [obj.path for obj in list_objects(source)]
         else:
             paths.append(source)
-        log.add_metadata(source=source)
     elif isinstance(source, Sequence):
         paths += source
-        log.add_metadata(num_sources=len(source))
 
     total_rows = 0
     total_mbs = 0.0
@@ -108,7 +103,6 @@ def pq_rows_per_mb(source: Union[str, Sequence[str]], num_rows: Optional[int] = 
         total_mbs += _bytes / (1024 * 1024)
 
     rows_per_mb = max(1_000, int(total_rows / total_mbs))
-    log.complete(rows_per_mb=rows_per_mb)
 
     return rows_per_mb
 

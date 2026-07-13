@@ -86,12 +86,12 @@ class OdinJob(ABC):
         sigterm_check()
         self.reset_tmpdir()
         run_delay_secs = NEXT_RUN_DEFAULT
+        log = ProcessLog(
+            process=self.__class__.__name__,
+            auto_start=True,
+            **self.start_kwargs,
+        )
         try:
-            log = ProcessLog(
-                process=self.__class__.__name__,
-                **self.start_kwargs,
-            )
-
             run_delay_secs = self.run()
 
             assert isinstance(run_delay_secs, int)
@@ -192,6 +192,7 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler | None) -> None:
 
     ProcessLog(
         "odin_job_peak_mem",
+        auto_start=False,
         job_type=job.__class__.__name__,
         peak_mem_mb=f"{peak_mem_mb:.2f}",
         **job.start_kwargs,

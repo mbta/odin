@@ -293,7 +293,7 @@ class SchemaCheck:
         if not hits:
             return
 
-        log = ProcessLog("masabi_check_json_page")
+        log = ProcessLog("masabi_check_json_page", auto_start=False)
         sample = hits[0]
         schema_names = set(self.schema.names())
         hit_keys = set(sample.keys())
@@ -328,7 +328,7 @@ class SchemaCheck:
                     )
                     self.warned_columns.add(col)
 
-        log.complete()
+        log.complete(print_log=False)
 
     # ------------------------------------------------------------------
     # Row-level transforms

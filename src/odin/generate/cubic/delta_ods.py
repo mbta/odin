@@ -59,7 +59,6 @@ import polars as pl
 from deltalake import CommitProperties
 from deltalake import DeltaTable
 from deltalake import write_deltalake
-from deltalake.exceptions import CommitFailedError
 from deltalake.exceptions import SchemaMismatchError
 
 from odin.job import OdinJob
@@ -180,7 +179,6 @@ class CubicODSDelta(OdinJob):
 
     def run(self) -> int:
         """Materialize the latest snapshot + CDC into silver; return seconds to next run."""
-        log = ProcessLog("CubicODSDelta", table=self.table)
         self.start_kwargs = {"table": self.table}
         try:
             self.silver = open_delta(self.silver_uri)
@@ -192,25 +190,14 @@ class CubicODSDelta(OdinJob):
                 cdc_watermark = INITIAL_WATERMARK
 
             next_run = self._merge_cdc(cdc_watermark)
-            log.complete(
-                run_interval=next_run,
-                history_snapshot=self.history_snapshot,
-                new_snapshot=self.history_snapshot != silver_snapshot,
+
+            self.start_kwargs.update(
+                {
+                    "history_snapshot": self.history_snapshot,
+                    "new_snapshot": str(self.history_snapshot != silver_snapshot),
+                }
             )
             return next_run
-
-        except NoQlikHistoryError as exc:
-            self.start_kwargs["no_qlik_history_available"] = "True"
-            log.failed(exception=exc)
-            return _long_run_interval()
-        except CommitFailedError as exc:
-            self.start_kwargs["delta_concurrent_modification"] = "True"
-            log.failed(exception=exc)
-            return NEXT_RUN_IMMEDIATE
-        except CDCSchemaIncompatibleError as exc:
-            self.start_kwargs["cdc_schema_incompatible"] = "True"
-            log.failed(exception=exc)
-            return _long_run_interval()
         finally:
             self._close_db()
 
