@@ -70,10 +70,15 @@ class ProcessLog:
         self.default_data["odin_instance"] = os.getenv("ODIN_INSTANCE", "local")
         self.default_data["ecs_task_group"] = os.getenv("ECS_TASK_GROUP", "no_task_group")
 
-        self.start_time = 0.0
-        self.uuid = ""
+        self.uuid = str(uuid.uuid4())
+        self.default_data["process_id"] = os.getpid()
+        self.default_data["status"] = "started"
+        self.default_data.pop("duration", None)
+        self.default_data.pop("error_type", None)
 
-        self.add_metadata(**metadata)
+        self.start_time = time.monotonic()
+
+        self.add_metadata(print_log=False, **metadata)
 
         if auto_start:
             self.start()
@@ -119,14 +124,6 @@ class ProcessLog:
 
     def start(self) -> None:
         """Log start of a proccess."""
-        self.uuid = str(uuid.uuid4())
-        self.default_data["process_id"] = os.getpid()
-        self.default_data["status"] = "started"
-        self.default_data.pop("duration", None)
-        self.default_data.pop("error_type", None)
-
-        self.start_time = time.monotonic()
-
         LOGGER.info(self._get_log_string())
 
     def complete(self, **metadata: MdValues) -> None:
