@@ -54,6 +54,7 @@ import tempfile
 from typing import Iterator
 
 import duckdb
+from duckdb import OutOfMemoryException
 import polars as pl
 import psutil
 
@@ -207,6 +208,11 @@ class CubicODSDelta(OdinJob):
                 }
             )
             return next_run
+        except OutOfMemoryException as e:
+            # This has typically been due to transient invalid allocations by duckdb; notably
+            # an actual non-duckdb OOM raises SystemError.
+            self.run_delay_secs = NEXT_RUN_IMMEDIATE
+            raise e
         finally:
             self._close_db()
 
