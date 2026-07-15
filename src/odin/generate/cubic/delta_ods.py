@@ -471,6 +471,7 @@ class CubicODSDelta(OdinJob):
         the batch, where the null_count assertion in _merge_cdc rejects it
         instead of skipping it forever.
         """
+        log = ProcessLog(process="_read_cdc", table=self.table)
         opers = ", ".join(f"'{o}'" for o in CDC_OPERS)
         snap = self.history_snapshot
         con = self._db()
@@ -490,6 +491,7 @@ class CubicODSDelta(OdinJob):
         assert window is not None
         window_rows, ceiling = window
         if window_rows == 0:
+            log.complete(window_rows=0)
             return pl.DataFrame()
 
         # Step 2 — wide: full rows bounded to the window's seq range. No ORDER
@@ -505,10 +507,12 @@ class CubicODSDelta(OdinJob):
                 "OR header__change_seq IS NULL)"
             )
             params += [str(after_seq), str(ceiling)]
-        return con.execute(
+        result = con.execute(
             f"SELECT * FROM {self._read_history} WHERE {' AND '.join(conditions)}",
             params,
         ).pl()
+        log.complete(window_rows=window_rows, read_size=len(result))
+        return result
 
     def _discover_keys(self, cdc_df: pl.DataFrame) -> list[str]:
         """Return the primary-key column names (lowercased) from the table DFM."""
