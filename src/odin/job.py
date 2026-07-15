@@ -93,34 +93,34 @@ class OdinJob(ABC):
         # Publish the tmpdir path so the parent can sample its on-disk size (DuckDB and
         # other scratch spill into here) even after an OOM kill of this subprocess.
         tmpdir_val.value = self.tmpdir
-        run_delay_secs = NEXT_RUN_DEFAULT
+        self.run_delay_secs: int | None = None
         log = ProcessLog(
             process=self.__class__.__name__,
             auto_start=True,
             **self.start_kwargs,
         )
         try:
-            run_delay_secs = self.run()
-
-            assert isinstance(run_delay_secs, int)
+            self.run_delay_secs = self.run()
 
             log.complete(
-                run_delay_mins=f"{run_delay_secs / 60:.2f}",
+                run_delay_mins=f"{self.run_delay_secs / 60:.2f}",
                 **self.start_kwargs,
             )
 
         except Exception as exception:
-            run_delay_secs = NEXT_RUN_FAILED
+            if self.run_delay_secs is None:
+                self.run_delay_secs = NEXT_RUN_FAILED
             log.add_metadata(
                 print_log=False,
-                run_delay_mins=f"{run_delay_secs / 60:.2f}",
+                run_delay_mins=f"{self.run_delay_secs / 60:.2f}",
                 **self.start_kwargs,
             )
             log.failed(exception)
 
         finally:
             self.reset_tmpdir()
-            return_val.value = run_delay_secs
+            assert isinstance(self.run_delay_secs, int)
+            return_val.value = self.run_delay_secs
 
 
 def _proc_tree_rss_mb(proc: psutil.Process) -> float:
