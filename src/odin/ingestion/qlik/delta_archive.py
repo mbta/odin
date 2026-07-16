@@ -61,7 +61,7 @@ from odin.utils.aws.s3 import s3_folder
 from odin.utils.aws.s3 import split_object
 from odin.utils.aws.s3 import stream_object
 from odin.utils.delta import open_delta
-from odin.utils.locations import CUBIC_QLIK_BRONZE_DATA
+from odin.utils.locations import CUBIC_QLIK_DELTA_DATA
 from odin.utils.locations import CUBIC_QLIK_PROCESSED
 from odin.utils.locations import DATA_ARCHIVE
 from odin.utils.locations import DATA_ERROR
@@ -193,7 +193,7 @@ class CubicQlikBronze(OdinJob):
     def __init__(self, table: str) -> None:
         """Create CubicQlikBronze instance for `table`."""
         self.table = table
-        self.bronze_uri = s3_file(os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_BRONZE_DATA, table))
+        self.bronze_uri = s3_file(os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DELTA_DATA, table))
         self.start_kwargs = {"table": table}
         self.bronze: DeltaTable | None = None
 
