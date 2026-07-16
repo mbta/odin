@@ -55,10 +55,8 @@ from odin.job import OdinJob
 from odin.job import job_proc_schedule
 from odin.utils.aws.s3 import S3Object
 from odin.utils.aws.s3 import list_objects
-from odin.utils.aws.s3 import list_partitions
 from odin.utils.aws.s3 import s3_file
 from odin.utils.aws.s3 import s3_folder
-from odin.utils.aws.s3 import split_object
 from odin.utils.aws.s3 import stream_object
 from odin.utils.delta import open_delta
 from odin.utils.locations import CUBIC_QLIK_DELTA_DATA
@@ -497,12 +495,17 @@ class CubicQlikBronze(OdinJob):
         """
         Find CDC csv.gz files with filename timestamp past `watermark`.
 
-        Incoming locations (small; legacy keeps them drained) are listed
-        before processed/ (see module docstring for why that order is
-        race-free). processed/ retains every file ever consumed, so its
-        subfolders are listed with a server-side StartAfter floor at the
-        watermark; folders from old snapshot eras cost one empty request.
-        The result is deduped on canonical key and sorted by timestamp.
+        One flat listing per location: list_objects is prefix-based, so the
+        base ``__ct/`` folder covers the ``snapshot/``, ``snapshot=<TS>/``,
+        and ``timestamp/`` sublayouts in a single paginated call (a
+        per-subfolder loop here previously cost one round trip per date
+        partition). Incoming locations (small; legacy keeps them drained) are
+        listed before processed/ (see module docstring for why that order is
+        race-free). The watermark filter is client-side, so the processed/
+        listing pages through the full retained history; if that ever costs
+        too many requests, the fix is a layout-aware server-side floor via
+        list_objects' start_after. The result is deduped on canonical key and
+        sorted by timestamp.
         """
 
         def past_watermark(obj: S3Object) -> bool:
@@ -518,13 +521,12 @@ class CubicQlikBronze(OdinJob):
 
         seen: dict[str, RawFile] = {}
 
-        def collect(prefix: str, incoming: bool, start_after: str | None = None) -> None:
+        def collect(prefix: str, incoming: bool) -> None:
             found = list_objects(
                 prefix,
                 max_objects=MAX_CDC_FILES,
                 in_filter=".csv.gz",
                 in_func=past_watermark,
-                start_after=start_after,
             )
             for obj in found:
                 canonical = canonical_key(obj.path)
@@ -535,23 +537,14 @@ class CubicQlikBronze(OdinJob):
                 )
 
         cdc_table = f"{self.table}__ct"
-        # The archive-bucket prefixes are deliberately NOT folders (s3_file:
-        # no trailing slash): "…/snapshot" must match both a "snapshot/"
-        # subfolder and upstream's "snapshot=<TS>/" partition folders, exactly
-        # like the legacy find_qlik_cdc_files prefixes.
-        collect(s3_file(os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, cdc_table, "snapshot")), True)
-        collect(s3_file(os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, cdc_table, "timestamp")), True)
+        collect(s3_folder(os.path.join(DATA_ARCHIVE, IN_QLIK_PREFIX, cdc_table)), True)
         collect(s3_folder(os.path.join(DATA_ERROR, IN_QLIK_PREFIX, cdc_table)), True)
-
-        processed_root = s3_folder(
-            os.path.join(DATA_ARCHIVE, CUBIC_QLIK_PROCESSED, IN_QLIK_PREFIX, cdc_table)
+        collect(
+            s3_folder(
+                os.path.join(DATA_ARCHIVE, CUBIC_QLIK_PROCESSED, IN_QLIK_PREFIX, cdc_table)
+            ),
+            False,
         )
-        for part in list_partitions(processed_root):
-            part_prefix = s3_folder(os.path.join(processed_root, part))
-            start_after = None
-            if watermark:
-                start_after = f"{split_object(part_prefix)[1]}{watermark}"
-            collect(part_prefix, False, start_after=start_after)
 
         files = sorted(seen.values(), key=lambda f: (_cdc_ts(f.path), f.basename))
         return files[:MAX_CDC_FILES]

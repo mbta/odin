@@ -115,19 +115,6 @@ class FakeS3:
                 break
         return found
 
-    def list_partitions(self, partition: str, max_objects: int = 10_000) -> list[str]:
-        """Mimic odin list_partitions (one level of common prefixes)."""
-        bucket, prefix = self._split(partition)
-        if not prefix.endswith("/"):
-            prefix = f"{prefix}/"
-        parts = []
-        for key in sorted(self.buckets.get(bucket, {})):
-            if key.startswith(prefix) and "/" in key[len(prefix) :]:
-                part = key[len(prefix) :].split("/", 1)[0]
-                if part not in parts:
-                    parts.append(part)
-        return parts
-
     def stream_object(self, path: str) -> io.BytesIO:
         """Mimic odin stream_object; raises when the object is absent."""
         bucket, key = self._split(path)
@@ -199,7 +186,6 @@ def fixture_s3() -> Any:
         patch("odin.ingestion.qlik.delta_archive.DATA_ARCHIVE", ARCHIVE),
         patch("odin.ingestion.qlik.delta_archive.DATA_ERROR", ERROR),
         patch("odin.ingestion.qlik.delta_archive.list_objects", fake.list_objects),
-        patch("odin.ingestion.qlik.delta_archive.list_partitions", fake.list_partitions),
         patch("odin.ingestion.qlik.delta_archive.stream_object", fake.stream_object),
         patch("odin.ingestion.qlik.dfm.stream_object", fake.stream_object),
     ]
