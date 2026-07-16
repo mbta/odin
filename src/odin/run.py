@@ -13,6 +13,7 @@ from odin.utils.aws.ecs import check_for_parallel_tasks
 # Job Schedule functions
 from odin.utils.runtime import schedule_sigterm_check
 from odin.ingestion.qlik.cubic_archive import schedule_cubic_archive_qlik
+from odin.ingestion.qlik.cubic_import import schedule_cubic_import
 from odin.generate.cubic.ods_fact import schedule_cubic_ods_fact_gen
 
 from odin.generate.cubic.delta_ods import schedule_delta_ods
@@ -82,6 +83,7 @@ def start():
         schedule_delta_ods(schedule)
 
     if odin_instance in ["alpha"]:
+        schedule_cubic_import(schedule)
         schedule_restricted_afc_archive(schedule)
         # schedule_tableau_upload(schedule)
         schedule_dictionary(schedule)

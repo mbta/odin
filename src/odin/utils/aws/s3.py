@@ -78,6 +78,7 @@ def list_objects(
     max_objects: int = 1_000_000,
     in_filter: Optional[str] = None,
     in_func: Optional[Callable[[S3Object], bool]] = None,
+    include_empty: bool = False,
 ) -> List[S3Object]:
     """
     Get list of S3 objects starting with 'partition'.
@@ -88,6 +89,7 @@ def list_objects(
     :param in_func:
         (Optional) function that accepts S3Object and returns bool
         return True to include Key in results or False to exclude from results
+    :param include_empty: (Optional) include 0-byte objects in results
 
     :return: List[s3://bucket/key, ...]
     """
@@ -108,7 +110,7 @@ def list_objects(
             if page["KeyCount"] == 0:
                 continue
             for obj in page["Contents"]:
-                if obj["Size"] == 0:
+                if obj["Size"] == 0 and not include_empty:
                     continue
                 if isinstance(in_filter, str) and in_filter not in obj["Key"]:
                     continue
