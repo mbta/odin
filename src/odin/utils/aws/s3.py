@@ -78,6 +78,7 @@ def list_objects(
     max_objects: int = 1_000_000,
     in_filter: Optional[str] = None,
     in_func: Optional[Callable[[S3Object], bool]] = None,
+    start_after: Optional[str] = None,
 ) -> List[S3Object]:
     """
     Get list of S3 objects starting with 'partition'.
@@ -88,6 +89,9 @@ def list_objects(
     :param in_func:
         (Optional) function that accepts S3Object and returns bool
         return True to include Key in results or False to exclude from results
+    :param start_after:
+        (Optional) full object key (no bucket); listing skips keys <= this
+        server-side (S3 ListObjectsV2 StartAfter)
 
     :return: List[s3://bucket/key, ...]
     """
@@ -96,12 +100,16 @@ def list_objects(
         partition=partition,
         max_objects=max_objects,
         in_filter=in_filter,
+        start_after=start_after,
     )
     bucket, prefix = split_object(partition)
     try:
         client = get_client()
         paginator = client.get_paginator("list_objects_v2")
-        pages = paginator.paginate(Bucket=bucket, Prefix=prefix)
+        page_kwargs = {"Bucket": bucket, "Prefix": prefix}
+        if start_after is not None:
+            page_kwargs["StartAfter"] = start_after
+        pages = paginator.paginate(**page_kwargs)
 
         filepaths = []
         for page in pages:

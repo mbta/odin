@@ -198,3 +198,24 @@ CUBIC_ODS_DELTA_TABLES = (
 _ODIN_INSTANCE = get_odin_instance()
 
 CUBIC_ODS_DELTA_TABLES_INSTANCE = CUBIC_ODS_DELTA_TABLES_BY_INSTANCE[_ODIN_INSTANCE]
+
+# Tables ingested by the Delta bronze archive job (ingestion/qlik/delta_archive.py),
+# split by instance like the lists above so the bronze pipeline can be rolled out
+# and verified table-by-table in parallel with the existing cubic_archive.py job.
+# Emptying an instance's list disables the job on that instance.
+CUBIC_QLIK_BRONZE_TABLES_ALPHA: list[str] = []
+
+CUBIC_QLIK_BRONZE_TABLES_BETA: list[str] = []
+
+CUBIC_QLIK_BRONZE_TABLES_GAMMA = [
+    "EDW.USE_TRANSACTION",
+    "EDW.SALE_TRANSACTION",
+]
+
+CUBIC_QLIK_BRONZE_TABLES_BY_INSTANCE = {
+    "alpha": CUBIC_QLIK_BRONZE_TABLES_ALPHA,
+    "beta": CUBIC_QLIK_BRONZE_TABLES_BETA,
+    "gamma": CUBIC_QLIK_BRONZE_TABLES_GAMMA,
+}
+
+CUBIC_QLIK_BRONZE_TABLES_INSTANCE = CUBIC_QLIK_BRONZE_TABLES_BY_INSTANCE[_ODIN_INSTANCE]
