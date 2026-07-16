@@ -2,6 +2,7 @@ from odin.utils.instance import get_odin_instance
 
 
 CUBIC_ODS_TABLES_ALPHA = [
+    "EC_STAGE.METRIC_HISTORY",
     "EDW.FAREREV_RECOVERY_TXN",
     # WA160
     "EDW.DATE_DIMENSION",
