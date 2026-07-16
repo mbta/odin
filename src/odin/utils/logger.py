@@ -132,8 +132,8 @@ class ProcessLog:
 
         :param metadata: any key/value pair to log
         """
-        if 'print_log' not in metadata:
-            metadata['print_log'] = False
+        if "print_log" not in metadata:
+            metadata["print_log"] = False
         self.add_metadata(**metadata)
 
         duration = time.monotonic() - self.start_time
