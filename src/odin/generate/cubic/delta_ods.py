@@ -49,8 +49,10 @@ Steps per run:
 """
 
 import os
+import re
 import sched
 import tempfile
+import time
 from typing import Iterator
 
 import duckdb
@@ -65,21 +67,32 @@ from deltalake.exceptions import SchemaMismatchError
 
 from odin.job import OdinJob
 from odin.job import job_proc_schedule
+from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import list_partitions
 from odin.utils.aws.s3 import s3_file
 from odin.utils.aws.s3 import s3_folder
 from odin.utils.delta import open_delta
 from odin.utils.delta import row_count as delta_row_count
 from odin.utils.locations import CUBIC_ODS_DELTA_DATA
+from odin.utils.locations import CUBIC_ODS_DELTA_STATUS
 from odin.utils.locations import CUBIC_QLIK_PROCESSED
 from odin.utils.locations import CUBIC_QLIK_DATA
 from odin.utils.locations import DATA_ARCHIVE
 from odin.utils.locations import DATA_SPRINGBOARD
+from odin.utils.logger import MdValues
 from odin.utils.logger import ProcessLog
+from odin.utils.parquet import ds_from_path
+from odin.utils.parquet import ds_metadata_min_max
 from odin.utils.runtime import sigterm_check
+from odin.utils.status import lag_seconds
+from odin.utils.status import progress_fields
+from odin.utils.status import publish_status
+from odin.utils.status import read_status
+from odin.utils.status import utc_now
 from odin.ingestion.qlik.dfm import QlikDFM
 from odin.ingestion.qlik.dfm import dfm_from_s3
 from odin.ingestion.qlik.utils import RE_SNAPSHOT_TS
+from odin.ingestion.qlik.utils import seq_as_datetime
 from odin.ingestion.qlik.tables import _ODIN_INSTANCE
 from odin.ingestion.qlik.tables import CUBIC_ODS_DELTA_TABLES_INSTANCE
 
@@ -103,6 +116,9 @@ HISTORY_SCAN_LIMIT = 50  # commits to scan back for the latest recorded position
 
 # DuckDB read expression over the snapshot-partitioned history parquet.
 READ_HISTORY = "read_parquet('{glob}', hive_partitioning = true, union_by_name = true)"
+
+# Hive partition values in a history object key, newest of which holds the newest seq.
+RE_HISTORY_YEAR_MONTH = re.compile(r"header__year=(\d+)/header__month=(\d+)/")
 
 # Columns required to be present in the history parquet for the job to run.
 REQUIRED_HISTORY_COLUMNS = (
@@ -186,10 +202,16 @@ class CubicODSDelta(OdinJob):
         self.history_snapshot = ""
         self.part_columns: list[str] = []
         self._con: duckdb.DuckDBPyConnection | None = None
+        # Post-merge position, published by _write_status. _merge_cdc advances the
+        # watermark; both stay at their defaults on the paths where it does no work.
+        self.cdc_watermark = INITIAL_WATERMARK
+        self.more_pending = False
+        self._run_started: float | None = None
 
     def run(self) -> int:
         """Materialize the latest snapshot + CDC into silver; return seconds to next run."""
         self.start_kwargs = {"table": self.table}
+        self._run_started = time.perf_counter()
         try:
             self.silver = open_delta(self.silver_uri)
             self._snapshot_check()
@@ -200,6 +222,7 @@ class CubicODSDelta(OdinJob):
                 cdc_watermark = INITIAL_WATERMARK
 
             next_run = self._merge_cdc(cdc_watermark)
+            self._write_status(next_run)
 
             self.start_kwargs.update(
                 {
@@ -377,8 +400,137 @@ class CubicODSDelta(OdinJob):
     # CDC MERGE (silver update from I/U/D records)
     # ------------------------------------------------------------------
 
+    def _newest_history_files(self) -> list[str]:
+        """
+        Return the history files of the newest header__year/header__month partition.
+
+        The partition values are read from the S3 keys themselves, so narrowing costs
+        one LIST and no file reads.
+
+        Picking the partition rather than the most recently modified file (the shape of
+        parquet.fast_last_mod_ds_max) is deliberate. Both find the same file while
+        history is only appended to, but cubic_archive rewrites files in place, and a
+        rewrite that touched an old month last would make the newest *file* hold old
+        sequences, reporting a too-low frontier and so a falsely caught-up lag.
+        Partition values come from the data's own event time, so they cannot be
+        reordered by a rewrite.
+
+        :return: paths in the newest partition, or every path if none are partitioned
+        """
+        objects = list_objects(
+            f"{self.history_root}snapshot={self.history_snapshot}/", in_filter=".parquet"
+        )
+        newest_key: tuple[int, int] | None = None
+        newest: list[str] = []
+        for obj in objects:
+            match = RE_HISTORY_YEAR_MONTH.search(obj.path)
+            if match is None:
+                continue
+            key = (int(match.group(1)), int(match.group(2)))
+            if newest_key is None or key > newest_key:
+                newest_key, newest = key, [obj.path]
+            elif key == newest_key:
+                newest.append(obj.path)
+        # Unpartitioned history (no header__year=/header__month= in the keys) still has
+        # a correct answer, just a more expensive one: read every footer.
+        return newest or [o.path for o in objects]
+
+    def _history_max_seq(self) -> str | None:
+        """
+        Return the newest header__change_seq in the current snapshot's history.
+
+        This is the reference point for the status file's true backlog: silver's
+        watermark measured against this goes to ~0 when the table is caught up, no
+        matter how old the data is.
+
+        Read from parquet row-group statistics over the newest partition only. DuckDB is
+        deliberately not used: it has no metadata-only path for a bare max(), so
+        `SELECT max(header__change_seq)` scans the whole column -- measured at ~51s
+        against EDW.SALE_TRANSACTION's 29GB of history, versus ~2s here. That cost lands
+        hardest exactly when a table is behind and rerunning every 5 minutes, which is
+        when the status file matters most.
+
+        header__year/header__month derive from header__timestamp, the same clock that
+        generates header__change_seq, so the newest partition holds the newest sequence
+        by construction rather than by luck of file ordering.
+        """
+        files = self._newest_history_files()
+        if not files:
+            return None
+        _, max_seq = ds_metadata_min_max(ds_from_path(files), "header__change_seq")
+        return None if max_seq is None else str(max_seq)
+
+    def _write_status(self, next_run_secs: int) -> None:
+        """
+        Publish this table's freshness status to S3 as JSON.
+
+        Called from run() rather than _merge_cdc so that every merge outcome -- no
+        silver, no CDC found, or records applied -- publishes exactly once.
+
+        Two lag measures, against different reference points:
+
+          * ``seq_lag_seconds`` -- silver's watermark vs the newest change_seq
+            upstream. The true backlog; ~0 means caught up regardless of data age.
+          * ``clock_lag_seconds`` -- silver's watermark vs wall clock. How old the
+            newest data is. Large for a rarely-updated table even when caught up.
+
+        Rates come from differencing the previous run's published object, and are
+        measured against ``seq_lag_seconds`` -- the true backlog -- so a quiet table
+        reports "caught up" rather than an ever-growing catch-up estimate.
+
+        :param next_run_secs: seconds until this table's next scheduled run
+        """
+        now = utc_now()
+        try:
+            history_max_seq = self._history_max_seq()
+        except Exception as exception:
+            # Degrade to the clock-only measure rather than fail the run: seq_lag is
+            # the better signal, but it is not worth a completed merge.
+            ProcessLog("delta_history_max_seq", table=self.table).failed(exception)
+            history_max_seq = None
+        seq_dt = seq_as_datetime(self.cdc_watermark)
+        history_seq_dt = seq_as_datetime(history_max_seq)
+        seq_lag = lag_seconds(history_seq_dt, seq_dt)
+        row_count = None if self.silver is None else delta_row_count(self.silver)
+        prev = read_status(CUBIC_ODS_DELTA_STATUS, self.table, self.scratch)
+        status: dict[str, MdValues] = {
+            "table": self.table,
+            "last_run": now.isoformat(),
+            "snapshot": self.history_snapshot,
+            "row_count": row_count,
+            "cdc_watermark": str(self.cdc_watermark),
+            "watermark_datetime": None if seq_dt is None else seq_dt.isoformat(),
+            "history_max_header__change_seq": (
+                None if history_max_seq is None else str(history_max_seq)
+            ),
+            "history_max_change_seq_datetime": (
+                None if history_seq_dt is None else history_seq_dt.isoformat()
+            ),
+            "seq_lag_seconds": seq_lag,
+            "clock_lag_seconds": lag_seconds(now, seq_dt),
+            "merge_budget_full": self.more_pending,
+            "next_run_seconds": next_run_secs,
+        }
+        status.update(
+            progress_fields(
+                prev=prev,
+                now=now,
+                run_duration_secs=(
+                    None if self._run_started is None else time.perf_counter() - self._run_started
+                ),
+                row_count=row_count,
+                watermark=seq_dt,
+                lag_secs=seq_lag,
+                # A rebuild resets the watermark to INITIAL_WATERMARK and rewrites every
+                # row, so differencing across it would report a fictional rate.
+                comparable=prev is not None and prev.get("snapshot") == self.history_snapshot,
+            )
+        )
+        publish_status(CUBIC_ODS_DELTA_STATUS, self.table, self.scratch, status)
+
     def _merge_cdc(self, after_seq: str) -> int:
         """Apply CDC records with seq > `after_seq` to silver; return the next-run interval."""
+        self.cdc_watermark = after_seq
         if self.silver is None:
             return _long_run_interval()
         log = ProcessLog("delta_merge_cdc", table=self.table)
@@ -406,6 +558,8 @@ class CubicODSDelta(OdinJob):
 
         self.silver = DeltaTable(self.silver_uri)
         more_pending = cdc_df.height >= MAX_MERGE_RECORDS
+        self.cdc_watermark = max_seq_processed
+        self.more_pending = more_pending
 
         log.complete(
             cdc_records_processed=cdc_df.height,
