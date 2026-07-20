@@ -18,6 +18,7 @@ from odin.utils.logger import MdValues
 from odin.utils.runtime import sigterm_check
 
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
+NEXT_RUN_SIGSEGV = 60 * 5  # 5 minutes
 NEXT_RUN_FAILED = 60 * 60 * 24  # 24 hours
 
 # How often the parent samples a running job subprocess' memory and disk spill, in seconds
@@ -263,7 +264,10 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler | None) -> None:
             **job.start_kwargs,
         )
         fail_log.failed(SystemError("OdinJob killed by ECS."))
-        proc_return_val.value = NEXT_RUN_FAILED
+        if proc.exitcode == -11:
+            proc_return_val.value = NEXT_RUN_SIGSEGV
+        else:
+            proc_return_val.value = NEXT_RUN_FAILED
 
     if schedule is not None:
         schedule.enter(proc_return_val.value, 1, job_proc_schedule, (job, schedule))
