@@ -18,7 +18,7 @@ from odin.utils.logger import MdValues
 from odin.utils.runtime import sigterm_check
 
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
-NEXT_RUN_OOM = 60 * 60 * 1  # 1 hour
+NEXT_RUN_OOM = 60 * 5  # 10 minutes
 NEXT_RUN_FAILED = 60 * 60 * 24  # 24 hours
 
 # How often the parent samples a running job subprocess' memory and disk spill, in seconds
