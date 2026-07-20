@@ -645,11 +645,8 @@ class ArchiveAFCAPI(OdinJob):
 
         If `count` returning more than 1 job, based on self.max_job_id, more jobs available.
 
-        Also records the outstanding backlog for the status file. job_id values are not
-        contiguous (e.g. 2000 can follow 1000), so lag is only meaningful as a total
-        across the jobs actually listed: /count returns a dataCount per job, giving
-        both the number of jobs and the number of rows still to ingest. This reuses
-        the response already fetched here, so it costs no extra request.
+        Also records the outstanding backlog for the status file; /count returns a dataCount
+        per job, giving both the number of jobs and the number of rows still to ingest.
         """
         log = ProcessLog("re_run_check", table=self.table, max_job_id=self.max_job_id)
         return_duration = NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_DEFAULT
@@ -659,9 +656,6 @@ class ArchiveAFCAPI(OdinJob):
                 fields={
                     "table_name": self.table,
                     "jobIdFrom": str(self.max_job_id),
-                    # Without an explicit limit the endpoint applies its own default,
-                    # which would silently truncate the backlog totals below. Matches
-                    # the limit api_job_ids pages with.
                     "limit": str(API_COUNT_LIMIT),
                 },
             )
@@ -670,10 +664,8 @@ class ArchiveAFCAPI(OdinJob):
             if remaining_count > 1:
                 return_duration = 60 * 5
             api_latest_job_id = max((j["jobId"] for j in remaining_jobs), default=0)
-            # /count is currently inclusive of jobIdFrom, so the already-ingested job at
+            # /count is inclusive of jobIdFrom, so the already-ingested job at
             # max_job_id comes back in this list; counting it would overstate the backlog
-            # by a whole job's rows. Filter as api_job_ids does, which is correct whether
-            # the endpoint is inclusive or exclusive.
             pending = [j for j in remaining_jobs if j["jobId"] > self.max_job_id]
             self.jobs_lag = len(pending)
             self.rows_lag = sum(int(j["dataCount"]) for j in pending)

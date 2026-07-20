@@ -388,18 +388,14 @@ class CubicODSFact(OdinJob):
         next_run_secs: int,
     ) -> None:
         """
-        Publish this table's freshness status to S3 as JSON.
+        Publish this table's freshness status to S3 as JSON
 
-        One object per table at ``<CUBIC_ODS_FACT_STATUS>/<table>.json``, overwritten on
-        every run, so that anyone with read access to the bucket can see how far behind
-        each fact table is.
+        Writes to ``<CUBIC_ODS_FACT_STATUS>/<table>.json``
 
-        Two lag measures are published, against different reference points:
+        Two lag measures are published:
 
           * ``seq_lag_seconds`` -- fact watermark vs the newest change_seq that exists
-            upstream in history. This is the true backlog: it goes to ~0 when the table
-            is caught up, no matter how old the data is, so a table that is merely quiet
-            reads as caught up rather than stale.
+            upstream in history.
           * ``clock_lag_seconds`` -- fact watermark vs wall clock at this run, i.e. how
             old the newest data is. A rarely-updated table shows a large value here even
             when fully caught up.

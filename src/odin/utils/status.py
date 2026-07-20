@@ -1,15 +1,10 @@
 """
 Publish per-job status JSON to S3 for external monitoring.
 
-Odin jobs answer "am I keeping up?" with data they already hold mid-run. Each job
-writes that answer to one small JSON object per table under a status prefix, so
-anyone with read access to the bucket can check freshness without scraping logs or
-re-deriving it from dataset metadata.
+Several Odin jobs write their health and freshness status to JSON objects
+on S3 per run. These do are not intended to have a shared schema across job types.
 
-Payload shape is deliberately per-job rather than one shared schema: a CDC job's
-backlog is a span of time, an API job's is a count of pending work, and forcing
-those into common field names would misrepresent both. What is shared is the
-plumbing here -- serialize, upload, never fail the caller.
+Logging should never cause an exception that interrupts the update job itself.
 """
 
 import json
@@ -85,15 +80,7 @@ def iso_as_datetime(value: MdValues) -> datetime | None:
 
 def read_status(status_prefix: str, key: str, tmpdir: str) -> dict[str, MdValues] | None:
     """
-    Read the status object a previous run published, if there is one.
-
-    This is what makes run-over-run rates possible: each object carries the fields the
-    next run differences against, so no separate history store is needed. One small GET
-    per run.
-
-    Best-effort by contract, and a miss is normal rather than exceptional -- the first
-    run of a table has no predecessor. Any failure returns None, which callers render
-    as absent rates rather than a failed run.
+    Read the status object a previous run published, if any, or return None.
 
     :param status_prefix: bucket-relative status folder, e.g. CUBIC_ODS_FACT_STATUS
     :param key: object stem, typically the table name (no .json suffix)
@@ -149,7 +136,7 @@ def progress_fields(
     comparable: bool = True,
 ) -> dict[str, MdValues]:
     """
-    Compare this run against the previous one: what moved, how fast, and time to catch up.
+    Compare this run against the previous one.
 
     Only selected scalars from `prev` are echoed, never the whole payload -- nesting the
     previous object would make each run's file contain every run before it.
@@ -174,8 +161,7 @@ def progress_fields(
         gap in the data but the finding itself: the table will never catch up on the
         current schedule, no matter how fast each individual run is.
 
-    Rates are one-cycle deltas, not smoothed averages, so a single unusually large or
-    small batch swings them; they describe the last cycle, not a trend.
+    Note that all rates are one-cycle deltas, not smoothed averages.
 
     :param prev: previous status payload, or None on a first run
     :param now: this run's ``last_run`` timestamp
@@ -250,13 +236,7 @@ def publish_status(
     """
     Publish `payload` to ``s3://<DATA_SPRINGBOARD>/<status_prefix>/<key>.json``.
 
-    Overwrites on every call, so the object always reflects the latest completed run.
-    A single PUT per table keeps writes atomic; jobs run as separate processes, so an
-    aggregate file would need a read-modify-write that could drop tables.
-
-    Best-effort by contract: any failure is logged and swallowed. Status is telemetry
-    and must never fail an otherwise successful job. The consequence is that a stale
-    object means "this job is not finishing", which is itself the signal worth having.
+    Updates are atomic overwrites of the previous file.
 
     :param status_prefix: bucket-relative status folder, e.g. CUBIC_ODS_FACT_STATUS
     :param key: object stem, typically the table name (no .json suffix)

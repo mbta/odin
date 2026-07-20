@@ -495,14 +495,11 @@ class ArchiveMasabi(OdinJob):
         self.table = table
         self.restricted = restricted
         self.start_kwargs = {"table": table, "restricted": restricted}
-        # Pre-run state, filled in by setup_job and read back by _write_status.
+
         self.existing_rows = 0
         self.existing_max_ts: int | None = None
-        # Set by run(); the denominator for the status file's rates.
         self._run_started: float | None = None
-        # The status key mirrors the export_folder branching below: the restricted and
-        # gamma/backfill variants archive the same table name to a different prefix, so
-        # keying status on the table alone would have them overwrite each other.
+
         if restricted:
             self.export_folder = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_RESTRICTED, table))
             self.status_key = f"{table}__restricted"
@@ -780,9 +777,7 @@ class ArchiveMasabi(OdinJob):
         )
         existing_ds = ds_from_path(self.export_folder)
         existing_ds_rows = existing_ds.count_rows()
-        # Starting state, reused by _write_status when a run fetches nothing. Kept
-        # distinct from from_ts, which falls back to a configured start constant on an
-        # empty table and so is not a real watermark.
+
         self.existing_rows = existing_ds_rows
         if existing_ds_rows:
             _, max_ts = ds_metadata_min_max(existing_ds, ts_key)
