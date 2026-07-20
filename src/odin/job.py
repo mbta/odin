@@ -64,6 +64,16 @@ class OdinJob(ABC):
 
     start_kwargs: Dict[str, MdValues] = {}
 
+    @property
+    def scratch(self) -> str:
+        """
+        Return a directory safe to stage files in.
+
+        start() provides tmpdir for real runs; direct step calls (tests) fall back to
+        the system temp folder rather than raising.
+        """
+        return getattr(self, "tmpdir", None) or tempfile.gettempdir()
+
     def reset_tmpdir(self) -> None:
         """Reset TemporaryDirectory folder."""
         if hasattr(self, "_tdir"):

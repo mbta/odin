@@ -1,5 +1,6 @@
 import os
 import sched
+import time
 from typing import Any
 from typing import List
 from typing import Tuple
@@ -12,11 +13,18 @@ import pyarrow.dataset as pd
 
 from odin.job import OdinJob
 from odin.job import job_proc_schedule
+from odin.utils.logger import MdValues
 from odin.utils.logger import ProcessLog
 from odin.utils.logger import free_disk_bytes
 from odin.utils.runtime import sigterm_check
+from odin.utils.status import lag_seconds
+from odin.utils.status import progress_fields
+from odin.utils.status import publish_status
+from odin.utils.status import read_status
+from odin.utils.status import utc_now
 from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import CUBIC_ODS_FACT_DATA
+from odin.utils.locations import CUBIC_ODS_FACT_STATUS
 from odin.utils.locations import CUBIC_QLIK_DATA
 from odin.utils.locations import DATA_ARCHIVE
 from odin.utils.locations import CUBIC_QLIK_PROCESSED
@@ -36,6 +44,7 @@ from odin.utils.aws.s3 import upload_file
 from odin.utils.aws.s3 import s3_folder
 from odin.ingestion.qlik.dfm import dfm_from_s3
 from odin.ingestion.qlik.dfm import QlikDFM
+from odin.ingestion.qlik.utils import seq_as_datetime
 from odin.ingestion.qlik.tables import _ODIN_INSTANCE
 from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES_INSTANCE
 
@@ -126,6 +135,8 @@ class CubicODSFact(OdinJob):
         self.s3_source = os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DATA, table)
         self.s3_export = os.path.join(DATA_SPRINGBOARD, CUBIC_ODS_FACT_DATA, table)
         self.start_kwargs = {"table": table}
+        # Set by load_cdc_records; the denominator for the status file's rates.
+        self._run_started: float | None = None
         self.history_drop_columns = [
             "header__year",
             "header__month",
@@ -367,6 +378,83 @@ class CubicODSFact(OdinJob):
 
         return all_cdc_frames, total_cdc_rows, total_cdc_nbytes
 
+    def write_status(
+        self,
+        max_seq: Any,
+        history_max_seq: Any,
+        row_count: int,
+        cdc_budget_nearly_full: bool,
+        cdc_records_pending: int,
+        next_run_secs: int,
+    ) -> None:
+        """
+        Publish this table's freshness status to S3 as JSON
+
+        Writes to ``<CUBIC_ODS_FACT_STATUS>/<table>.json``
+
+        Two lag measures are published:
+
+          * ``seq_lag_seconds`` -- fact watermark vs the newest change_seq that exists
+            upstream in history.
+          * ``clock_lag_seconds`` -- fact watermark vs wall clock at this run, i.e. how
+            old the newest data is. A rarely-updated table shows a large value here even
+            when fully caught up.
+
+        A table that cannot keep up with CDC volume is the one with a large
+        ``seq_lag_seconds``, typically alongside ``cdc_budget_nearly_full``.
+
+        Status is best-effort telemetry: a failure here is logged and swallowed so it can
+        never fail an otherwise successful load.
+
+        :param max_seq: max header__change_seq in the fact table after this run
+        :param history_max_seq: max header__change_seq available upstream in history
+        :param row_count: fact table row count after this run
+        :param cdc_budget_nearly_full: run consumed >=90% of its CDC accumulation budget
+        :param cdc_records_pending: CDC records still unprocessed (a preview count capped
+            by CDC_BATCH_MAX_NBYTES, so a floor rather than an exact backlog)
+        :param next_run_secs: seconds until this table's next scheduled run
+        """
+        now = utc_now()
+        seq_dt = seq_as_datetime(max_seq)
+        history_seq_dt = seq_as_datetime(history_max_seq)
+        seq_lag = lag_seconds(history_seq_dt, seq_dt)
+        prev = read_status(CUBIC_ODS_FACT_STATUS, self.table, self.scratch)
+        status: dict[str, MdValues] = {
+            "table": self.table,
+            "last_run": now.isoformat(),
+            "snapshot": self.history_snapshot,
+            "row_count": row_count,
+            "max_header__change_seq": None if max_seq is None else str(max_seq),
+            "max_change_seq_datetime": None if seq_dt is None else seq_dt.isoformat(),
+            "history_max_header__change_seq": (
+                None if history_max_seq is None else str(history_max_seq)
+            ),
+            "history_max_change_seq_datetime": (
+                None if history_seq_dt is None else history_seq_dt.isoformat()
+            ),
+            "seq_lag_seconds": seq_lag,
+            "clock_lag_seconds": lag_seconds(now, seq_dt),
+            "cdc_budget_nearly_full": cdc_budget_nearly_full,
+            "cdc_records_pending": cdc_records_pending,
+            "next_run_seconds": next_run_secs,
+        }
+        status.update(
+            progress_fields(
+                prev=prev,
+                now=now,
+                run_duration_secs=(
+                    None if self._run_started is None else time.perf_counter() - self._run_started
+                ),
+                row_count=row_count,
+                watermark=seq_dt,
+                lag_secs=seq_lag,
+                # A new snapshot reloads the table from scratch, so nothing published
+                # against the previous one is a comparable starting point.
+                comparable=prev is not None and prev.get("snapshot") == self.history_snapshot,
+            )
+        )
+        publish_status(CUBIC_ODS_FACT_STATUS, self.table, self.scratch, status)
+
     def load_cdc_records(self) -> int:
         """
         Load CDC records and apply to fact table.
@@ -394,14 +482,19 @@ class CubicODSFact(OdinJob):
              upload to S3.
         """
         # --- Step 1: Load current fact table state ---
+        self._run_started = time.perf_counter()
         logger = ProcessLog("load_cdc_records", table=self.table)
         fact_ds = ds_from_path(s3_folder(self.s3_export))
         initial_row_count = fact_ds.count_rows()
         _, max_fact_seq = ds_metadata_min_max(fact_ds, "header__change_seq")
         _, max_odin_index = ds_metadata_min_max(fact_ds, "odin_index")
+        # Newest change_seq upstream, for the status file's true-backlog measure. Read from
+        # metadata only, and snapshot_check already walks these fragments, so it is cheap.
+        _, history_max_seq = ds_metadata_min_max(self.history_ds, "header__change_seq")
         logger.add_metadata(
             initial_row_count=initial_row_count,
             max_fact_seq=str(max_fact_seq),
+            history_max_seq=str(history_max_seq),
             max_odin_index=str(max_odin_index),
             cdc_batch_max_nbytes=CDC_BATCH_MAX_NBYTES,
             cdc_accumulation_max_nbytes=CDC_ACCUMULATION_MAX_NBYTES,
@@ -420,7 +513,16 @@ class CubicODSFact(OdinJob):
 
         if not all_cdc_frames:
             logger.complete(cdc_records_found=0, cdc_accumulated_nbytes=0)
-            return _long_run_interval()
+            next_run_secs = _long_run_interval()
+            self.write_status(
+                max_seq=max_fact_seq,
+                history_max_seq=history_max_seq,
+                row_count=initial_row_count,
+                cdc_budget_nearly_full=False,
+                cdc_records_pending=0,
+                next_run_secs=next_run_secs,
+            )
+            return next_run_secs
 
         cdc_df = pl.concat(all_cdc_frames, how="diagonal")
         del all_cdc_frames
@@ -622,8 +724,20 @@ class CubicODSFact(OdinJob):
         )
 
         if cdc_budget_nearly_full and ds_available_count > 0:
-            return NEXT_RUN_IMMEDIATE
-        return _default_run_interval()
+            next_run_secs = NEXT_RUN_IMMEDIATE
+        else:
+            next_run_secs = _default_run_interval()
+
+        self.write_status(
+            max_seq=verify_max,
+            history_max_seq=history_max_seq,
+            row_count=final_row_count,
+            cdc_budget_nearly_full=cdc_budget_nearly_full,
+            cdc_records_pending=ds_available_count,
+            next_run_secs=next_run_secs,
+        )
+
+        return next_run_secs
 
     def run(self) -> int:
         """

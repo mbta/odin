@@ -15,8 +15,14 @@ from odin.job import OdinJob
 from odin.job import job_proc_schedule
 from odin.utils.runtime import sigterm_check
 from odin.utils.runtime import disk_free_pct
+from odin.utils.logger import MdValues
 from odin.utils.logger import ProcessLog
+from odin.utils.status import progress_fields
+from odin.utils.status import publish_status
+from odin.utils.status import read_status
+from odin.utils.status import utc_now
 from odin.utils.locations import AFC_DATA
+from odin.utils.locations import AFC_STATUS
 from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.aws.s3 import list_objects, s3_folder
 from odin.utils.aws.s3 import download_object
@@ -64,6 +70,10 @@ if os.getenv("ECS_TASK_GROUP", "").startswith("family:odin-prod"):
     )
 
 REQUEST_RETRIES = 3
+
+# Page size requested from the /count endpoint. Also caps how much backlog the status
+# file can see in one call: a table more than this many jobs behind reports a floor.
+API_COUNT_LIMIT = 10_000
 
 APICounts = list[dict[Literal["jobId", "dataCount"], int]]
 
@@ -188,6 +198,16 @@ class ArchiveAFCAPI(OdinJob):
         self.start_kwargs = {"table": table}
         self.export_folder = os.path.join(DATA_SPRINGBOARD, AFC_DATA, table)
         self.pii_drop_columns: list[str] = []
+        # Backlog recorded by re_run_check, published by _write_status. The defaults
+        # are the caught-up answer: re_run_check only queries /count when this run
+        # downloaded something, and downloading nothing means nothing was available.
+        self.jobs_lag = 0
+        self.rows_lag = 0
+        self.api_latest_job_id: int | None = None
+        self.lag_truncated = False
+        self.post_snapshot: AFCParquetSnapshot | None = None
+        # Set by run(); the denominator for the status file's rates.
+        self._run_started: float | None = None
         self.headers = {
             "client_id": os.getenv("AFC_API_CLIENT_ID", ""),
             "client_secret": os.getenv("AFC_API_CLIENT_SECRET", ""),
@@ -421,7 +441,7 @@ class ArchiveAFCAPI(OdinJob):
         :return: sorted list of APICounts
         """
         count_url = f"{API_ROOT}/count"
-        req_fields = {"table_name": self.table, "limit": str(10_000)}
+        req_fields = {"table_name": self.table, "limit": str(API_COUNT_LIMIT)}
         while True:
             req_fields["jobIdFrom"] = str(job_id_from)
             try:
@@ -615,6 +635,8 @@ class ArchiveAFCAPI(OdinJob):
             upload_file(new_path, move_path)
         post_snapshot = self._s3_parquet_snapshot()
         self._log_inline_health_metrics(pre_snapshot, post_snapshot)
+        # Ground truth for the status file: what actually landed in S3 this run.
+        self.post_snapshot = post_snapshot
         log.complete()
 
     def re_run_check(self) -> int:
@@ -622,25 +644,86 @@ class ArchiveAFCAPI(OdinJob):
         Determine when job should be re-run.
 
         If `count` returning more than 1 job, based on self.max_job_id, more jobs available.
+
+        Also records the outstanding backlog for the status file; /count returns a dataCount
+        per job, giving both the number of jobs and the number of rows still to ingest.
         """
         log = ProcessLog("re_run_check", table=self.table, max_job_id=self.max_job_id)
         return_duration = NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_DEFAULT
         if self.max_job_id > 0:
             r = self.make_request(
                 url=f"{API_ROOT}/count",
-                fields={"table_name": self.table, "jobIdFrom": str(self.max_job_id)},
+                fields={
+                    "table_name": self.table,
+                    "jobIdFrom": str(self.max_job_id),
+                    "limit": str(API_COUNT_LIMIT),
+                },
             )
             remaining_jobs: APICounts = r.json()
             remaining_count = len(remaining_jobs)
             if remaining_count > 1:
                 return_duration = 60 * 5
             api_latest_job_id = max((j["jobId"] for j in remaining_jobs), default=0)
+            # /count is inclusive of jobIdFrom, so the already-ingested job at
+            # max_job_id comes back in this list; counting it would overstate the backlog
+            pending = [j for j in remaining_jobs if j["jobId"] > self.max_job_id]
+            self.jobs_lag = len(pending)
+            self.rows_lag = sum(int(j["dataCount"]) for j in pending)
+            self.api_latest_job_id = api_latest_job_id
+            self.lag_truncated = remaining_count >= API_COUNT_LIMIT
             log.add_metadata(
                 remaining_job_count=remaining_count,
                 api_latest_job_id=api_latest_job_id,
+                jobs_lag=self.jobs_lag,
+                rows_lag=self.rows_lag,
             )
         log.complete(return_duration=return_duration)
         return return_duration
+
+    def _write_status(self, next_run_secs: int) -> None:
+        """
+        Publish this table's ingestion status to S3 as JSON.
+
+        Status is best-effort: publish_status swallows its own failures.
+
+        :param next_run_secs: seconds until this table's next scheduled run
+        """
+        now = utc_now()
+        snapshot = self.post_snapshot or self._s3_parquet_snapshot()
+        row_count = snapshot["total_rows"]
+        prev = read_status(AFC_STATUS, self.table, self.scratch)
+        status: dict[str, MdValues] = {
+            "table": self.table,
+            "table_type": getattr(self, "table_type", None),
+            "last_run": now.isoformat(),
+            "row_count": row_count,
+            "object_count": snapshot["object_count"],
+            "total_size_bytes": snapshot["total_size_bytes"],
+            "max_job_id": snapshot["max_job_id"],
+            "api_latest_job_id": self.api_latest_job_id,
+            "jobs_lag": self.jobs_lag,
+            "rows_lag": self.rows_lag,
+            "lag_truncated": self.lag_truncated,
+            "next_run_seconds": next_run_secs,
+        }
+        # No watermark/lag_secs: this job has no event time, so only the row-rate half
+        # of progress_fields applies.
+        progress = progress_fields(
+            prev=prev,
+            now=now,
+            run_duration_secs=(
+                None if self._run_started is None else time.perf_counter() - self._run_started
+            ),
+            row_count=row_count,
+            comparable=prev is not None,
+        )
+        rows_per_second = progress.get("rows_per_second")
+        if isinstance(rows_per_second, (int, float)) and rows_per_second > 0:
+            progress["catchup_processing_seconds"] = int(self.rows_lag / rows_per_second)
+        elif self.rows_lag == 0:
+            progress["catchup_processing_seconds"] = 0
+        status.update(progress)
+        publish_status(AFC_STATUS, self.table, self.scratch, status)
 
     def run(self) -> int:
         """
@@ -660,6 +743,7 @@ class ArchiveAFCAPI(OdinJob):
         June 2, 2025 - Updated to handle "static" and "transactional" table types.
         """
         self.start_kwargs = {"table": self.table}
+        self._run_started = time.perf_counter()
         # Current timetout set to 10 mins, for full PROD deployment should be no more than 2 mins.
         self.req_pool = urllib3.PoolManager(
             headers=self.headers,
@@ -670,6 +754,7 @@ class ArchiveAFCAPI(OdinJob):
         self.load_job_ids()
         next_run_duration = self.re_run_check()
         self.sync_parquet()
+        self._write_status(next_run_duration)
         return next_run_duration
 
 

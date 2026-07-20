@@ -10,9 +10,17 @@ import yaml
 import polars as pl
 import pyarrow.parquet as pq
 
+from odin.utils.logger import MdValues
 from odin.utils.logger import ProcessLog
+from odin.utils.status import lag_seconds
+from odin.utils.status import ms_as_datetime
+from odin.utils.status import progress_fields
+from odin.utils.status import publish_status
+from odin.utils.status import read_status
+from odin.utils.status import utc_now
 from odin.job import OdinJob, job_proc_schedule
 from odin.utils.locations import DATA_SPRINGBOARD, MASABI_DATA, MASABI_RESTRICTED, MASABI_BACKFILL
+from odin.utils.locations import MASABI_STATUS
 from odin.utils.aws.s3 import s3_folder
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import list_objects
@@ -487,12 +495,20 @@ class ArchiveMasabi(OdinJob):
         self.table = table
         self.restricted = restricted
         self.start_kwargs = {"table": table, "restricted": restricted}
+
+        self.existing_rows = 0
+        self.existing_max_ts: int | None = None
+        self._run_started: float | None = None
+
         if restricted:
             self.export_folder = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_RESTRICTED, table))
+            self.status_key = f"{table}__restricted"
         elif _ODIN_INSTANCE == "gamma":
             self.export_folder = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_BACKFILL, table))
+            self.status_key = f"{table}__backfill"
         else:
             self.export_folder = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_DATA, table))
+            self.status_key = table
         self._last_request_time: float = 0.0
 
     def _make_request_pool(self) -> urllib3.PoolManager:
@@ -761,19 +777,91 @@ class ArchiveMasabi(OdinJob):
         )
         existing_ds = ds_from_path(self.export_folder)
         existing_ds_rows = existing_ds.count_rows()
+
+        self.existing_rows = existing_ds_rows
         if existing_ds_rows:
             _, max_ts = ds_metadata_min_max(existing_ds, ts_key)
             if max_ts is not None:
                 from_ts = int(max_ts)
+                self.existing_max_ts = int(max_ts)
 
         log.complete(from_ts=from_ts, existing_ds_size=existing_ds_rows)
         return from_ts
+
+    def _write_status(
+        self,
+        ts_key: str,
+        wrote_data: bool,
+        hit_row_limit: bool,
+        next_run_secs: int,
+    ) -> None:
+        """
+        Publish this table's freshness status to S3 as JSON.
+
+        Status is best-effort: failures degrade or are swallowed, never failing a run.
+
+        :param ts_key: timestamp column this table is ordered/resumed by
+        :param wrote_data: whether this run wrote new rows to parquet
+        :param hit_row_limit: run stopped at MAXIMUM_ROWS_PER_RUN with more available
+        :param next_run_secs: seconds until this table's next scheduled run
+        """
+        now = utc_now()
+        max_ts = self.existing_max_ts
+        row_count = self.existing_rows
+        if wrote_data:
+            try:
+                ds = ds_from_path(self.export_folder)
+                row_count = ds.count_rows()
+                _, new_max_ts = ds_metadata_min_max(ds, ts_key)
+                max_ts = None if new_max_ts is None else int(new_max_ts)
+            except Exception as exception:
+                # Fall back to the pre-run values rather than fail an archived run.
+                ProcessLog("masabi_status_reread", table=self.table).failed(exception)
+
+        max_ts_dt = ms_as_datetime(max_ts)
+        clock_lag = lag_seconds(now, max_ts_dt)
+        prev = read_status(MASABI_STATUS, self.status_key, self.scratch)
+        status: dict[str, MdValues] = {
+            "table": self.table,
+            "restricted": self.restricted,
+            "export_folder": self.export_folder,
+            "last_run": now.isoformat(),
+            "row_count": row_count,
+            "timestamp_column": ts_key,
+            "max_timestamp_ms": max_ts,
+            "max_timestamp_datetime": None if max_ts_dt is None else max_ts_dt.isoformat(),
+            "clock_lag_seconds": clock_lag,
+            "caught_up": not hit_row_limit,
+            "next_run_seconds": next_run_secs,
+        }
+        status.update(
+            progress_fields(
+                prev=prev,
+                now=now,
+                run_duration_secs=(
+                    None if self._run_started is None else time.perf_counter() - self._run_started
+                ),
+                row_count=row_count,
+                watermark=max_ts_dt,
+                # Clock lag is the only backlog measure this API affords, so it is what
+                # the catch-up estimate has to run on. It reads as a real backlog only
+                # while the table is behind; once caught_up, the remaining lag is however
+                # quiet the source is, not work left to do, and the estimate says so by
+                # never gaining on it.
+                lag_secs=clock_lag,
+                # The timestamp column decides what the watermark means; an override
+                # change would difference two different clocks.
+                comparable=prev is not None and prev.get("timestamp_column") == ts_key,
+            )
+        )
+        publish_status(MASABI_STATUS, self.status_key, self.scratch, status)
 
     def run(self) -> int:
         """Execute the Masabi archive run loop."""
         global TABLE_SCHEMAS
         global TABLE_JSON_COLS
 
+        self._run_started = time.perf_counter()
         log = ProcessLog(process="masabi_run")
 
         pool = self._make_request_pool()
@@ -807,11 +895,19 @@ class ArchiveMasabi(OdinJob):
             self.sync_parquet(ndjson_path, ts_key)
 
         if hit_row_limit:
+            next_run_secs = NEXT_RUN_IMMEDIATE
             log.complete(next_run_interval="short")
-            return NEXT_RUN_IMMEDIATE
         else:
+            next_run_secs = NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_DEFAULT
             log.complete(next_run_interval="normal")
-            return NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_DEFAULT
+
+        self._write_status(
+            ts_key=ts_key,
+            wrote_data=ndjson_path is not None,
+            hit_row_limit=hit_row_limit,
+            next_run_secs=next_run_secs,
+        )
+        return next_run_secs
 
 
 def schedule_masabi_archive(schedule: sched.scheduler) -> None:
