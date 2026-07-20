@@ -98,7 +98,7 @@ from odin.ingestion.qlik.tables import CUBIC_ODS_DELTA_TABLES_INSTANCE
 
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
 NEXT_RUN_BETA = 60 * 15  # 15 minutes
-NEXT_RUN_IMMEDIATE = 60 * 5  # 5 minutes
+NEXT_RUN_IMMEDIATE = 60 * 1  # 1 minute
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
 REBUILD_BATCH_SIZE = 10_000
