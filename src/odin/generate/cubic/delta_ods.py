@@ -407,14 +407,6 @@ class CubicODSDelta(OdinJob):
         The partition values are read from the S3 keys themselves, so narrowing costs
         one LIST and no file reads.
 
-        Picking the partition rather than the most recently modified file (the shape of
-        parquet.fast_last_mod_ds_max) is deliberate. Both find the same file while
-        history is only appended to, but cubic_archive rewrites files in place, and a
-        rewrite that touched an old month last would make the newest *file* hold old
-        sequences, reporting a too-low frontier and so a falsely caught-up lag.
-        Partition values come from the data's own event time, so they cannot be
-        reordered by a rewrite.
-
         :return: paths in the newest partition, or every path if none are partitioned
         """
         objects = list_objects(
@@ -439,17 +431,6 @@ class CubicODSDelta(OdinJob):
         """
         Return the newest header__change_seq in the current snapshot's history.
 
-        This is the reference point for the status file's true backlog: silver's
-        watermark measured against this goes to ~0 when the table is caught up, no
-        matter how old the data is.
-
-        Read from parquet row-group statistics over the newest partition only. DuckDB is
-        deliberately not used: it has no metadata-only path for a bare max(), so
-        `SELECT max(header__change_seq)` scans the whole column -- measured at ~51s
-        against EDW.SALE_TRANSACTION's 29GB of history, versus ~2s here. That cost lands
-        hardest exactly when a table is behind and rerunning every 5 minutes, which is
-        when the status file matters most.
-
         header__year/header__month derive from header__timestamp, the same clock that
         generates header__change_seq, so the newest partition holds the newest sequence
         by construction rather than by luck of file ordering.
@@ -463,20 +444,6 @@ class CubicODSDelta(OdinJob):
     def _write_status(self, next_run_secs: int) -> None:
         """
         Publish this table's freshness status to S3 as JSON.
-
-        Called from run() rather than _merge_cdc so that every merge outcome -- no
-        silver, no CDC found, or records applied -- publishes exactly once.
-
-        Two lag measures, against different reference points:
-
-          * ``seq_lag_seconds`` -- silver's watermark vs the newest change_seq
-            upstream. The true backlog; ~0 means caught up regardless of data age.
-          * ``clock_lag_seconds`` -- silver's watermark vs wall clock. How old the
-            newest data is. Large for a rarely-updated table even when caught up.
-
-        Rates come from differencing the previous run's published object, and are
-        measured against ``seq_lag_seconds`` -- the true backlog -- so a quiet table
-        reports "caught up" rather than an ever-growing catch-up estimate.
 
         :param next_run_secs: seconds until this table's next scheduled run
         """

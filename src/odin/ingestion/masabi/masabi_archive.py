@@ -803,19 +803,6 @@ class ArchiveMasabi(OdinJob):
         """
         Publish this table's freshness status to S3 as JSON.
 
-        Only a clock lag is available here, unlike the Qlik CDC jobs. The API is
-        queried right up to ``now`` each run, so there is no separate upstream
-        watermark to measure against -- "how far behind the source" and "how old the
-        data is" are the same number. The quiet-vs-behind distinction survives as
-        ``caught_up``: a run drains ``(from_ts, now]``, so unless it stopped early at
-        MAXIMUM_ROWS_PER_RUN it has provably consumed everything the API held, however
-        old its newest record is. ``caught_up`` false is therefore this job's "cannot
-        keep up with the volume" signal, the counterpart to the CDC jobs' budget flags.
-
-        The watermark is re-read from parquet rather than taken from the fetched rows,
-        because sync_parquet drops rows at the boundary timestamp -- so the published
-        value is the true resume point the next run will use as from_ts.
-
         Status is best-effort: failures degrade or are swallowed, never failing a run.
 
         :param ts_key: timestamp column this table is ordered/resumed by

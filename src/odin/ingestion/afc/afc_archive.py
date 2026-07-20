@@ -692,21 +692,6 @@ class ArchiveAFCAPI(OdinJob):
         """
         Publish this table's ingestion status to S3 as JSON.
 
-        The backlog here is a count of pending work, not a span of time: job_id carries
-        no timestamp, and the values are not contiguous, so "how many job_ids behind"
-        would be meaningless as an arithmetic gap. ``jobs_lag`` and ``rows_lag`` instead
-        total the jobs and their dataCount rows that /count still lists past the
-        watermark -- both taken from the response re_run_check already fetched.
-
-        There is deliberately no lag in seconds: nothing in this API exposes an event
-        time to measure freshness against, so publishing one would be an invention.
-
-        The catch-up estimate is therefore built from rows rather than event time --
-        ``rows_lag`` divided by this run's rows/sec. Unlike the CDC jobs there is no
-        wall-clock variant, for the same reason: with no event time there is no frontier
-        to measure against, so how fast the source is producing new rows is unknowable
-        from here. ``catchup_processing_seconds`` is compute remaining, not time of day.
-
         Status is best-effort: publish_status swallows its own failures.
 
         :param next_run_secs: seconds until this table's next scheduled run
