@@ -180,9 +180,18 @@ def _cdc_ts(path: str) -> str:
     return re_get_first(os.path.basename(path), RE_CDC_TS)
 
 
-def _cdc_ts_as_snapshot(ts: str) -> str:
-    """Convert a CDC filename timestamp to SNAPSHOT_FMT for snapshot comparison."""
-    return f"{ts[:8]}T{ts[9:15]}Z"
+def _snapshot_cdc_floor(snapshot: str) -> str:
+    """
+    Return the CDC-timestamp watermark floor implied by a snapshot generation.
+
+    A snapshot's LOAD is the full table state as of its timestamp, so every CDC
+    file at or before it is superseded. Expressed as a CDC filename timestamp
+    (``YYYYMMDD-HHMMSSXXX``) with maxed sub-seconds.
+
+    SNAPSHOT_FMT is ``YYYYmmddTHHMMSSZ``; slice out the date and HH MM SS and
+    pad the 3 sub-second digits of the CDC format to their max (``999``).
+    """
+    return f"{snapshot[:8]}-{snapshot[9:15]}999"
 
 
 class CubicQlikBronze(OdinJob):
@@ -440,21 +449,23 @@ class CubicQlikBronze(OdinJob):
 
     def _ingest_cdc(self, state: BronzeState) -> int:
         """Ingest CDC files past the watermark in batches; return next-run interval."""
-        log = ProcessLog("bronze_ingest_cdc", table=self.table, cdc_watermark=state.cdc_watermark)
-        files = self._find_cdc_files(state.cdc_watermark)
+        # Floor the watermark at the snapshot boundary: CDC at or before the
+        # snapshot is superseded by its LOAD, so it is dropped at listing time
+        # rather than listed-then-skipped.
+        watermark = max(state.cdc_watermark, _snapshot_cdc_floor(state.snapshot))
+        log = ProcessLog("bronze_ingest_cdc", table=self.table, cdc_watermark=watermark)
+        state = state._replace(cdc_watermark=watermark)
+        files = self._find_cdc_files(watermark)
         if not files:
             log.complete(cdc_files_found=0)
             return _long_run_interval()
-
-        # Only CDC newer than the current snapshot is ingested.
-        work = [f for f in files if _cdc_ts_as_snapshot(_cdc_ts(f.path)) > state.snapshot]
 
         batches = []
         new_batch = []
         all_bytes = 0
         batch_bytes = 0
         size_capped = False
-        for file in work:
+        for file in files:
             new_batch.append(file)
             batch_bytes += file.size_bytes
             all_bytes += file.size_bytes
@@ -481,9 +492,7 @@ class CubicQlikBronze(OdinJob):
         more_pending = size_capped or len(files) >= MAX_CDC_FILES
         log.complete(
             cdc_files_found=len(files),
-            cdc_files_pending=len(work),
             cdc_files_appended=sum(map(len, batches)),
-            cdc_files_skipped_superseded=len(files) - len(work),
             cdc_watermark=state.cdc_watermark,
             more_pending=more_pending,
         )

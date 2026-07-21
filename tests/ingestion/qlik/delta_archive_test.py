@@ -486,6 +486,40 @@ def test_cdc_run_cap_returns_immediate(s3: FakeS3, tmp_path: Any) -> None:
     assert bronze_df(job2).filter(pl.col("odin_change_class") == "cdc").height == 3
 
 
+def test_pre_snapshot_backlog_over_cap_does_not_wedge(s3: FakeS3, tmp_path: Any) -> None:
+    """
+    A superseded backlog larger than the listing cap must not block real CDC.
+
+    Regression: with the watermark at "", the listing returned the oldest
+    MAX_CDC_FILES (all pre-snapshot, superseded), appended nothing so the
+    watermark never advanced, and the job looped forever without reaching any
+    post-snapshot CDC. The snapshot floor drops the backlog at listing time.
+    """
+    put_load_file(s3, SNAP1, SNAP1_ISO, 1, ["1,10,a"])
+    # three pre-SNAP1 CDC files (> the cap of 2) plus one real post-SNAP1 file
+    for i in range(3):
+        put_cdc_file(
+            s3,
+            f"20241230-00000000{i}",
+            [cdc_row(f"2024123000000000000000{i}", "I", "2024-12-30T00:00:00", i, i, "old")],
+        )
+    put_cdc_file(
+        s3,
+        "20250102-000000000",
+        [cdc_row("20250102000000000000001", "I", "2025-01-02T00:00:00", 5, 50, "new")],
+    )
+
+    with patch("odin.ingestion.qlik.delta_archive.MAX_CDC_FILES", 2):
+        job = make_job(tmp_path)
+        job.run()
+
+    df = bronze_df(job)
+    cdc = df.filter(pl.col("odin_change_class") == "cdc")
+    assert cdc.filter(pl.col("id") == 5).height == 1  # post-snapshot CDC reached
+    assert cdc.filter(pl.col("note") == "old").height == 0  # backlog never ingested
+    assert last_commit(job)[STATE_CDC_WATERMARK_KEY] == "20250102-000000000"
+
+
 def test_error_bucket_and_processed_sources(s3: FakeS3, tmp_path: Any) -> None:
     """CDC files in the error bucket and in processed/ are both ingested once."""
     seed_snap1(s3)
