@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import tempfile
+from typing import Any
 from typing import List
 from typing import Tuple
 from datetime import datetime
@@ -29,6 +30,26 @@ from odin.utils.parquet import ds_column_min_max
 SNAPSHOT_FMT = "%Y%m%dT%H%M%SZ"
 RE_SNAPSHOT_TS = re.compile(r"(\d{8}T\d{6}Z)")
 RE_CDC_TS = re.compile(r"(\d{8}-\d{9})")
+CHANGE_SEQ_FMT = "%Y%m%d%H%M%S"
+
+
+def seq_as_datetime(seq: Any) -> datetime | None:
+    """
+    Convert a Qlik ``header__change_seq`` to the UTC datetime it encodes.
+
+    A change_seq leads with its event time as ``%Y%m%d%H%M%S`` followed by
+    padding, e.g. ``20260619214440000...`` -> 2026-06-19 21:44:40 UTC.
+
+    :param seq: header__change_seq value (may be None or non-conforming)
+
+    :return: event time as UTC datetime, or None if `seq` can't be parsed
+    """
+    if seq is None:
+        return None
+    try:
+        return datetime.strptime(str(seq)[:14], CHANGE_SEQ_FMT).replace(tzinfo=UTC)
+    except ValueError:
+        return None
 
 
 class RecentSnapshotError(Exception):

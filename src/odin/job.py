@@ -18,6 +18,7 @@ from odin.utils.logger import MdValues
 from odin.utils.runtime import sigterm_check
 
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
+NEXT_RUN_SIGSEGV = 60 * 5  # 5 minutes
 NEXT_RUN_FAILED = 60 * 60 * 24  # 24 hours
 
 # How often the parent samples a running job subprocess' memory and disk spill, in seconds
@@ -63,6 +64,16 @@ class OdinJob(ABC):
     """Base Class for Odin Event Loop Jobs."""
 
     start_kwargs: Dict[str, MdValues] = {}
+
+    @property
+    def scratch(self) -> str:
+        """
+        Return a directory safe to stage files in.
+
+        start() provides tmpdir for real runs; direct step calls (tests) fall back to
+        the system temp folder rather than raising.
+        """
+        return getattr(self, "tmpdir", None) or tempfile.gettempdir()
 
     def reset_tmpdir(self) -> None:
         """Reset TemporaryDirectory folder."""
@@ -253,7 +264,10 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler | None) -> None:
             **job.start_kwargs,
         )
         fail_log.failed(SystemError("OdinJob killed by ECS."))
-        proc_return_val.value = NEXT_RUN_FAILED
+        if proc.exitcode == -11:
+            proc_return_val.value = NEXT_RUN_SIGSEGV
+        else:
+            proc_return_val.value = NEXT_RUN_FAILED
 
     if schedule is not None:
         schedule.enter(proc_return_val.value, 1, job_proc_schedule, (job, schedule))

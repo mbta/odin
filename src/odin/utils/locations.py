@@ -10,6 +10,7 @@ DATA_SPRINGBOARD = os.getenv("DATA_SPRINGBOARD", "unset_DATA_SPRINGBOARD")
 ODIN_DATA = "odin/data"
 ODIN_ARCHIVE = "odin/archive"
 ODIN_ERROR = "odin/error"
+ODIN_LOGS = "odin/logs"
 ODIN_MIGRATIONS = "odin/migrations"
 ODIN_DICTIONARY = f"{ODIN_DATA}/dictionary"
 
@@ -25,11 +26,16 @@ CUBIC_QLIK_IGNORED = f"{ODIN_ARCHIVE}/cubic_qlik/ignored"
 CUBIC_ODS_FACT_DATA = f"{ODIN_DATA}/cubic/ods"
 CUBIC_ODS_REPORTS = f"{ODIN_DATA}/cubic/reports"
 
+# Per-table fact status JSON, published for anyone with read access to the bucket
+CUBIC_ODS_FACT_STATUS = f"{ODIN_LOGS}/ods"
+
 CUBIC_ODS_DELTA_DATA = f"{ODIN_DATA}/cubic/ods_delta"
+CUBIC_ODS_DELTA_STATUS = f"{ODIN_LOGS}/ods_delta"
 
 # AFC
 AFC_DATA = f"{ODIN_DATA}/sb/api"
 AFC_RESTRICTED = f"{ODIN_DATA}/sb/restricted"
+AFC_STATUS = f"{ODIN_LOGS}/afc"
 
 # Masabi
 MASABI_DATA = f"{ODIN_DATA}/masabi/api"
@@ -38,3 +44,4 @@ MASABI_TEMP = f"{ODIN_DATA}/masabi/temporary"
 # Destination for the historical backfill job. Kept separate from MASABI_DATA
 # so the live pipeline is undisturbed until the backfill is swapped in.
 MASABI_BACKFILL = f"{ODIN_DATA}/masabi/backfill"
+MASABI_STATUS = f"{ODIN_LOGS}/masabi"
