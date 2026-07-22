@@ -30,6 +30,7 @@ class ViewBuilder:
     s3_prefix: str
     schema: str
     template: Template
+    is_delta: bool = False
 
 
 DROP_VIEW = "DROP VIEW IF EXISTS $schema.$table;"
@@ -74,6 +75,7 @@ dataset_views = [
         template=Template(
             f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT $columns FROM {READ_D};"
         ),
+        is_delta=True,
     ),
     ViewBuilder(
         s3_prefix=os.path.join(DATA_SPRINGBOARD, MASABI_DATA),
@@ -120,7 +122,10 @@ def create_fares_db(folder: str) -> str:
                 )
                 try:
                     s3_path = f"s3://{os.path.join(view.s3_prefix, view_table)}"
-                    ds_columns = list(ds_from_path(s3_path + "/").schema.names)
+                    if view.is_delta:
+                        ds_columns = ["*"]
+                    else:
+                        ds_columns = list(ds_from_path(s3_path + "/").schema.names)
                     view_query = view.template.substitute(
                         schema=view.schema,
                         table=view_table.replace(".", "_").lower(),
