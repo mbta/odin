@@ -273,9 +273,7 @@ def test_check_parquet_schema_string_variants_ok(tmpdir):
 def test_fetch_schema_spec_parses_yaml_on_200():
     """A 200 response body is parsed as YAML and returned."""
     pool = MagicMock()
-    pool.request.return_value = MagicMock(
-        status=200, data=b"components:\n  schemas: {}\n"
-    )
+    pool.request.return_value = MagicMock(status=200, data=b"components:\n  schemas: {}\n")
     spec = _fetch_schema_spec(pool)
     assert spec == {"components": {"schemas": {}}}
 
