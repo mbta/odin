@@ -32,6 +32,12 @@ CUBIC_ODS_FACT_STATUS = f"{ODIN_LOGS}/ods"
 CUBIC_ODS_DELTA_DATA = f"{ODIN_DATA}/cubic/ods_delta"
 CUBIC_ODS_DELTA_STATUS = f"{ODIN_LOGS}/ods_delta"
 
+# CUBIC ODS DELTA "d2" — silver materialized from the Delta bronze history
+# (ingestion/qlik/delta_archive.py) instead of the legacy parquet history. Kept
+# on separate output/status paths so it runs in parallel with the midpoint job.
+CUBIC_ODS_DELTA_D2_DATA = f"{ODIN_DATA}/cubic/ods_delta_d2"
+CUBIC_ODS_DELTA_D2_STATUS = f"{ODIN_LOGS}/ods_delta_d2"
+
 # AFC
 AFC_DATA = f"{ODIN_DATA}/sb/api"
 AFC_RESTRICTED = f"{ODIN_DATA}/sb/restricted"

@@ -17,6 +17,7 @@ from odin.ingestion.qlik.delta_archive import schedule_qlik_bronze
 from odin.generate.cubic.ods_fact import schedule_cubic_ods_fact_gen
 
 from odin.generate.cubic.delta_ods import schedule_delta_ods
+from odin.generate.cubic.delta_ods_d2 import schedule_delta_ods_d2
 from odin.ingestion.afc.afc_archive import schedule_afc_archive
 from odin.ingestion.afc.afc_restricted import schedule_restricted_afc_archive
 from odin.ingestion.masabi.masabi_archive import schedule_masabi_archive
@@ -76,12 +77,14 @@ def start():
         schedule_cubic_archive_qlik(schedule)
         schedule_cubic_ods_fact_gen(schedule)
         schedule_delta_ods(schedule)
+        schedule_delta_ods_d2(schedule)
         schedule_qlik_bronze(schedule)
         schedule_masabi_archive(schedule)
         schedule_afc_archive(schedule)
 
     if odin_instance in ["gamma"]:
         schedule_delta_ods(schedule)
+        schedule_delta_ods_d2(schedule)
         schedule_qlik_bronze(schedule)
 
     if odin_instance in ["alpha"]:

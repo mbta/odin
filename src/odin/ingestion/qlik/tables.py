@@ -198,6 +198,33 @@ _ODIN_INSTANCE = get_odin_instance()
 
 CUBIC_ODS_DELTA_TABLES_INSTANCE = CUBIC_ODS_DELTA_TABLES_BY_INSTANCE[_ODIN_INSTANCE]
 
+# Tables materialized by the "d2" Delta silver job (generate/cubic/delta_ods_d2.py),
+# which reads the Delta bronze history instead of the legacy parquet history. Split
+# by instance like the lists above so it can be rolled out and verified table-by-table
+# in parallel with the midpoint delta_ods.py job. Each list must be a subset of that
+# instance's CUBIC_QLIK_BRONZE_TABLES (the bronze history must exist to read from).
+CUBIC_ODS_DELTA_D2_TABLES_ALPHA: list[str] = []
+
+CUBIC_ODS_DELTA_D2_TABLES_BETA: list[str] = []
+
+CUBIC_ODS_DELTA_D2_TABLES_GAMMA = [
+    "EDW.SALE_TRANSACTION",
+]
+
+CUBIC_ODS_DELTA_D2_TABLES_BY_INSTANCE = {
+    "alpha": CUBIC_ODS_DELTA_D2_TABLES_ALPHA,
+    "beta": CUBIC_ODS_DELTA_D2_TABLES_BETA,
+    "gamma": CUBIC_ODS_DELTA_D2_TABLES_GAMMA,
+}
+
+CUBIC_ODS_DELTA_D2_TABLES = (
+    CUBIC_ODS_DELTA_D2_TABLES_ALPHA
+    + CUBIC_ODS_DELTA_D2_TABLES_BETA
+    + CUBIC_ODS_DELTA_D2_TABLES_GAMMA
+)
+
+CUBIC_ODS_DELTA_D2_TABLES_INSTANCE = CUBIC_ODS_DELTA_D2_TABLES_BY_INSTANCE[_ODIN_INSTANCE]
+
 # Tables ingested by the Delta bronze archive job (ingestion/qlik/delta_archive.py),
 # split by instance like the lists above so the bronze pipeline can be rolled out
 # and verified table-by-table in parallel with the existing cubic_archive.py job.
