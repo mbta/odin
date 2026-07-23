@@ -89,13 +89,12 @@ NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 RECENT_SNAPSHOT_HOURS = 6
 
 # Per-run and per-append-commit work bounds. Sizes are compressed (from the
-# S3 listing) so batches are decided before any download; ~5x expansion makes
-# these comparable to the legacy job's 1GB-uncompressed batch / 5GB-run caps.
+# S3 listing) so batches are decided before any download
 MAX_CDC_FILES = 10_000
-CDC_BATCH_BYTES = 128 * 1024 * 1024
+CDC_BATCH_BYTES = 32 * 1024 * 1024
 RUN_CDC_BYTES = 5 * CDC_BATCH_BYTES
 LOAD_BATCH_FILES = 20
-LOAD_BATCH_BYTES = 128 * 1024 * 1024
+LOAD_BATCH_BYTES = 32 * 1024 * 1024
 
 # Bronze partition columns: the Qlik snapshot generation and a load-vs-cdc
 # discriminator (silver's two read shapes: "all L records" / "CDC past seq").
