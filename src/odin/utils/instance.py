@@ -2,7 +2,7 @@ import os
 
 from odin.utils.aws.ecs import running_in_aws
 
-ODIN_INSTANCES = ("alpha", "beta", "gamma")
+ODIN_INSTANCES = ("alpha", "beta", "gamma", "delta")
 
 
 def get_odin_instance() -> str:

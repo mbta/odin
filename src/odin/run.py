@@ -78,7 +78,7 @@ def start():
         schedule_masabi_archive(schedule)
         schedule_afc_archive(schedule)
 
-    if odin_instance in ["gamma"]:
+    if odin_instance in ["gamma", "delta"]:
         schedule_delta_ods(schedule)
 
     if odin_instance in ["alpha"]:
