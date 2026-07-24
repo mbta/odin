@@ -764,12 +764,9 @@ class CubicODSDelta(OdinJob):
         """
         Build the MERGE match predicate (keys + optional partition constraint).
 
-        Each key uses plain equality when the source column carries no nulls:
-        with ``streamed_exec=False``, delta-rs derives an early-pruning predicate
-        from the source key min/max stats and skips target files whose key range
-        can't match — but only for simple equality conjunctions. The null-safe
-        ``OR (both NULL)`` form defeats that analysis, so it is emitted per key
-        and only when a null key value is actually present in the batch.
+        Each key uses plain equality, except the null-safe ``OR (both NULL)`` form
+        on keys that actually carry a null in the batch, required so a null key
+        matches its target row instead of duplicating it.
         """
         key_pred = " AND ".join(
             f'target."{k}" = source."{k}"'
@@ -783,17 +780,18 @@ class CubicODSDelta(OdinJob):
         """
         Return a partition-pruning clause for the merge, or '' when unsafe.
 
-        ` AND target.odin_year IN (...) AND target.odin_month IN (...)` restricts the
-        scan to the partitions the source touches. If any edw_inserted_dtm
-        is missing  we fall back to an unpruned full scan.
+        Emits ` AND ((odin_year = Y1 AND odin_month = M1) OR ...)` naming the exact
+        (year, month) partitions the source touches, restricting the scan to just
+        those.
         """
         if "odin_year" not in source.columns or "odin_month" not in source.columns:
             return ""
         if source.get_column("edw_inserted_dtm").null_count() > 0:
             return ""
-        years = sorted(source.get_column("odin_year").unique().to_list())
-        months = sorted(source.get_column("odin_month").unique().to_list())
-        if not years or not months:
+        pairs = (
+            source.select("odin_year", "odin_month").unique().sort(["odin_year", "odin_month"]).rows()
+        )
+        if not pairs:
             return ""
         # Literals are cast to INT (Int32) to match the partition columns' type
         # exactly: bare integer literals parse as Int64, and while DataFusion's
@@ -801,9 +799,11 @@ class CubicODSDelta(OdinJob):
         # non-coercing paths (kernel data skipping, concurrent-commit conflict
         # checks) where an Int32/Int64 comparison is a hard error
         # ("Invalid comparison operation: Int32 <= Int64").
-        years_sql = ", ".join(f"CAST({y} AS INT)" for y in years)
-        months_sql = ", ".join(f"CAST({m} AS INT)" for m in months)
-        return f' AND target."odin_year" IN ({years_sql}) AND target."odin_month" IN ({months_sql})'
+        pair_sql = " OR ".join(
+            f'(target."odin_year" = CAST({y} AS INT) AND target."odin_month" = CAST({m} AS INT))'
+            for y, m in pairs
+        )
+        return f" AND ({pair_sql})"
 
     def _merge_apply(self, source: pl.DataFrame, keys: list[str], watermark: str) -> dict:
         """
@@ -885,7 +885,7 @@ class CubicODSDelta(OdinJob):
             error_on_type_mismatch=False,
             merge_schema=False,
             commit_properties=self._commit_state(watermark),
-            streamed_exec=False,
+            streamed_exec=True,
         )
         result_stats = (
             merger.when_matched_delete(predicate="source.odin_resolved_oper = 'D'")
