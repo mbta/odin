@@ -789,7 +789,10 @@ class CubicODSDelta(OdinJob):
         if source.get_column("edw_inserted_dtm").null_count() > 0:
             return ""
         pairs = (
-            source.select("odin_year", "odin_month").unique().sort(["odin_year", "odin_month"]).rows()
+            source.select("odin_year", "odin_month")
+            .unique()
+            .sort(["odin_year", "odin_month"])
+            .rows()
         )
         if not pairs:
             return ""
