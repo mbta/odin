@@ -362,6 +362,155 @@ def test_read_cdc_empty_when_caught_up(job):
     assert pipeline._read_cdc("0005", limit=100).height == 0
 
 
+def test_partition_constraint_names_exact_pairs_not_cross_product(job):
+    """
+    The constraint names the (year, month) pairs the batch touches, not year x month.
+
+    Independent ``odin_year IN (...) AND odin_month IN (...)`` lists admit every
+    combination of the two, so a batch touching 2024-01 and 2025-03 would also drag
+    2024-03 and 2025-01 into the scan. Since the scan predicate is what bounds merge
+    memory, that cross product is the difference between scanning two partitions and
+    scanning dozens.
+    """
+    from datetime import datetime
+
+    pipeline, write_history, _, _ = job
+    base = _two_partition_history()
+    updates = dated_history_rows(
+        [
+            {
+                "txn_id": 1,
+                "amount": 11,
+                "header__change_oper": "U",
+                "header__change_seq": "0001",
+                "edw_inserted_dtm": datetime(2024, 1, 5),
+            },
+            {
+                "txn_id": 2,
+                "amount": 99,
+                "header__change_oper": "U",
+                "header__change_seq": "0002",
+                "edw_inserted_dtm": datetime(2025, 3, 5),
+            },
+        ]
+    )
+    write_history(pa.concat_tables([base, updates]))
+    pipeline._rebuild_silver()
+
+    cdc_df = pipeline._read_cdc("0", limit=100)
+    source = pipeline._build_merge_source(cdc_df, KEYS)
+    constraint = pipeline._partition_constraint(source)
+
+    assert "2024" in constraint and "2025" in constraint
+    # Both real pairs are named...
+    assert '"odin_year" = CAST(2024 AS INT) AND target."odin_month" = CAST(1 AS INT)' in constraint
+    assert '"odin_year" = CAST(2025 AS INT) AND target."odin_month" = CAST(3 AS INT)' in constraint
+    # ...and only those two, so the phantom 2024-03 / 2025-01 combinations are absent.
+    assert constraint.count("odin_year") == 2
+
+
+def test_merge_writes_stay_compressed(job):
+    """
+    Silver files keep SNAPPY compression despite passing explicit WriterProperties.
+
+    deltalake builds WriterProperties from a bare parquet builder whose default is
+    UNCOMPRESSED, and only falls back to its own SNAPPY default when no properties
+    are passed at all. Setting any property therefore silently drops compression
+    unless it is restated -- guard that, since nothing else would notice.
+    """
+    pipeline, write_history, _, _ = job
+    write_history(
+        history_rows(
+            [
+                {"txn_id": 1, "amount": 10, "status": "a", "header__change_oper": "L"},
+                {"txn_id": 2, "amount": 20, "status": "b", "header__change_oper": "L"},
+            ]
+        )
+    )
+    pipeline._rebuild_silver()
+
+    for uri in DeltaTable(pipeline.silver_uri).file_uris():
+        metadata = pq.ParquetFile(uri).metadata
+        for group in range(metadata.num_row_groups):
+            assert metadata.row_group(group).column(0).compression == "SNAPPY"
+
+
+def test_merge_writes_cap_row_group_size(job):
+    """
+    Written files split into bounded row groups rather than one 1M-row group.
+
+    Each open parquet writer buffers the row group it is encoding in memory, and a
+    write spans one writer per partition, so the row group cap is what keeps the
+    write side's resident memory flat as partition count grows.
+    """
+    from odin.generate.cubic.delta_ods import DELTA_WRITER_PROPERTIES
+
+    cap = DELTA_WRITER_PROPERTIES.max_row_group_size
+    assert cap is not None
+
+    pipeline, write_history, _, _ = job
+    rows = cap * 2 + 1000
+    write_history(
+        pa.Table.from_pydict(
+            {
+                "txn_id": list(range(rows)),
+                "amount": [1] * rows,
+                "status": ["a"] * rows,
+                "header__change_seq": [None] * rows,
+                "header__change_oper": ["L"] * rows,
+                "header__year": [2025] * rows,
+                "header__month": [1] * rows,
+                "header__timestamp": [None] * rows,
+                "header__from_csv": [FROM_CSV] * rows,
+            },
+            schema=HISTORY_SCHEMA,
+        )
+    )
+    pipeline._rebuild_silver()
+
+    for uri in DeltaTable(pipeline.silver_uri).file_uris():
+        metadata = pq.ParquetFile(uri).metadata
+        for group in range(metadata.num_row_groups):
+            assert metadata.row_group(group).num_rows <= cap
+
+
+def test_merge_cdc_releases_duckdb_before_merging(job):
+    """
+    The DuckDB connection is handed back before the merge runs.
+
+    DuckDB is configured with a buffer pool of half of system memory. Holding it
+    open through the merge leaves delta-rs competing with memory that nothing is
+    using any more -- the CDC batch is fully materialized in polars by then.
+    """
+    pipeline, write_history, _, _ = job
+    write_history(
+        history_rows(
+            [
+                {"txn_id": 1, "amount": 10, "status": "a", "header__change_oper": "L"},
+                {
+                    "txn_id": 1,
+                    "amount": 99,
+                    "header__change_oper": "U",
+                    "header__change_seq": "0001",
+                },
+            ]
+        )
+    )
+    pipeline._rebuild_silver()
+
+    seen = {}
+    real_merge_apply = pipeline._merge_apply
+
+    def spy(*args, **kwargs):
+        seen["con_open_during_merge"] = pipeline._con is not None
+        return real_merge_apply(*args, **kwargs)
+
+    with patch.object(pipeline, "_merge_apply", side_effect=spy):
+        pipeline._merge_cdc("0")
+
+    assert seen["con_open_during_merge"] is False
+
+
 def test_merge_no_prune_when_edw_missing(job):
     """A CDC update missing edw_inserted_dtm falls back to an unpruned scan, still correct."""
     pipeline, write_history, _, _ = job
@@ -425,6 +574,136 @@ def test_state_readable_on_wide_table(job):
     pipeline._rebuild_silver()
 
     assert pipeline._read_state()[0] == TEST_SNAPSHOT
+
+
+def test_watermark_recorded_when_a_chunk_matches_nothing(job):
+    """
+    The watermark survives a partition chunk that produces no Delta commit.
+
+    delta-rs makes no commit at all for a MERGE with zero actions, so a watermark
+    riding on a partition merge vanishes whenever that chunk matches nothing --
+    ordinary here, since orphan updates are dropped by design. The batch would
+    then replay forever while the status file reports an advancing position.
+    """
+    from datetime import datetime
+
+    pipeline, write_history, _, _ = job
+    base = dated_history_rows(
+        [
+            {
+                "txn_id": 1,
+                "amount": 10,
+                "header__change_oper": "L",
+                "edw_inserted_dtm": datetime(2025, 3, 5),
+            }
+        ]
+    )
+    cdc = dated_history_rows(
+        [
+            # real update, lands in the (2025, 3) chunk
+            {
+                "txn_id": 1,
+                "amount": 99,
+                "header__change_oper": "U",
+                "header__change_seq": "0001",
+                "edw_inserted_dtm": datetime(2025, 3, 5),
+            },
+            # orphan update for a key with no target row, alone in a (2026, 7)
+            # chunk: matches nothing, so that merge commits nothing
+            {
+                "txn_id": 777,
+                "amount": 5,
+                "header__change_oper": "U",
+                "header__change_seq": "0002",
+                "edw_inserted_dtm": datetime(2026, 7, 1),
+            },
+        ]
+    )
+    write_history(pa.concat_tables([base, cdc]))
+    pipeline._rebuild_silver()
+    pipeline._merge_cdc("0")
+
+    assert pipeline._read_state() == (TEST_SNAPSHOT, "0002")
+    # And the real update still landed.
+    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table())
+    assert out.filter(pl.col("txn_id") == 1).get_column("amount").to_list() == [99]
+
+
+def test_read_state_survives_an_interrupted_run(job):
+    """
+    A run interrupted between partition merges does not force a full rebuild.
+
+    Each partition merge commits on its own without recording a position, so an
+    interruption buries the last recorded position under them. Reporting "no
+    position" there reads as a snapshot mismatch upstream and rebuilds the whole
+    table, so the scan has to reach the end of the log before concluding that.
+    """
+    pipeline, write_history, write_silver, _ = job
+    write_history(history_rows([{"txn_id": 1, "amount": 10, "header__change_oper": "L"}]))
+    pipeline._rebuild_silver()
+    assert pipeline._read_state() == (TEST_SNAPSHOT, "0")
+
+    # Simulate the debris of an interrupted chunked merge: position-less commits.
+    from odin.generate.cubic.delta_ods import HISTORY_SCAN_LIMIT
+
+    empty = pa.Table.from_pylist(
+        [], schema=pa.schema(DeltaTable(pipeline.silver_uri).schema().to_arrow())
+    )
+    for _ in range(HISTORY_SCAN_LIMIT + 5):
+        write_deltalake(pipeline.silver_uri, empty, mode="append")
+
+    # run() re-opens the table before reading state; _read_state on a handle pinned
+    # to an older version would not see the commits piled on top at all.
+    pipeline.silver = DeltaTable(pipeline.silver_uri)
+    assert pipeline.silver.version() > HISTORY_SCAN_LIMIT
+    assert pipeline._read_state() == (TEST_SNAPSHOT, "0")
+
+
+def test_partition_changing_key_is_rejected_not_duplicated(job):
+    """
+    A key whose edw_inserted_dtm changes is caught rather than silently duplicated.
+
+    Each partition merge scans only its own partition, so a key whose target row
+    lives elsewhere is not seen and gets inserted alongside the old row. The batch
+    must be rejected instead.
+    """
+    from datetime import datetime
+
+    pipeline, write_history, _, _ = job
+    base = dated_history_rows(
+        [
+            {
+                "txn_id": 1,
+                "amount": 10,
+                "header__change_oper": "L",
+                "edw_inserted_dtm": datetime(2024, 1, 5),
+            },
+        ]
+    )
+    cdc = dated_history_rows(
+        [
+            {
+                "txn_id": 1,
+                "amount": 11,
+                "header__change_oper": "U",
+                "header__change_seq": "0001",
+                "edw_inserted_dtm": datetime(2024, 1, 5),
+            },
+            # same key, different edw_inserted_dtm -> would move partitions
+            {
+                "txn_id": 1,
+                "amount": 12,
+                "header__change_oper": "I",
+                "header__change_seq": "0002",
+                "edw_inserted_dtm": datetime(2025, 3, 5),
+            },
+        ]
+    )
+    write_history(pa.concat_tables([base, cdc]))
+    pipeline._rebuild_silver()
+
+    with pytest.raises(AssertionError, match="more than one edw_inserted_dtm"):
+        pipeline._merge_cdc("0")
 
 
 def test_delete_only_batch_advances_watermark(job):
