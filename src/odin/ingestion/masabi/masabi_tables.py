@@ -31,13 +31,16 @@ TABLES_GAMMA: list[str] = [
     "retail.activations",
 ]
 
+TABLES_DELTA: list[str] = []
+
 TABLES_BY_INSTANCE = {
     "alpha": TABLES_ALPHA,
     "beta": TABLES_BETA,
     "gamma": TABLES_GAMMA,
+    "delta": TABLES_DELTA,
 }
 
-TABLES = TABLES_ALPHA + TABLES_BETA + TABLES_GAMMA
+TABLES = TABLES_ALPHA + TABLES_BETA + TABLES_GAMMA + TABLES_DELTA
 
 _ODIN_INSTANCE = get_odin_instance()
 TABLES_INSTANCE = TABLES_BY_INSTANCE[_ODIN_INSTANCE]

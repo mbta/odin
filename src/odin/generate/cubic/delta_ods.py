@@ -104,7 +104,7 @@ NEXT_RUN_IMMEDIATE = 30  # 30 seconds
 NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
 REBUILD_BATCH_SIZE = 10_000
-MAX_MERGE_RECORDS = 100_000
+MAX_MERGE_RECORDS = 20_000
 
 CDC_OPERS = ("I", "U", "D")
 
@@ -855,6 +855,19 @@ class CubicODSDelta(OdinJob):
         )
         return f" AND ({pair_sql})"
 
+    def _partition_chunks(self, source: pl.DataFrame) -> list[pl.DataFrame]:
+        """
+        Split the merge source into one frame per (odin_year, odin_month) partition.
+
+        Each chunk is merged on its own so delta-rs rewrites only one partition's
+        files per MERGE (see _merge_apply). Non-dated tables lack the partition
+        columns and merge as a single chunk; null-edw rows share the (0, 0) chunk,
+        which _partition_constraint leaves unpruned.
+        """
+        if "odin_year" not in source.columns or "odin_month" not in source.columns:
+            return [source]
+        return source.partition_by(["odin_year", "odin_month"])
+
     def _merge_apply(self, source: pl.DataFrame, keys: list[str], watermark: str) -> dict:
         """
         Execute the MERGE of `source` into silver, one action per resolved op.
@@ -864,6 +877,12 @@ class CubicODSDelta(OdinJob):
           - "I": replace the matched row verbatim / insert when unmatched.
           - "U": coalesce onto the matched row; unmatched U keys are orphan
             updates (no live row to patch) and fall through untouched.
+
+        The source is merged one (odin_year, odin_month) partition at a time to
+        bound peak memory, and the CDC watermark is committed only on the final
+        chunk: a mid-batch failure then leaves the recorded position unadvanced, so
+        the whole batch reprocesses (the per-key resolution is idempotent, so
+        re-applying already-merged partitions is a no-op).
         """
         log = ProcessLog(
             "_merge_apply", table=self.table, watermark=watermark, merge_size=len(source)
@@ -888,8 +907,6 @@ class CubicODSDelta(OdinJob):
                 "edw_inserted_dtm; inserted rows would land in the odin_year=0 "
                 "partition, which partition-pruned merges never revisit"
             )
-
-        predicate = self._merge_predicate(keys, source)
 
         # "U" rows (sparse update): watermark columns verbatim from the
         # resolved CDC row; data columns coalesce so untouched target values
@@ -926,33 +943,51 @@ class CubicODSDelta(OdinJob):
         }
         insert_set = {col: f'source."{col}"' for col in target_cols if col in source_cols}
 
-        sigterm_check()
         max_spill_size, max_temp_directory_size = _merge_spill_limits()
-        merger = self.silver.merge(
-            source=source.to_arrow(),
-            predicate=predicate,
-            source_alias="source",
-            target_alias="target",
-            error_on_type_mismatch=False,
-            merge_schema=False,
-            commit_properties=self._commit_state(watermark),
-            streamed_exec=False,
-            max_spill_size=max_spill_size,
-            max_temp_directory_size=max_temp_directory_size,
-            writer_properties=DELTA_WRITER_PROPERTIES,
-        )
-        result_stats = (
-            merger.when_matched_delete(predicate="source.odin_resolved_oper = 'D'")
-            .when_matched_update(predicate="source.odin_resolved_oper = 'I'", updates=replace_set)
-            .when_matched_update(predicate="source.odin_resolved_oper = 'U'", updates=update_set)
-            .when_not_matched_insert(
-                predicate="source.odin_resolved_oper = 'I'", updates=insert_set
+        # Merge one partition at a time so delta-rs only rewrites a single
+        # partition's files per MERGE, bounding peak memory to the largest single
+        # partition rather than every touched partition's rewrite at once.
+        dt = self.silver
+        chunks = self._partition_chunks(source)
+        totals: dict = {}
+        for i, chunk in enumerate(chunks):
+            predicate = self._merge_predicate(keys, chunk)
+            is_last = i == len(chunks) - 1
+            sigterm_check()
+            merger = dt.merge(
+                source=chunk.to_arrow(),
+                predicate=predicate,
+                source_alias="source",
+                target_alias="target",
+                error_on_type_mismatch=False,
+                merge_schema=False,
+                commit_properties=self._commit_state(watermark) if is_last else None,
+                streamed_exec=False,
+                max_spill_size=max_spill_size,
+                max_temp_directory_size=max_temp_directory_size,
+                writer_properties=DELTA_WRITER_PROPERTIES,
             )
-            .execute()
-        )
+            stats = (
+                merger.when_matched_delete(predicate="source.odin_resolved_oper = 'D'")
+                .when_matched_update(
+                    predicate="source.odin_resolved_oper = 'I'", updates=replace_set
+                )
+                .when_matched_update(
+                    predicate="source.odin_resolved_oper = 'U'", updates=update_set
+                )
+                .when_not_matched_insert(
+                    predicate="source.odin_resolved_oper = 'I'", updates=insert_set
+                )
+                .execute()
+            )
+            for k, v in stats.items():
+                totals[k] = totals.get(k, 0) + v if isinstance(v, (int, float)) else v
+            # reload so the next chunk merges against the freshly committed state
+            dt = DeltaTable(self.silver_uri)
+        self.silver = dt
 
         log.complete()
-        return result_stats
+        return totals
 
 
 def schedule_delta_ods(schedule: sched.scheduler) -> None:

@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       odin-instance:
-        description: "Which Odin ECS service instance to deploy: alpha, beta, gamma, or all"
+        description: "Which Odin ECS service instance to deploy: alpha, beta, gamma, delta, or all"
         required: false
         default: all
         type: string
@@ -83,5 +83,15 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           ecs-cluster: odin
           ecs-service: odin-gamma-${{ inputs.environment }}
+          docker-tag: ${{ steps.build-push.outputs.docker-tag }}
+          allow-zero-desired: false
+      - name: Deploy Odin Delta Service
+        id: deploy-odin-delta
+        if: ${{ inputs.deploy-odin && (inputs.odin-instance == 'all' || inputs.odin-instance == 'delta') }}
+        uses: mbta/actions/deploy-ecs@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          ecs-cluster: odin
+          ecs-service: odin-delta-${{ inputs.environment }}
           docker-tag: ${{ steps.build-push.outputs.docker-tag }}
           allow-zero-desired: false
