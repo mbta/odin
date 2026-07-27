@@ -357,7 +357,7 @@ class CubicODSDelta(OdinJob):
         commits.
         """
         assert self.silver is not None
-        empty = pa.Table.from_pylist([], schema=pa.schema(self.silver.schema().to_arrow()))
+        empty = pa.Table.from_pylist([], schema=pa.schema(self.silver.schema().to_arrow()))  # type: ignore
         write_deltalake(
             self.silver_uri,
             empty,
