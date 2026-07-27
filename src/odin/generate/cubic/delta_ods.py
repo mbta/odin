@@ -888,7 +888,7 @@ class CubicODSDelta(OdinJob):
             error_on_type_mismatch=False,
             merge_schema=False,
             commit_properties=self._commit_state(watermark),
-            streamed_exec=True,
+            streamed_exec=False,
         )
         result_stats = (
             merger.when_matched_delete(predicate="source.odin_resolved_oper = 'D'")
