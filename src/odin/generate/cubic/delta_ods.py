@@ -764,12 +764,9 @@ class CubicODSDelta(OdinJob):
         """
         Build the MERGE match predicate (keys + optional partition constraint).
 
-        Each key uses plain equality when the source column carries no nulls:
-        with ``streamed_exec=False``, delta-rs derives an early-pruning predicate
-        from the source key min/max stats and skips target files whose key range
-        can't match — but only for simple equality conjunctions. The null-safe
-        ``OR (both NULL)`` form defeats that analysis, so it is emitted per key
-        and only when a null key value is actually present in the batch.
+        Each key uses plain equality, except the null-safe ``OR (both NULL)`` form
+        on keys that actually carry a null in the batch, required so a null key
+        matches its target row instead of duplicating it.
         """
         key_pred = " AND ".join(
             f'target."{k}" = source."{k}"'
@@ -783,17 +780,21 @@ class CubicODSDelta(OdinJob):
         """
         Return a partition-pruning clause for the merge, or '' when unsafe.
 
-        ` AND target.odin_year IN (...) AND target.odin_month IN (...)` restricts the
-        scan to the partitions the source touches. If any edw_inserted_dtm
-        is missing  we fall back to an unpruned full scan.
+        Emits ` AND ((odin_year = Y1 AND odin_month = M1) OR ...)` naming the exact
+        (year, month) partitions the source touches, restricting the scan to just
+        those.
         """
         if "odin_year" not in source.columns or "odin_month" not in source.columns:
             return ""
         if source.get_column("edw_inserted_dtm").null_count() > 0:
             return ""
-        years = sorted(source.get_column("odin_year").unique().to_list())
-        months = sorted(source.get_column("odin_month").unique().to_list())
-        if not years or not months:
+        pairs = (
+            source.select("odin_year", "odin_month")
+            .unique()
+            .sort(["odin_year", "odin_month"])
+            .rows()
+        )
+        if not pairs:
             return ""
         # Literals are cast to INT (Int32) to match the partition columns' type
         # exactly: bare integer literals parse as Int64, and while DataFusion's
@@ -801,9 +802,24 @@ class CubicODSDelta(OdinJob):
         # non-coercing paths (kernel data skipping, concurrent-commit conflict
         # checks) where an Int32/Int64 comparison is a hard error
         # ("Invalid comparison operation: Int32 <= Int64").
-        years_sql = ", ".join(f"CAST({y} AS INT)" for y in years)
-        months_sql = ", ".join(f"CAST({m} AS INT)" for m in months)
-        return f' AND target."odin_year" IN ({years_sql}) AND target."odin_month" IN ({months_sql})'
+        pair_sql = " OR ".join(
+            f'(target."odin_year" = CAST({y} AS INT) AND target."odin_month" = CAST({m} AS INT))'
+            for y, m in pairs
+        )
+        return f" AND ({pair_sql})"
+
+    def _partition_chunks(self, source: pl.DataFrame) -> list[pl.DataFrame]:
+        """
+        Split the merge source into one frame per (odin_year, odin_month) partition.
+
+        Each chunk is merged on its own so delta-rs rewrites only one partition's
+        files per MERGE (see _merge_apply). Non-dated tables lack the partition
+        columns and merge as a single chunk; null-edw rows share the (0, 0) chunk,
+        which _partition_constraint leaves unpruned.
+        """
+        if "odin_year" not in source.columns or "odin_month" not in source.columns:
+            return [source]
+        return source.partition_by(["odin_year", "odin_month"])
 
     def _merge_apply(self, source: pl.DataFrame, keys: list[str], watermark: str) -> dict:
         """
@@ -814,6 +830,12 @@ class CubicODSDelta(OdinJob):
           - "I": replace the matched row verbatim / insert when unmatched.
           - "U": coalesce onto the matched row; unmatched U keys are orphan
             updates (no live row to patch) and fall through untouched.
+
+        The source is merged one (odin_year, odin_month) partition at a time to
+        bound peak memory, and the CDC watermark is committed only on the final
+        chunk: a mid-batch failure then leaves the recorded position unadvanced, so
+        the whole batch reprocesses (the per-key resolution is idempotent, so
+        re-applying already-merged partitions is a no-op).
         """
         log = ProcessLog(
             "_merge_apply", table=self.table, watermark=watermark, merge_size=len(source)
@@ -838,8 +860,6 @@ class CubicODSDelta(OdinJob):
                 "edw_inserted_dtm; inserted rows would land in the odin_year=0 "
                 "partition, which partition-pruned merges never revisit"
             )
-
-        predicate = self._merge_predicate(keys, source)
 
         # "U" rows (sparse update): watermark columns verbatim from the
         # resolved CDC row; data columns coalesce so untouched target values
@@ -876,29 +896,47 @@ class CubicODSDelta(OdinJob):
         }
         insert_set = {col: f'source."{col}"' for col in target_cols if col in source_cols}
 
-        sigterm_check()
-        merger = self.silver.merge(
-            source=source.to_arrow(),
-            predicate=predicate,
-            source_alias="source",
-            target_alias="target",
-            error_on_type_mismatch=False,
-            merge_schema=False,
-            commit_properties=self._commit_state(watermark),
-            streamed_exec=True,
-        )
-        result_stats = (
-            merger.when_matched_delete(predicate="source.odin_resolved_oper = 'D'")
-            .when_matched_update(predicate="source.odin_resolved_oper = 'I'", updates=replace_set)
-            .when_matched_update(predicate="source.odin_resolved_oper = 'U'", updates=update_set)
-            .when_not_matched_insert(
-                predicate="source.odin_resolved_oper = 'I'", updates=insert_set
+        # Merge one partition at a time so delta-rs only rewrites a single
+        # partition's files per MERGE, bounding peak memory to the largest single
+        # partition rather than every touched partition's rewrite at once.
+        dt = self.silver
+        chunks = self._partition_chunks(source)
+        totals: dict = {}
+        for i, chunk in enumerate(chunks):
+            predicate = self._merge_predicate(keys, chunk)
+            is_last = i == len(chunks) - 1
+            sigterm_check()
+            merger = dt.merge(
+                source=chunk.to_arrow(),
+                predicate=predicate,
+                source_alias="source",
+                target_alias="target",
+                error_on_type_mismatch=False,
+                merge_schema=False,
+                commit_properties=self._commit_state(watermark) if is_last else None,
+                streamed_exec=True,
             )
-            .execute()
-        )
+            stats = (
+                merger.when_matched_delete(predicate="source.odin_resolved_oper = 'D'")
+                .when_matched_update(
+                    predicate="source.odin_resolved_oper = 'I'", updates=replace_set
+                )
+                .when_matched_update(
+                    predicate="source.odin_resolved_oper = 'U'", updates=update_set
+                )
+                .when_not_matched_insert(
+                    predicate="source.odin_resolved_oper = 'I'", updates=insert_set
+                )
+                .execute()
+            )
+            for k, v in stats.items():
+                totals[k] = totals.get(k, 0) + v if isinstance(v, (int, float)) else v
+            # reload so the next chunk merges against the freshly committed state
+            dt = DeltaTable(self.silver_uri)
+        self.silver = dt
 
         log.complete()
-        return result_stats
+        return totals
 
 
 def schedule_delta_ods(schedule: sched.scheduler) -> None:
