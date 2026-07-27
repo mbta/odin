@@ -576,6 +576,136 @@ def test_state_readable_on_wide_table(job):
     assert pipeline._read_state()[0] == TEST_SNAPSHOT
 
 
+def test_watermark_recorded_when_a_chunk_matches_nothing(job):
+    """
+    The watermark survives a partition chunk that produces no Delta commit.
+
+    delta-rs makes no commit at all for a MERGE with zero actions, so a watermark
+    riding on a partition merge vanishes whenever that chunk matches nothing --
+    ordinary here, since orphan updates are dropped by design. The batch would
+    then replay forever while the status file reports an advancing position.
+    """
+    from datetime import datetime
+
+    pipeline, write_history, _, _ = job
+    base = dated_history_rows(
+        [
+            {
+                "txn_id": 1,
+                "amount": 10,
+                "header__change_oper": "L",
+                "edw_inserted_dtm": datetime(2025, 3, 5),
+            }
+        ]
+    )
+    cdc = dated_history_rows(
+        [
+            # real update, lands in the (2025, 3) chunk
+            {
+                "txn_id": 1,
+                "amount": 99,
+                "header__change_oper": "U",
+                "header__change_seq": "0001",
+                "edw_inserted_dtm": datetime(2025, 3, 5),
+            },
+            # orphan update for a key with no target row, alone in a (2026, 7)
+            # chunk: matches nothing, so that merge commits nothing
+            {
+                "txn_id": 777,
+                "amount": 5,
+                "header__change_oper": "U",
+                "header__change_seq": "0002",
+                "edw_inserted_dtm": datetime(2026, 7, 1),
+            },
+        ]
+    )
+    write_history(pa.concat_tables([base, cdc]))
+    pipeline._rebuild_silver()
+    pipeline._merge_cdc("0")
+
+    assert pipeline._read_state() == (TEST_SNAPSHOT, "0002")
+    # And the real update still landed.
+    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table())
+    assert out.filter(pl.col("txn_id") == 1).get_column("amount").to_list() == [99]
+
+
+def test_read_state_survives_an_interrupted_run(job):
+    """
+    A run interrupted between partition merges does not force a full rebuild.
+
+    Each partition merge commits on its own without recording a position, so an
+    interruption buries the last recorded position under them. Reporting "no
+    position" there reads as a snapshot mismatch upstream and rebuilds the whole
+    table, so the scan has to reach the end of the log before concluding that.
+    """
+    pipeline, write_history, write_silver, _ = job
+    write_history(history_rows([{"txn_id": 1, "amount": 10, "header__change_oper": "L"}]))
+    pipeline._rebuild_silver()
+    assert pipeline._read_state() == (TEST_SNAPSHOT, "0")
+
+    # Simulate the debris of an interrupted chunked merge: position-less commits.
+    from odin.generate.cubic.delta_ods import HISTORY_SCAN_LIMIT
+
+    empty = pa.Table.from_pylist(
+        [], schema=pa.schema(DeltaTable(pipeline.silver_uri).schema().to_arrow())
+    )
+    for _ in range(HISTORY_SCAN_LIMIT + 5):
+        write_deltalake(pipeline.silver_uri, empty, mode="append")
+
+    # run() re-opens the table before reading state; _read_state on a handle pinned
+    # to an older version would not see the commits piled on top at all.
+    pipeline.silver = DeltaTable(pipeline.silver_uri)
+    assert pipeline.silver.version() > HISTORY_SCAN_LIMIT
+    assert pipeline._read_state() == (TEST_SNAPSHOT, "0")
+
+
+def test_partition_changing_key_is_rejected_not_duplicated(job):
+    """
+    A key whose edw_inserted_dtm changes is caught rather than silently duplicated.
+
+    Each partition merge scans only its own partition, so a key whose target row
+    lives elsewhere is not seen and gets inserted alongside the old row. The batch
+    must be rejected instead.
+    """
+    from datetime import datetime
+
+    pipeline, write_history, _, _ = job
+    base = dated_history_rows(
+        [
+            {
+                "txn_id": 1,
+                "amount": 10,
+                "header__change_oper": "L",
+                "edw_inserted_dtm": datetime(2024, 1, 5),
+            },
+        ]
+    )
+    cdc = dated_history_rows(
+        [
+            {
+                "txn_id": 1,
+                "amount": 11,
+                "header__change_oper": "U",
+                "header__change_seq": "0001",
+                "edw_inserted_dtm": datetime(2024, 1, 5),
+            },
+            # same key, different edw_inserted_dtm -> would move partitions
+            {
+                "txn_id": 1,
+                "amount": 12,
+                "header__change_oper": "I",
+                "header__change_seq": "0002",
+                "edw_inserted_dtm": datetime(2025, 3, 5),
+            },
+        ]
+    )
+    write_history(pa.concat_tables([base, cdc]))
+    pipeline._rebuild_silver()
+
+    with pytest.raises(AssertionError, match="more than one edw_inserted_dtm"):
+        pipeline._merge_cdc("0")
+
+
 def test_delete_only_batch_advances_watermark(job):
     """
     A CDC batch of only deletes still advances the recorded watermark.

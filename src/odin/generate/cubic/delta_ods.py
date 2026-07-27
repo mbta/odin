@@ -60,6 +60,7 @@ import duckdb
 from duckdb import OutOfMemoryException
 import polars as pl
 import psutil
+import pyarrow as pa
 
 from deltalake import CommitProperties
 from deltalake import DeltaTable
@@ -127,6 +128,10 @@ STATE_SNAPSHOT_KEY = "odin_snapshot"
 STATE_WATERMARK_KEY = "odin_cdc_watermark"
 INITIAL_WATERMARK = "0"  # header__change_seq is a zero-padded string; all seqs > "0"
 HISTORY_SCAN_LIMIT = 50  # commits to scan back for the latest recorded position
+# Deeper fallback for _read_state. One merged batch now commits once per partition it
+# touches, so an interrupted run can bury the last recorded position well past the
+# shallow limit; only reaching the end of the log proves there is no position to find.
+HISTORY_SCAN_LIMIT_DEEP = 2_000
 
 # DuckDB read expression over the snapshot-partitioned history parquet.
 READ_HISTORY = "read_parquet('{glob}', hive_partitioning = true, union_by_name = true)"
@@ -301,14 +306,32 @@ class CubicODSDelta(OdinJob):
 
         A silver table with no recorded position (never built, or built by an
         older version) reads as ("", INITIAL_WATERMARK), which forces a rebuild.
+
+        The scan escalates rather than using one fixed depth. A completed run leaves
+        the position on the newest commit, so the shallow pass almost always hits on
+        the first entry — but a run interrupted between partition merges (sigterm_check
+        fires inside that loop, so this is routine) leaves one position-less commit per
+        merged partition on top of it. Giving up at a fixed depth there would report
+        "no recorded position", and the caller reads that as a snapshot mismatch and
+        rebuilds the entire table. Only a scan that reaches the end of the log without
+        finding a position is entitled to that conclusion.
         """
         if self.silver is None:
             return "", INITIAL_WATERMARK
-        for commit in self.silver.history(HISTORY_SCAN_LIMIT):
-            if STATE_SNAPSHOT_KEY in commit:
-                return commit[STATE_SNAPSHOT_KEY], commit.get(
-                    STATE_WATERMARK_KEY, INITIAL_WATERMARK
-                )
+        for limit in (HISTORY_SCAN_LIMIT, HISTORY_SCAN_LIMIT_DEEP):
+            commits = self.silver.history(limit)
+            for commit in commits:
+                if STATE_SNAPSHOT_KEY in commit:
+                    return commit[STATE_SNAPSHOT_KEY], commit.get(
+                        STATE_WATERMARK_KEY, INITIAL_WATERMARK
+                    )
+            if len(commits) < limit:
+                break  # scanned the whole log; the position genuinely is not there
+        ProcessLog(
+            "delta_state_not_found",
+            table=self.table,
+            commits_scanned=len(commits),
+        ).complete()
         return "", INITIAL_WATERMARK
 
     def _commit_state(self, watermark: str) -> CommitProperties:
@@ -319,6 +342,29 @@ class CubicODSDelta(OdinJob):
                 STATE_WATERMARK_KEY: watermark,
             }
         )
+
+    def _commit_watermark(self, watermark: str) -> None:
+        """
+        Record `watermark` as the job's position in a commit of its own.
+
+        The position cannot ride along on the partition merges. delta-rs makes no
+        commit at all for a MERGE that changes nothing ("Do not make a commit when
+        there are zero updates to the state"), so a chunk that matches nothing —
+        an ordinary occurrence, since orphan updates are dropped by design — would
+        silently take the watermark with it and the batch would replay forever.
+
+        A zero-row append is inert — no files added, no rows changed — but always
+        commits.
+        """
+        assert self.silver is not None
+        empty = pa.Table.from_pylist([], schema=pa.schema(self.silver.schema().to_arrow()))
+        write_deltalake(
+            self.silver_uri,
+            empty,
+            mode="append",
+            commit_properties=self._commit_state(watermark),
+        )
+        self.silver = DeltaTable(self.silver_uri)
 
     # ------------------------------------------------------------------
     # Snapshot discovery
@@ -552,6 +598,7 @@ class CubicODSDelta(OdinJob):
         max_seq_processed = str(max_seq)
 
         keys = self._discover_keys(cdc_df)
+        self._check_partition_stability(cdc_df, keys)
         source = self._build_merge_source(cdc_df, keys)
         # The raw batch holds every CDC record; `source` holds one resolved row per
         # key. Drop the larger of the two before the merge rather than after it.
@@ -562,6 +609,7 @@ class CubicODSDelta(OdinJob):
             raise CDCSchemaIncompatibleError(
                 f"silver MERGE failed for {self.table}: {exc}"
             ) from exc
+        self._commit_watermark(max_seq_processed)
 
         self.silver = DeltaTable(self.silver_uri)
         more_pending = cdc_rows >= MAX_MERGE_RECORDS
@@ -687,6 +735,39 @@ class CubicODSDelta(OdinJob):
             f"primary key columns {sorted(missing)} absent from CDC data for {self.table}"
         )
         return keys
+
+    def _check_partition_stability(self, cdc_df: pl.DataFrame, keys: list[str]) -> None:
+        """
+        Assert no key's CDC records disagree on edw_inserted_dtm.
+
+        Merging one partition at a time means each MERGE scans only the partition
+        its own source rows land in, so a key whose target row lives in a *different*
+        partition is never seen: the row is inserted alongside the old one instead
+        of replacing it, and the key silently duplicates. The whole scheme rests on
+        edw_inserted_dtm being fixed for the life of a key, which makes a row's
+        partition fixed too.
+
+        This is the affordable half of that invariant — it compares a key's records
+        against each other, in memory, and so catches a feed that starts mutating
+        the column (including a delete/re-insert that reuses a primary key with a
+        new timestamp, which a merge chunk cannot resolve). It cannot catch a
+        mutation relative to a row written by an *earlier* batch; confirming that
+        would mean reading every key's current partition out of silver on every
+        run, which costs more than the merge it protects.
+        """
+        if "edw_inserted_dtm" not in cdc_df.columns:
+            return
+        disagreeing = (
+            cdc_df.filter(pl.col("edw_inserted_dtm").is_not_null())
+            .group_by(keys)
+            .agg(pl.col("edw_inserted_dtm").n_unique().alias("distinct_edw"))
+            .filter(pl.col("distinct_edw") > 1)
+        )
+        assert disagreeing.height == 0, (
+            f"{disagreeing.height} key(s) in the {self.table} CDC batch carry more than one "
+            "edw_inserted_dtm; a key's partition must not change or the partition-scoped "
+            f"merge would duplicate it. Offending keys: {disagreeing.head(5).rows()}"
+        )
 
     def _dfm_from_records(self, cdc_df: pl.DataFrame) -> QlikDFM:
         """Locate a DFM for the CDC source CSVs, trying processed then source paths."""
@@ -879,10 +960,8 @@ class CubicODSDelta(OdinJob):
             updates (no live row to patch) and fall through untouched.
 
         The source is merged one (odin_year, odin_month) partition at a time to
-        bound peak memory, and the CDC watermark is committed only on the final
-        chunk: a mid-batch failure then leaves the recorded position unadvanced, so
-        the whole batch reprocesses (the per-key resolution is idempotent, so
-        re-applying already-merged partitions is a no-op).
+        bound peak memory. None of these commits records the CDC watermark — see
+        _commit_watermark, which records it once, afterwards.
         """
         log = ProcessLog(
             "_merge_apply", table=self.table, watermark=watermark, merge_size=len(source)
@@ -950,9 +1029,8 @@ class CubicODSDelta(OdinJob):
         dt = self.silver
         chunks = self._partition_chunks(source)
         totals: dict = {}
-        for i, chunk in enumerate(chunks):
+        for chunk in chunks:
             predicate = self._merge_predicate(keys, chunk)
-            is_last = i == len(chunks) - 1
             sigterm_check()
             merger = dt.merge(
                 source=chunk.to_arrow(),
@@ -961,7 +1039,6 @@ class CubicODSDelta(OdinJob):
                 target_alias="target",
                 error_on_type_mismatch=False,
                 merge_schema=False,
-                commit_properties=self._commit_state(watermark) if is_last else None,
                 streamed_exec=False,
                 max_spill_size=max_spill_size,
                 max_temp_directory_size=max_temp_directory_size,
