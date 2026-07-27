@@ -51,6 +51,7 @@ Steps per run:
 import os
 import re
 import sched
+import shutil
 import tempfile
 import time
 from typing import Iterator
@@ -62,6 +63,7 @@ import psutil
 
 from deltalake import CommitProperties
 from deltalake import DeltaTable
+from deltalake import WriterProperties
 from deltalake import write_deltalake
 from deltalake.exceptions import SchemaMismatchError
 
@@ -106,6 +108,18 @@ MAX_MERGE_RECORDS = 100_000
 
 CDC_OPERS = ("I", "U", "D")
 
+DELTA_WRITER_PROPERTIES = WriterProperties(max_row_group_size=64 * 1024, compression="SNAPPY")
+
+os.environ.setdefault("DELTARS_MAX_CONCURRENCY_TASKS", "4")
+
+# Fraction of system memory the merge's DataFusion session may hold before
+# spilling. Without this delta-rs installs an *unbounded* memory pool. This
+# bounds only the pool-aware operators (joins, sorts, repartitions) —
+# delta-rs's merge barrier buffers outside the pool
+MERGE_MEMORY_FRACTION = 0.33
+# Share of free scratch disk the merge may use for those spill files.
+MERGE_SPILL_DISK_FRACTION = 0.5
+
 # Keys under which each Delta commit records the job's input position in its
 # custom metadata (readable via DeltaTable.history()). This is the source of
 # truth for "where the table is at", independent of the surviving row contents.
@@ -148,6 +162,18 @@ def _default_run_interval() -> int:
 def _long_run_interval() -> int:
     """Return the no-new-data rerun interval for the active instance."""
     return NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_LONG
+
+
+def _merge_spill_limits() -> tuple[int, int]:
+    """
+    Return (max_spill_size, max_temp_directory_size) in bytes for a merge.
+
+    Sized from the live machine rather than hardcoded so the same job behaves on
+    both the small beta instances and the production ones.
+    """
+    memory_bytes = int(psutil.virtual_memory().total * MERGE_MEMORY_FRACTION)
+    disk_bytes = int(shutil.disk_usage(tempfile.gettempdir()).free * MERGE_SPILL_DISK_FRACTION)
+    return memory_bytes, disk_bytes
 
 
 def _connect(path: str, spill_dir: str) -> duckdb.DuckDBPyConnection:
@@ -360,6 +386,9 @@ class CubicODSDelta(OdinJob):
             .execute(sql, [self.history_snapshot, self.history_snapshot])
             .fetch_record_batch(REBUILD_BATCH_SIZE)
         )
+        # A rebuild writes every year/month partition of the table's history in one
+        # pass, so it holds the most concurrent partition writers of any step here;
+        # the capped row group matters more on this path than on the merge.
         write_deltalake(
             self.silver_uri,
             reader,
@@ -367,6 +396,7 @@ class CubicODSDelta(OdinJob):
             schema_mode="overwrite",
             partition_by=self.part_columns or None,
             commit_properties=self._commit_state(INITIAL_WATERMARK),
+            writer_properties=DELTA_WRITER_PROPERTIES,
         )
 
         self.silver = DeltaTable(self.silver_uri)
@@ -506,6 +536,13 @@ class CubicODSDelta(OdinJob):
         if cdc_df.height == 0:
             log.complete(cdc_records_found=0)
             return _long_run_interval()
+        cdc_rows = cdc_df.height
+
+        # The batch is fully materialized in polars now and nothing downstream of
+        # here reads history, but DuckDB is still holding a buffer pool sized at
+        # half of system memory — memory the merge is about to need. Hand it back
+        # before the expensive stages; _db() reopens lazily if anything asks.
+        self._close_db()
 
         assert cdc_df.get_column("header__change_seq").null_count() == 0, (
             f"CDC records for {self.table} contain a null header__change_seq"
@@ -516,6 +553,9 @@ class CubicODSDelta(OdinJob):
 
         keys = self._discover_keys(cdc_df)
         source = self._build_merge_source(cdc_df, keys)
+        # The raw batch holds every CDC record; `source` holds one resolved row per
+        # key. Drop the larger of the two before the merge rather than after it.
+        del cdc_df
         try:
             metrics = self._merge_apply(source, keys, max_seq_processed)
         except SchemaMismatchError as exc:
@@ -524,12 +564,12 @@ class CubicODSDelta(OdinJob):
             ) from exc
 
         self.silver = DeltaTable(self.silver_uri)
-        more_pending = cdc_df.height >= MAX_MERGE_RECORDS
+        more_pending = cdc_rows >= MAX_MERGE_RECORDS
         self.cdc_watermark = max_seq_processed
         self.more_pending = more_pending
 
         log.complete(
-            cdc_records_processed=cdc_df.height,
+            cdc_records_processed=cdc_rows,
             merge_source_rows=source.height,
             final_row_count=delta_row_count(self.silver),
             cdc_watermark=max_seq_processed,
@@ -767,6 +807,13 @@ class CubicODSDelta(OdinJob):
         Each key uses plain equality, except the null-safe ``OR (both NULL)`` form
         on keys that actually carry a null in the batch, required so a null key
         matches its target row instead of duplicating it.
+
+        The "only when a null is present" part is not cosmetic. Under
+        ``streamed_exec=False`` delta-rs rewrites each ``target.k = source.k`` into
+        ``target.k BETWEEN min(source.k) AND max(source.k)`` and pushes it into file
+        skipping, but it only recognises simple equality — the ``OR (both NULL)``
+        form generalizes to nothing and that key stops contributing any pruning.
+        Emitting it unconditionally would quietly give up the key-range skipping.
         """
         key_pred = " AND ".join(
             f'target."{k}" = source."{k}"'
@@ -880,6 +927,7 @@ class CubicODSDelta(OdinJob):
         insert_set = {col: f'source."{col}"' for col in target_cols if col in source_cols}
 
         sigterm_check()
+        max_spill_size, max_temp_directory_size = _merge_spill_limits()
         merger = self.silver.merge(
             source=source.to_arrow(),
             predicate=predicate,
@@ -889,6 +937,9 @@ class CubicODSDelta(OdinJob):
             merge_schema=False,
             commit_properties=self._commit_state(watermark),
             streamed_exec=False,
+            max_spill_size=max_spill_size,
+            max_temp_directory_size=max_temp_directory_size,
+            writer_properties=DELTA_WRITER_PROPERTIES,
         )
         result_stats = (
             merger.when_matched_delete(predicate="source.odin_resolved_oper = 'D'")
