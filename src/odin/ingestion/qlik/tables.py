@@ -192,6 +192,7 @@ CUBIC_ODS_DELTA_TABLES_GAMMA = [
 # Tables for the Odin instance named "delta" (not to be confused with the Delta
 # table format these lists configure).
 CUBIC_ODS_DELTA_TABLES_DELTA = [
+    "EDW.UNSETTLED_CRDB_ACQ_CONF",
     "EDW.USE_TRANSACTION",
 ]
 
