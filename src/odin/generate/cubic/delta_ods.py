@@ -51,7 +51,6 @@ Steps per run:
 import os
 import re
 import sched
-import shutil
 import tempfile
 import time
 from typing import Iterator
@@ -113,14 +112,6 @@ DELTA_WRITER_PROPERTIES = WriterProperties(max_row_group_size=64 * 1024, compres
 
 os.environ.setdefault("DELTARS_MAX_CONCURRENCY_TASKS", "4")
 
-# Fraction of system memory the merge's DataFusion session may hold before
-# spilling. Without this delta-rs installs an *unbounded* memory pool. This
-# bounds only the pool-aware operators (joins, sorts, repartitions) —
-# delta-rs's merge barrier buffers outside the pool
-MERGE_MEMORY_FRACTION = 0.33
-# Share of free scratch disk the merge may use for those spill files.
-MERGE_SPILL_DISK_FRACTION = 0.5
-
 # Keys under which each Delta commit records the job's input position in its
 # custom metadata (readable via DeltaTable.history()). This is the source of
 # truth for "where the table is at", independent of the surviving row contents.
@@ -167,18 +158,6 @@ def _default_run_interval() -> int:
 def _long_run_interval() -> int:
     """Return the no-new-data rerun interval for the active instance."""
     return NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_LONG
-
-
-def _merge_spill_limits() -> tuple[int, int]:
-    """
-    Return (max_spill_size, max_temp_directory_size) in bytes for a merge.
-
-    Sized from the live machine rather than hardcoded so the same job behaves on
-    both the small beta instances and the production ones.
-    """
-    memory_bytes = int(psutil.virtual_memory().total * MERGE_MEMORY_FRACTION)
-    disk_bytes = int(shutil.disk_usage(tempfile.gettempdir()).free * MERGE_SPILL_DISK_FRACTION)
-    return memory_bytes, disk_bytes
 
 
 def _connect(path: str, spill_dir: str) -> duckdb.DuckDBPyConnection:
@@ -1022,7 +1001,6 @@ class CubicODSDelta(OdinJob):
         }
         insert_set = {col: f'source."{col}"' for col in target_cols if col in source_cols}
 
-        max_spill_size, max_temp_directory_size = _merge_spill_limits()
         # Merge one partition at a time so delta-rs only rewrites a single
         # partition's files per MERGE, bounding peak memory to the largest single
         # partition rather than every touched partition's rewrite at once.
@@ -1032,6 +1010,7 @@ class CubicODSDelta(OdinJob):
         for chunk in chunks:
             predicate = self._merge_predicate(keys, chunk)
             sigterm_check()
+            log.add_metadata(step=f"merging_chunk:{len(chunk)}")
             merger = dt.merge(
                 source=chunk.to_arrow(),
                 predicate=predicate,
@@ -1040,8 +1019,6 @@ class CubicODSDelta(OdinJob):
                 error_on_type_mismatch=False,
                 merge_schema=False,
                 streamed_exec=False,
-                max_spill_size=max_spill_size,
-                max_temp_directory_size=max_temp_directory_size,
                 writer_properties=DELTA_WRITER_PROPERTIES,
             )
             stats = (
@@ -1059,6 +1036,7 @@ class CubicODSDelta(OdinJob):
             )
             for k, v in stats.items():
                 totals[k] = totals.get(k, 0) + v if isinstance(v, (int, float)) else v
+            log.add_metadata(step="reloading_table")
             # reload so the next chunk merges against the freshly committed state
             dt = DeltaTable(self.silver_uri)
         self.silver = dt
