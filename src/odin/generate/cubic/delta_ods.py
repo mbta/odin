@@ -1010,6 +1010,7 @@ class CubicODSDelta(OdinJob):
         for chunk in chunks:
             predicate = self._merge_predicate(keys, chunk)
             sigterm_check()
+            log.add_metadata(step=f"merging_chunk:{len(chunk)}")
             merger = dt.merge(
                 source=chunk.to_arrow(),
                 predicate=predicate,
@@ -1035,6 +1036,7 @@ class CubicODSDelta(OdinJob):
             )
             for k, v in stats.items():
                 totals[k] = totals.get(k, 0) + v if isinstance(v, (int, float)) else v
+            log.add_metadata(step="reloading_table")
             # reload so the next chunk merges against the freshly committed state
             dt = DeltaTable(self.silver_uri)
         self.silver = dt
