@@ -117,9 +117,7 @@ def _fmt_count(value: Any) -> str:
     return f"{value:,}" if isinstance(value, int) else str(value)
 
 
-def fetch_group(
-    prefix: str, tmpdir: str, only: Optional[set[str]] = None
-) -> dict[str, dict]:
+def fetch_group(prefix: str, tmpdir: str, only: Optional[set[str]] = None) -> dict[str, dict]:
     """
     Download status objects under `prefix`; return {table: payload}
     """
@@ -425,9 +423,7 @@ def main() -> int:
     # Single table: fetch just that table's object, not the whole group.
     if args.table:
         with tempfile.TemporaryDirectory() as tmpdir:
-            payloads = fetch_group(
-                GROUPS[args.group]["prefix"], tmpdir, only={args.table}
-            )
+            payloads = fetch_group(GROUPS[args.group]["prefix"], tmpdir, only={args.table})
         payload = payloads.get(args.table, {})
         if args.json:
             print(json.dumps(payload, indent=2))
