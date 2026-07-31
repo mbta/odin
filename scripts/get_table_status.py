@@ -324,7 +324,8 @@ def print_overall(
     lag_seconds: float,
     detailed: bool = False,
 ) -> int:
-    """Print the summary for `groups`; return the count of not-OK tables.
+    """
+    Print the summary for `groups`; return the count of not-OK tables.
 
     When `detailed`, every table gets a per-table line (OK tables included, with a
     key-info summary); otherwise only not-OK tables are listed.
