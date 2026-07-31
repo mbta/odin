@@ -81,6 +81,9 @@ def start():
     if odin_instance in ["gamma", "delta"]:
         schedule_delta_ods(schedule)
 
+    if odin_instance in ["gamma"]:
+        schedule_cubic_archive_qlik(schedule)
+
     if odin_instance in ["alpha"]:
         schedule_restricted_afc_archive(schedule)
         # schedule_tableau_upload(schedule)
