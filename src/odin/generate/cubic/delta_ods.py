@@ -106,6 +106,7 @@ NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 
 REBUILD_BATCH_SIZE = 10_000
 MAX_MERGE_RECORDS = 150_000
+MAX_CHUNK_RECORDS = 25_000
 
 CDC_OPERS = ("I", "U", "D")
 
@@ -791,8 +792,9 @@ class CubicODSDelta(OdinJob):
         for unit in units:
             unit_ranges = self._unit_ranges(ranges, unit)
             overlapping = self._overlapping_files(unit_ranges)
-            recluster_threshold = max(RECLUSTER_MIN_OVERLAPPING_FILES,
-                                      math.ceil(2 * math.sqrt(unit_ranges.height)))
+            recluster_threshold = max(
+                RECLUSTER_MIN_OVERLAPPING_FILES, math.ceil(2 * math.sqrt(unit_ranges.height))
+            )
             if overlapping is not None and overlapping >= recluster_threshold:
                 todo.append((unit, unit_ranges.height, overlapping))
 
@@ -1099,18 +1101,40 @@ class CubicODSDelta(OdinJob):
         )
         return f" AND ({pair_sql})"
 
-    def _partition_chunks(self, source: pl.DataFrame) -> list[pl.DataFrame]:
+    def _partition_chunks(self, source: pl.DataFrame, keys: list[str]) -> list[pl.DataFrame]:
         """
-        Split the merge source into one frame per (odin_year, odin_month) partition.
+        Split the merge source into chunks small enough to merge one at a time.
 
-        Each chunk is merged on its own so delta-rs rewrites only one partition's
-        files per MERGE (see _merge_apply). Non-dated tables lack the partition
-        columns and merge as a single chunk; null-edw rows share the (0, 0) chunk,
-        which _partition_constraint leaves unpruned.
+        Two cuts, in order. First by (odin_year, odin_month), so delta-rs rewrites
+        only one partition's files per MERGE; non-dated tables lack the partition
+        columns and start as one chunk, and null-edw rows share the (0, 0) chunk,
+        which _partition_constraint leaves unpruned. Then any chunk still over
+        MAX_CHUNK_RECORDS is cut again into contiguous runs of that size, sorted
+        by key columns.
+
+        The rationale for the latter sort is to reduce the number of files touched
+        by each chunk merge (where files have been sorted by key via z_order().)
         """
-        if "odin_year" not in source.columns or "odin_month" not in source.columns:
-            return [source]
-        return source.partition_by(["odin_year", "odin_month"])
+        chunks = (
+            source.partition_by(["odin_year", "odin_month"])
+            if "odin_year" in source.columns and "odin_month" in source.columns
+            else [source]
+        )
+        if all(chunk.height <= MAX_CHUNK_RECORDS for chunk in chunks):
+            return chunks
+        else:
+            sliced: list[pl.DataFrame] = []
+            for chunk in chunks:
+                if chunk.height <= MAX_CHUNK_RECORDS:
+                    sliced.append(chunk)
+                    continue
+                ordered = chunk.sort(keys)
+                sliced.extend(
+                    ordered.slice(offset, MAX_CHUNK_RECORDS)
+                    for offset in range(0, ordered.height, MAX_CHUNK_RECORDS)
+                )
+            assert sum(map(len, chunks)) == sum(map(len, sliced))
+            return sliced
 
     def _merge_apply(self, source: pl.DataFrame, keys: list[str], watermark: str) -> dict:
         """
@@ -1173,7 +1197,7 @@ class CubicODSDelta(OdinJob):
         # Merge one partition at a time so delta-rs only rewrites a single
         # partition's files per MERGE, bounding peak memory.
         dt = self.silver
-        chunks = self._partition_chunks(source)
+        chunks = self._partition_chunks(source, keys)
         totals: dict = {}
         for chunk in chunks:
             predicate = self._merge_predicate(keys, chunk)
@@ -1208,7 +1232,7 @@ class CubicODSDelta(OdinJob):
             dt = DeltaTable(self.silver_uri)
         self.silver = dt
 
-        log.complete()
+        log.complete(chunks=len(chunks))
         return totals
 
 
