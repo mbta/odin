@@ -48,6 +48,7 @@ Steps per run:
      silver watermark into the silver table.
 """
 
+import math
 import os
 import re
 import sched
@@ -112,26 +113,16 @@ DELTA_WRITER_PROPERTIES = WriterProperties(max_row_group_size=64 * 1024, compres
 
 os.environ.setdefault("DELTARS_MAX_CONCURRENCY_TASKS", "4")
 
-# Cap on the size of one silver data file (delta-rs otherwise defaults to 100MB).
-# A MERGE rewrites every file it touches in full, so file size *is* the unit of
-# write amplification: a partition stored as one large file has to be rewritten
-# whole every time. Capping it splits large partitions into several files, so a
-# merge rewrites only the ones actually holding changes.
-#
-# It cannot manufacture small files: a partition whose data is under the cap still
-# writes as a single file, so this only bounds the large end. Splitting only pays
-# once the files are also *ordered* by key — see _recluster_inserted_partitions.
 TARGET_FILE_SIZE_PROPERTY = "delta.targetFileSize"
 TARGET_FILE_SIZE_BYTES = 32 * 1024 * 1024
 
-# Reclustering (z-order) thresholds. A partition is re-sorted by primary key only
-# when its files' key ranges have drifted far enough to cost real scan volume:
-# every overlapping file is one the merge must read whether or not it holds a
-# match. Below these thresholds a rewrite costs more than the scan it saves.
-RECLUSTER_MIN_FILES = 2  # one file has nothing to order against
+# Reclustering (z-order) trigger. A unit — one partition, or the whole table when
+# unpartitioned — is re-sorted by primary key once enough of its files carry a key
+# range overlapping an earlier file's: each of those is a file the merge must read
+# whether or not it holds a match.
 RECLUSTER_MIN_OVERLAPPING_FILES = 4
-# Bins within one partition are rewritten sequentially: this is background
-# maintenance and peak memory matters more here than wall time.
+# Bins within one unit are rewritten sequentially: this is background maintenance
+# and peak memory matters more here than wall time.
 RECLUSTER_MAX_CONCURRENT_TASKS = 1
 
 # Keys under which each Delta commit records the job's input position in its
@@ -180,6 +171,11 @@ def _default_run_interval() -> int:
 def _long_run_interval() -> int:
     """Return the no-new-data rerun interval for the active instance."""
     return NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_LONG
+
+
+def _unit_label(unit: tuple[int, int] | None) -> str:
+    """Log label for a reclustering unit: a partition, or the whole table."""
+    return "table" if unit is None else f"{unit[0]:04d}-{unit[1]:02d}"
 
 
 def _connect(path: str, spill_dir: str) -> duckdb.DuckDBPyConnection:
@@ -278,10 +274,7 @@ class CubicODSDelta(OdinJob):
         Put delta.targetFileSize on silver when it is missing or stale.
 
         An explicit alter is required rather than just passing ``configuration`` to
-        write_deltalake: that argument only takes effect when the table is *created*,
-        and leaves an existing table's properties untouched even on a full overwrite.
-        Tables built before this setting existed would otherwise keep delta-rs's 100MB
-        default forever, since these tables rebuild only when the snapshot rolls.
+        write_deltalake: that argument only takes effect when the table is *created*.
 
         Committing only on a mismatch makes this a no-op on every run after the first.
         """
@@ -471,9 +464,6 @@ class CubicODSDelta(OdinJob):
             partition_by=self.part_columns or None,
             commit_properties=self._commit_state(INITIAL_WATERMARK),
             writer_properties=DELTA_WRITER_PROPERTIES,
-            # configuration only lands when this write *creates* the table; an
-            # existing table keeps its own properties (_ensure_target_file_size
-            # covers that case). target_file_size applies to this write either way.
             configuration={TARGET_FILE_SIZE_PROPERTY: str(TARGET_FILE_SIZE_BYTES)},
             target_file_size=TARGET_FILE_SIZE_BYTES,
         )
@@ -649,14 +639,7 @@ class CubicODSDelta(OdinJob):
         self.cdc_watermark = max_seq_processed
         self.more_pending = more_pending
 
-        # After the watermark is durable, so an interrupted or failed recluster
-        # costs layout quality and nothing else. Maintenance must never fail a
-        # merge that already committed.
-        try:
-            recluster_metrics = self._recluster_inserted_partitions(source, keys)
-        except Exception as exception:
-            ProcessLog("delta_recluster", table=self.table).failed(exception)
-            recluster_metrics = {"recluster_failed": True}
+        recluster_metrics = self._recluster_inserted_partitions(source, keys)
 
         log.complete(
             cdc_records_processed=cdc_rows,
@@ -710,7 +693,9 @@ class CubicODSDelta(OdinJob):
 
     def _add_action_key_ranges(self, key: str) -> pl.DataFrame | None:
         """
-        Return (odin_year, odin_month, min_key, max_key) per active silver file.
+        Return (min_key, max_key) per active silver file.
+
+        Partition columns are included when the table has them.
 
         Read from the Delta log's add actions, so this costs no data scan — the
         per-file key statistics are already in the commit log.
@@ -718,12 +703,13 @@ class CubicODSDelta(OdinJob):
         :return: one row per active file, or None if `key` carries no statistics
         """
         assert self.silver is not None
-        want = {
-            "partition.odin_year": "odin_year",
-            "partition.odin_month": "odin_month",
-            f"min.{key}": "min_key",
-            f"max.{key}": "max_key",
-        }
+        want = {f"min.{key}": "min_key", f"max.{key}": "max_key"}
+        if self.part_columns:
+            want = {
+                "partition.odin_year": "odin_year",
+                "partition.odin_month": "odin_month",
+                **want,
+            }
         actions = pl.from_arrow(pa.table(self.silver.get_add_actions(flatten=True)))
         assert isinstance(actions, pl.DataFrame)
         if actions.height == 0 or not set(want).issubset(actions.columns):
@@ -758,99 +744,80 @@ class CubicODSDelta(OdinJob):
             running_max = max_key if running_max is None else max(running_max, max_key)
         return overlapping
 
+    def _unit_ranges(self, ranges: pl.DataFrame, unit: tuple[int, int] | None) -> pl.DataFrame:
+        """Narrow per-file key ranges to one reclustering unit (None = whole table)."""
+        if unit is None:
+            return ranges.select("min_key", "max_key")
+        year, month = unit
+        return ranges.filter(
+            (pl.col("odin_year") == year) & (pl.col("odin_month") == month)
+        ).select("min_key", "max_key")
+
     def _recluster_inserted_partitions(self, source: pl.DataFrame, keys: list[str]) -> dict:
         """
-        Re-sort by primary key any partition this batch's inserts disordered.
-
-        Merges do not write key-ordered output. A matched update rewrites its file
-        with the same key set, so the file's range is unchanged; a delete only
-        shrinks it. **Inserts are the only operation that widens a file's range** —
-        an unmatched insert is written into whatever file the writer is filling
-        rather than the key-appropriate one — so the partitions needing attention
-        are exactly the partitions this batch inserted into. Insert-resolved rows
-        are asserted to carry ``edw_inserted_dtm`` (see _merge_apply), so their
-        partitions are already known in memory and this needs no extra state.
+        Re-sort by primary key whatever this batch's inserts disordered.
 
         Ordering matters because file skipping is file-granular: with
         ``streamed_exec=False`` delta-rs derives ``target.k BETWEEN min(source.k)
         AND max(source.k)`` from the merge predicate and applies it to file
         selection, which prunes only when each file covers a narrow key range.
-
-        This is maintenance, not correctness. ``z_order`` is a pure layout
-        operation — same rows, statistics recomputed from what was actually
-        written — so a pass that reorders differently than expected costs scan
-        volume, never a missed target row. The overlap counts are logged before
-        and after for exactly that reason: they are how a regression here shows up.
-
-        Unpartitioned tables are skipped: reclustering one would be an unbounded
-        whole-table rewrite, and they get no partition pruning to protect anyway.
         """
-        if not self.part_columns or self.silver is None or "odin_year" not in source.columns:
+        if self.silver is None or source.filter(pl.col("odin_resolved_oper") == "I").height == 0:
             return {}
-        inserted = (
-            source.filter(pl.col("odin_resolved_oper") == "I")
-            .select("odin_year", "odin_month")
-            .unique()
-            .sort("odin_year", "odin_month")
-        )
-        if inserted.height == 0:
-            return {}
+        partitioned = bool(self.part_columns) and "odin_year" in source.columns
+        units: list[tuple[int, int] | None]
+        if partitioned:
+            units = list(
+                source.filter(pl.col("odin_resolved_oper") == "I")
+                .select("odin_year", "odin_month")
+                .unique()
+                .sort("odin_year", "odin_month")
+                .iter_rows()
+            )
+        else:
+            units = [None]
 
         key = keys[0]
-        log = ProcessLog(
-            "delta_recluster", table=self.table, key=key, partitions_inserted=inserted.height
-        )
+        log = ProcessLog("delta_recluster", table=self.table, key=key, units_inserted=len(units))
         ranges = self._add_action_key_ranges(key)
         if ranges is None:
             log.complete(reclustered=0, skipped_no_key_stats=True)
             return {"recluster_no_key_stats": True}
 
-        # Measured once, up front: z-ordering one partition does not move another's
-        # files, so the pre-pass statistics stay valid for every partition here and
-        # the log is replayed once instead of per partition.
-        todo: list[tuple[int, int, int, int]] = []
-        for year, month in inserted.iter_rows():
-            part = ranges.filter(
-                (pl.col("odin_year") == year) & (pl.col("odin_month") == month)
-            ).select("min_key", "max_key")
-            if part.height < RECLUSTER_MIN_FILES:
-                continue
-            overlapping = self._overlapping_files(part)
-            if overlapping is not None and overlapping >= RECLUSTER_MIN_OVERLAPPING_FILES:
-                todo.append((year, month, part.height, overlapping))
+        # Measured once, up front: z-ordering one unit does not move another's files,
+        # so the pre-pass statistics stay valid for every unit here and the log is
+        # replayed once instead of per unit.
+        todo: list[tuple[tuple[int, int] | None, int, int]] = []
+        for unit in units:
+            unit_ranges = self._unit_ranges(ranges, unit)
+            overlapping = self._overlapping_files(unit_ranges)
+            recluster_threshold = max(RECLUSTER_MIN_OVERLAPPING_FILES,
+                                      math.ceil(2 * math.sqrt(unit_ranges.height)))
+            if overlapping is not None and overlapping >= recluster_threshold:
+                todo.append((unit, unit_ranges.height, overlapping))
 
-        for year, month, files, overlapping in todo:
-            sigterm_check()
-            log.add_metadata(step=f"z_order:{year:04d}-{month:02d}:files={files}")
+        for unit, _, _ in todo:
             self.silver.optimize.z_order(
                 [key],
-                partition_filters=[
-                    ("odin_year", "=", str(year)),
-                    ("odin_month", "=", str(month)),
-                ],
+                partition_filters=None
+                if unit is None
+                else [("odin_year", "=", str(unit[0])), ("odin_month", "=", str(unit[1]))],
                 target_size=TARGET_FILE_SIZE_BYTES,
                 max_concurrent_tasks=RECLUSTER_MAX_CONCURRENT_TASKS,
                 writer_properties=DELTA_WRITER_PROPERTIES,
             )
             self.silver = DeltaTable(self.silver_uri)
 
-        metrics: dict = {"recluster_partitions": len(todo)}
+        metrics: dict = {"recluster_units": len(todo)}
         if todo:
             metrics["recluster_before"] = ",".join(
-                f"{y:04d}-{m:02d}={o}/{f}" for y, m, f, o in todo
+                f"{_unit_label(unit)}={overlapping}/{files}" for unit, files, overlapping in todo
             )
             after = self._add_action_key_ranges(key)
             if after is not None:
                 metrics["recluster_after"] = ",".join(
-                    f"{y:04d}-{m:02d}="
-                    + str(
-                        self._overlapping_files(
-                            after.filter(
-                                (pl.col("odin_year") == y) & (pl.col("odin_month") == m)
-                            ).select("min_key", "max_key")
-                        )
-                    )
-                    for y, m, _, _ in todo
+                    f"{_unit_label(unit)}={self._overlapping_files(self._unit_ranges(after, unit))}"
+                    for unit, _, _ in todo
                 )
         log.complete(**metrics)
         return metrics
@@ -1126,12 +1093,6 @@ class CubicODSDelta(OdinJob):
         )
         if not pairs:
             return ""
-        # Literals are cast to INT (Int32) to match the partition columns' type
-        # exactly: bare integer literals parse as Int64, and while DataFusion's
-        # planner coerces that, delta-rs also evaluates this predicate in strict
-        # non-coercing paths (kernel data skipping, concurrent-commit conflict
-        # checks) where an Int32/Int64 comparison is a hard error
-        # ("Invalid comparison operation: Int32 <= Int64").
         pair_sql = " OR ".join(
             f'(target."odin_year" = CAST({y} AS INT) AND target."odin_month" = CAST({m} AS INT))'
             for y, m in pairs
@@ -1175,11 +1136,6 @@ class CubicODSDelta(OdinJob):
             f"primary key columns {sorted(missing)} absent from silver table for {self.table}"
         )
 
-        # On partitioned tables, every "I"-resolved row (replaced or inserted
-        # with verbatim partition values) must carry edw_inserted_dtm: without
-        # it the row would land in the odin_year=0 partition, which
-        # partition-pruned merge scans never revisit. "U" rows are exempt —
-        # they keep the target's partition (see update_set below).
         if "odin_year" in source.columns:
             inserts = source.filter(pl.col("odin_resolved_oper") == "I")
             null_edw = inserts.get_column("edw_inserted_dtm").null_count()
@@ -1189,14 +1145,6 @@ class CubicODSDelta(OdinJob):
                 "partition, which partition-pruned merges never revisit"
             )
 
-        # "U" rows (sparse update): watermark columns verbatim from the
-        # resolved CDC row; data columns coalesce so untouched target values
-        # survive. Partition columns follow edw_inserted_dtm: when no CDC
-        # record in the batch carried it for a key, source odin_year/odin_month
-        # degrade to 0 while the coalesce keeps the target's edw_inserted_dtm —
-        # so the target's partition values must be kept too, or the row would
-        # silently move to the 0/0 partition and out of partition-pruned
-        # query results.
         passthrough = {"odin_snapshot", "header__change_seq"}
         partition_cols = {"odin_year", "odin_month"}
         source_cols = set(source.columns)
@@ -1207,32 +1155,28 @@ class CubicODSDelta(OdinJob):
             if col in passthrough:
                 update_set[col] = f'source."{col}"'
             elif col in partition_cols:
+                # Only update partition_cols (odin_year, odin_month) if there is
+                # a non-null edw_inserted_dtm from which they could be derived,
+                # otherwise retain the previous values.
                 update_set[col] = (
                     'CASE WHEN source."edw_inserted_dtm" IS NOT NULL '
                     f'THEN source."{col}" ELSE target."{col}" END'
                 )
             else:
                 update_set[col] = f'COALESCE(source."{col}", target."{col}")'
-        # "I" rows replace a matched row wholesale (delete-then-reinsert within
-        # one batch, or a duplicate/replayed insert — the spec's idempotent
-        # upsert): the fold is anchored at the insert image, so a NULL in the
-        # source means NULL — coalescing against the target would resurrect
-        # pre-reset values. Partition columns are safe verbatim per the assert
-        # above.
+
         replace_set = {
             col: f'source."{col}"' for col in target_cols if col in source_cols and col not in keys
         }
         insert_set = {col: f'source."{col}"' for col in target_cols if col in source_cols}
 
         # Merge one partition at a time so delta-rs only rewrites a single
-        # partition's files per MERGE, bounding peak memory to the largest single
-        # partition rather than every touched partition's rewrite at once.
+        # partition's files per MERGE, bounding peak memory.
         dt = self.silver
         chunks = self._partition_chunks(source)
         totals: dict = {}
         for chunk in chunks:
             predicate = self._merge_predicate(keys, chunk)
-            sigterm_check()
             log.add_metadata(step=f"merging_chunk:{len(chunk)}")
             merger = dt.merge(
                 source=chunk.to_arrow(),

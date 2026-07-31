@@ -1490,12 +1490,20 @@ _RECLUSTER_FIELDS: "list[pa.Field[Any]]" = [
 RECLUSTER_SCHEMA = pa.schema(_RECLUSTER_FIELDS)
 
 
-def write_silver_files(uri: str, batches: list[list[tuple[int, int]]]) -> None:
+# Eight files, every one spanning nearly the whole key range, so seven overlap a
+# file ordering before them — past the threshold for a unit of this size.
+WIDE_RANGE_FILES = [[(i, 1), (101 - i, 1)] for i in range(1, 9)]
+WIDE_RANGE_KEYS = sorted(k for batch in WIDE_RANGE_FILES for k, _ in batch)
+
+
+def write_silver_files(
+    uri: str, batches: list[list[tuple[int, int]]], partitioned: bool = True
+) -> None:
     """
     Write one silver data file per batch of (txn_id, month) pairs.
 
-    Each append commits its own file, which is how a partition ends up holding
-    several files with overlapping key ranges.
+    Each append commits its own file, which is how a unit ends up holding several
+    files with overlapping key ranges.
     """
     for index, batch in enumerate(batches):
         table = pa.Table.from_pylist(
@@ -1509,12 +1517,18 @@ def write_silver_files(uri: str, batches: list[list[tuple[int, int]]]) -> None:
             uri,
             table,
             mode="overwrite" if index == 0 else "append",
-            partition_by=["odin_year", "odin_month"],
+            partition_by=["odin_year", "odin_month"] if partitioned else None,
         )
 
 
-def recluster_source(partitions: list[tuple[int, int]], oper: str = "I") -> pl.DataFrame:
-    """Minimal merge source naming the partitions its resolved rows land in."""
+def recluster_source(
+    partitions: list[tuple[int, int]] | None = None, oper: str = "I"
+) -> pl.DataFrame:
+    """Minimal merge source, naming the partitions its resolved rows land in."""
+    if partitions is None:  # unpartitioned table: no partition columns to carry
+        return pl.DataFrame(
+            {"odin_resolved_oper": [oper]}, schema={"odin_resolved_oper": pl.String}
+        )
     return pl.DataFrame(
         {
             "odin_resolved_oper": [oper] * len(partitions),
@@ -1579,33 +1593,23 @@ def test_recluster_reorders_disordered_partition(job):
     """
     pipeline, _, _, _ = job
     pipeline.part_columns = ["odin_year", "odin_month"]
-    # Five files, every one spanning the whole key range: four overlap.
-    write_silver_files(
-        pipeline.silver_uri,
-        [
-            [(1, 1), (100, 1)],
-            [(2, 1), (99, 1)],
-            [(3, 1), (98, 1)],
-            [(4, 1), (97, 1)],
-            [(5, 1), (96, 1)],
-        ],
-    )
+    write_silver_files(pipeline.silver_uri, WIDE_RANGE_FILES)
     pipeline.silver = DeltaTable(pipeline.silver_uri)
     before = pipeline._overlapping_files(
         pipeline._add_action_key_ranges("txn_id").select("min_key", "max_key")
     )
-    assert before >= delta_ods.RECLUSTER_MIN_OVERLAPPING_FILES
+    assert before >= delta_ods._recluster_threshold(len(WIDE_RANGE_FILES))
 
     metrics = pipeline._recluster_inserted_partitions(recluster_source([(2025, 1)]), ["txn_id"])
 
-    assert metrics["recluster_partitions"] == 1
+    assert metrics["recluster_units"] == 1
     after = pipeline._overlapping_files(
         pipeline._add_action_key_ranges("txn_id").select("min_key", "max_key")
     )
     assert after == 0
     # Layout only: the same rows, now in key order.
     out = DeltaTable(pipeline.silver_uri).to_pyarrow_table().column("txn_id").to_pylist()
-    assert out == [1, 2, 3, 4, 5, 96, 97, 98, 99, 100]
+    assert out == WIDE_RANGE_KEYS
 
 
 def test_recluster_leaves_ordered_partition_alone(job):
@@ -1620,7 +1624,7 @@ def test_recluster_leaves_ordered_partition_alone(job):
 
     metrics = pipeline._recluster_inserted_partitions(recluster_source([(2025, 1)]), ["txn_id"])
 
-    assert metrics["recluster_partitions"] == 0
+    assert metrics["recluster_units"] == 0
     assert DeltaTable(pipeline.silver_uri).version() == version  # no rewrite committed
 
 
@@ -1649,14 +1653,36 @@ def test_recluster_skips_partitions_without_inserts(job):
     assert DeltaTable(pipeline.silver_uri).version() == version
 
 
-def test_recluster_skips_unpartitioned_table(job):
-    """An unpartitioned table would be an unbounded whole-table rewrite."""
-    pipeline, write_history, _, _ = job
-    write_history(history_rows([{"txn_id": 1, "amount": 10, "header__change_oper": "L"}]))
-    pipeline._rebuild_silver()
-    pipeline.part_columns = []
+def test_recluster_sorts_unpartitioned_table_as_one_unit(job):
+    """
+    With no partition columns the whole table is the unit, and it still reclusters.
 
-    assert pipeline._recluster_inserted_partitions(recluster_source([(2025, 1)]), ["txn_id"]) == {}
+    An unpartitioned table needs this more than a partitioned one: the merge has no
+    partition constraint, so the key range is the only thing that can skip a file.
+    """
+    pipeline, _, _, _ = job
+    pipeline.part_columns = []
+    write_silver_files(pipeline.silver_uri, WIDE_RANGE_FILES, partitioned=False)
+    pipeline.silver = DeltaTable(pipeline.silver_uri)
+
+    metrics = pipeline._recluster_inserted_partitions(recluster_source(), ["txn_id"])
+
+    assert metrics["recluster_units"] == 1
+    assert metrics["recluster_before"].startswith("table=")
+    assert pipeline._overlapping_files(pipeline._add_action_key_ranges("txn_id")) == 0
+    out = DeltaTable(pipeline.silver_uri).to_pyarrow_table().column("txn_id").to_pylist()
+    assert out == WIDE_RANGE_KEYS
+
+
+def test_recluster_threshold_scales_with_file_count():
+    """Bigger units need proportionally more damage before a rewrite repays itself."""
+    # Small units keep the floor, and can never reach it: overlap tops out at N-1.
+    assert delta_ods._recluster_threshold(1) == 4
+    assert delta_ods._recluster_threshold(4) == 4
+    # Past that the 2*sqrt(N) break-even governs, so large units recluster rarely
+    # rather than never.
+    assert delta_ods._recluster_threshold(100) == 20
+    assert delta_ods._recluster_threshold(2500) == 100
 
 
 def test_recluster_reports_missing_key_statistics(job):
