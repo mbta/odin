@@ -109,7 +109,7 @@ TABLE_MANIFEST = {
     "EDW.RIDER_CLASS_DIMENSION": ["alpha", "alpha", None],
     "EDW.RIDE_TYPE_DIMENSION": ["alpha", "alpha", None],
     "EDW.ROUTE_DIMENSION": ["alpha", "alpha", None],
-    "EDW.SALE_TRANSACTION": ["alpha", None, "gamma"],
+    "EDW.SALE_TRANSACTION": ["gamma", None, "gamma"],
     "EDW.SALES_CHANNEL_DIMENSION": ["alpha", "alpha", None],
     "EDW.SALES_SUMMARY_BY_DAY": ["alpha", "alpha", None],
     "EDW.SALE_TXN_PAYMENT": ["alpha", "alpha", None],
@@ -136,7 +136,7 @@ TABLE_MANIFEST = {
     "EDW.TXN_CHANNEL_MAP": ["alpha", "alpha", None],
     "EDW.TXN_STATUS_DIMENSION": ["alpha", "alpha", None],
     "EDW.UNSETTLED_CCA_CASH_COUNT": ["alpha", "alpha", None],
-    "EDW.UNSETTLED_CRDB_ACQ_CONF": ["alpha", None, "delta"],
+    "EDW.UNSETTLED_CRDB_ACQ_CONF": ["delta", None, "delta"],
     "EDW.UNSETTLED_CRDB_CHGBK": ["alpha", "alpha", None],
     "EDW.UNSETTLED_CRDB_SYS_CONF": ["alpha", "alpha", None],
     "EDW.UNSETTLED_DEVICE_CASH_STC": ["alpha", "alpha", None],
@@ -144,7 +144,7 @@ TABLE_MANIFEST = {
     "EDW.UNSETTLED_PATRON_ORDER": ["alpha", "alpha", None],
     "EDW.UNSETTLED_SALE": ["alpha", "alpha", None],
     "EDW.UNSETTLED_USE": ["alpha", "alpha", None],
-    "EDW.USE_TRANSACTION": ["alpha", None, "delta"],
+    "EDW.USE_TRANSACTION": ["delta", None, "delta"],
     "EDW.VEHICLE_TRIP": ["alpha", "alpha", None],
 }
 
