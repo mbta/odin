@@ -19,6 +19,7 @@ import pytest
 
 from deltalake import DeltaTable, write_deltalake
 
+from odin.generate.cubic import delta_ods
 from odin.generate.cubic.delta_ods import CubicODSDelta
 
 
@@ -1474,3 +1475,412 @@ def test_merge_cdc_quotes_reserved_word_columns(job):
     out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table()).sort("txn_id")
     assert out.get_column("txn_id").to_list() == [1, 2]
     assert out.get_column("order").to_list() == ["b", "c"]
+
+
+# --- File layout: target file size, key order, reclustering -------------------
+
+# Silver shape used by the reclustering tests: a key column plus the partition
+# columns, which is all the layout logic looks at.
+_RECLUSTER_FIELDS: "list[pa.Field[Any]]" = [
+    pa.field("txn_id", pa.int64()),
+    pa.field("amount", pa.int64()),
+    pa.field("odin_year", pa.int32()),
+    pa.field("odin_month", pa.int32()),
+]
+RECLUSTER_SCHEMA = pa.schema(_RECLUSTER_FIELDS)
+
+
+# Eight files, every one spanning nearly the whole key range, so seven overlap a
+# file ordering before them — past the threshold for a unit of this size.
+WIDE_RANGE_FILES = [[(i, 1), (101 - i, 1)] for i in range(1, 9)]
+WIDE_RANGE_KEYS = sorted(k for batch in WIDE_RANGE_FILES for k, _ in batch)
+
+
+def write_silver_files(
+    uri: str, batches: list[list[tuple[int, int]]], partitioned: bool = True
+) -> None:
+    """
+    Write one silver data file per batch of (txn_id, month) pairs.
+
+    Each append commits its own file, which is how a unit ends up holding several
+    files with overlapping key ranges.
+    """
+    for index, batch in enumerate(batches):
+        table = pa.Table.from_pylist(
+            [
+                {"txn_id": txn_id, "amount": txn_id, "odin_year": 2025, "odin_month": month}
+                for txn_id, month in batch
+            ],
+            schema=RECLUSTER_SCHEMA,
+        )
+        write_deltalake(
+            uri,
+            table,
+            mode="overwrite" if index == 0 else "append",
+            partition_by=["odin_year", "odin_month"] if partitioned else None,
+        )
+
+
+def recluster_source(
+    partitions: list[tuple[int, int]] | None = None, oper: str = "I"
+) -> pl.DataFrame:
+    """Minimal merge source, naming the partitions its resolved rows land in."""
+    if partitions is None:  # unpartitioned table: no partition columns to carry
+        return pl.DataFrame(
+            {"odin_resolved_oper": [oper]}, schema={"odin_resolved_oper": pl.String}
+        )
+    return pl.DataFrame(
+        {
+            "odin_resolved_oper": [oper] * len(partitions),
+            "odin_year": [y for y, _ in partitions],
+            "odin_month": [m for _, m in partitions],
+        },
+        schema={"odin_resolved_oper": pl.String, "odin_year": pl.Int32, "odin_month": pl.Int32},
+    )
+
+
+def test_ensure_target_file_size_sets_then_leaves_property(job):
+    """The property is committed once and the call is a no-op afterwards."""
+    pipeline, write_history, _, _ = job
+    write_history(history_rows([{"txn_id": 1, "amount": 10, "header__change_oper": "L"}]))
+    pipeline._rebuild_silver()
+
+    pipeline.silver = DeltaTable(pipeline.silver_uri)
+    pipeline._ensure_target_file_size()
+    config = DeltaTable(pipeline.silver_uri).metadata().configuration
+    assert config["delta.targetFileSize"] == str(delta_ods.TARGET_FILE_SIZE_BYTES)
+
+    version = DeltaTable(pipeline.silver_uri).version()
+    pipeline._ensure_target_file_size()
+    assert DeltaTable(pipeline.silver_uri).version() == version  # no second commit
+
+
+def test_discover_keys_ordered_by_primary_key_position():
+    """keys[0] is the DFM's leading key, not the first key column in the schema."""
+    pipeline = CubicODSDelta("EDW.TEST_TABLE")
+    cdc_df = pl.DataFrame({"txn_id": [1], "status": ["a"], "header__from_csv": [FROM_CSV]})
+    # "status" is primaryKeyPos 1 but appears after "txn_id" among the columns.
+    with patch(
+        "odin.generate.cubic.delta_ods.dfm_from_s3",
+        return_value=mock_dfm_for_keys(["status", "txn_id"]),
+    ):
+        assert pipeline._discover_keys(cdc_df) == ["status", "txn_id"]
+
+
+def test_overlapping_files_counts_out_of_order_files():
+    """Disjoint ranges score 0; each file overlapping an earlier one adds 1."""
+    ordered = pl.DataFrame({"min_key": [1, 11, 21], "max_key": [10, 20, 30]})
+    assert CubicODSDelta._overlapping_files(ordered) == 0
+
+    overlapping = pl.DataFrame({"min_key": [1, 1, 1, 1], "max_key": [100, 100, 100, 100]})
+    assert CubicODSDelta._overlapping_files(overlapping) == 3
+
+    # A file with no statistics makes the partition unmeasurable, not "ordered".
+    unknown = pl.DataFrame({"min_key": [1, None], "max_key": [10, None]})
+    assert CubicODSDelta._overlapping_files(unknown) is None
+
+
+def test_recluster_reorders_disordered_partition(job):
+    """
+    A partition whose files overlap is z-ordered, and comes back key-ordered.
+
+    The row-order assertion is the point: reclustering relies on a single-column
+    z-order being equivalent to a sort by that column (nothing to interleave), and
+    that is a delta-rs behaviour rather than a documented guarantee. If it ever
+    changes, merges silently lose file skipping and get slower — this test is how
+    that surfaces. Overlap alone would not catch it, since z-order also bin-packs
+    small files and a single output file trivially overlaps nothing.
+    """
+    pipeline, _, _, _ = job
+    pipeline.part_columns = ["odin_year", "odin_month"]
+    write_silver_files(pipeline.silver_uri, WIDE_RANGE_FILES)
+    pipeline.silver = DeltaTable(pipeline.silver_uri)
+    before = pipeline._overlapping_files(
+        pipeline._add_action_key_ranges("txn_id").select("min_key", "max_key")
+    )
+    # Eight files, seven overlapping — past the ceil(2*sqrt(8)) = 6 threshold.
+    assert before == len(WIDE_RANGE_FILES) - 1
+
+    metrics = pipeline._recluster_inserted_partitions(recluster_source([(2025, 1)]), ["txn_id"])
+
+    assert metrics["recluster_units"] == 1
+    after = pipeline._overlapping_files(
+        pipeline._add_action_key_ranges("txn_id").select("min_key", "max_key")
+    )
+    assert after == 0
+    # Layout only: the same rows, now in key order.
+    out = DeltaTable(pipeline.silver_uri).to_pyarrow_table().column("txn_id").to_pylist()
+    assert out == WIDE_RANGE_KEYS
+
+
+def test_recluster_leaves_ordered_partition_alone(job):
+    """Below the overlap threshold nothing is rewritten."""
+    pipeline, _, _, _ = job
+    pipeline.part_columns = ["odin_year", "odin_month"]
+    write_silver_files(
+        pipeline.silver_uri, [[(1, 1), (10, 1)], [(11, 1), (20, 1)], [(21, 1), (30, 1)]]
+    )
+    pipeline.silver = DeltaTable(pipeline.silver_uri)
+    version = DeltaTable(pipeline.silver_uri).version()
+
+    metrics = pipeline._recluster_inserted_partitions(recluster_source([(2025, 1)]), ["txn_id"])
+
+    assert metrics["recluster_units"] == 0
+    assert DeltaTable(pipeline.silver_uri).version() == version  # no rewrite committed
+
+
+def test_recluster_skips_partitions_without_inserts(job):
+    """Updates and deletes preserve a file's key range, so they trigger nothing."""
+    pipeline, _, _, _ = job
+    pipeline.part_columns = ["odin_year", "odin_month"]
+    write_silver_files(
+        pipeline.silver_uri,
+        [
+            [(1, 1), (100, 1)],
+            [(2, 1), (99, 1)],
+            [(3, 1), (98, 1)],
+            [(4, 1), (97, 1)],
+            [(5, 1), (96, 1)],
+        ],
+    )
+    pipeline.silver = DeltaTable(pipeline.silver_uri)
+    version = DeltaTable(pipeline.silver_uri).version()
+
+    metrics = pipeline._recluster_inserted_partitions(
+        recluster_source([(2025, 1)], oper="U"), ["txn_id"]
+    )
+
+    assert metrics == {}
+    assert DeltaTable(pipeline.silver_uri).version() == version
+
+
+def test_recluster_sorts_unpartitioned_table_as_one_unit(job):
+    """
+    With no partition columns the whole table is the unit, and it still reclusters.
+
+    An unpartitioned table needs this more than a partitioned one: the merge has no
+    partition constraint, so the key range is the only thing that can skip a file.
+    """
+    pipeline, _, _, _ = job
+    pipeline.part_columns = []
+    write_silver_files(pipeline.silver_uri, WIDE_RANGE_FILES, partitioned=False)
+    pipeline.silver = DeltaTable(pipeline.silver_uri)
+
+    metrics = pipeline._recluster_inserted_partitions(recluster_source(), ["txn_id"])
+
+    assert metrics["recluster_units"] == 1
+    assert metrics["recluster_before"].startswith("table=")
+    assert pipeline._overlapping_files(pipeline._add_action_key_ranges("txn_id")) == 0
+    out = DeltaTable(pipeline.silver_uri).to_pyarrow_table().column("txn_id").to_pylist()
+    assert out == WIDE_RANGE_KEYS
+
+
+def test_recluster_threshold_scales_with_file_count(job):
+    """
+    A bigger unit needs proportionally more damage before a rewrite repays itself.
+
+    Eight files with four overlapping sits above the flat floor but below the
+    ceil(2*sqrt(8)) = 6 break-even, so nothing is rewritten. A fixed threshold of
+    RECLUSTER_MIN_OVERLAPPING_FILES would rewrite here, which is what the scaling
+    exists to avoid on large units.
+    """
+    pipeline, _, _, _ = job
+    pipeline.part_columns = ["odin_year", "odin_month"]
+    write_silver_files(
+        pipeline.silver_uri,
+        [[(1, 1), (100, 1)]] * 5
+        + [[(101, 1), (110, 1)], [(111, 1), (120, 1)], [(121, 1), (130, 1)]],
+    )
+    pipeline.silver = DeltaTable(pipeline.silver_uri)
+    overlapping = pipeline._overlapping_files(
+        pipeline._add_action_key_ranges("txn_id").select("min_key", "max_key")
+    )
+    assert overlapping == delta_ods.RECLUSTER_MIN_OVERLAPPING_FILES
+    version = DeltaTable(pipeline.silver_uri).version()
+
+    metrics = pipeline._recluster_inserted_partitions(recluster_source([(2025, 1)]), ["txn_id"])
+
+    assert metrics["recluster_units"] == 0
+    assert DeltaTable(pipeline.silver_uri).version() == version
+
+
+def test_recluster_reports_missing_key_statistics(job):
+    """A key with no per-file stats cannot be made prunable, so no rewrite happens."""
+    pipeline, _, _, _ = job
+    pipeline.part_columns = ["odin_year", "odin_month"]
+    write_silver_files(pipeline.silver_uri, [[(1, 1)], [(2, 1)]])
+    pipeline.silver = DeltaTable(pipeline.silver_uri)
+    version = DeltaTable(pipeline.silver_uri).version()
+
+    metrics = pipeline._recluster_inserted_partitions(
+        recluster_source([(2025, 1)]), ["not_a_column"]
+    )
+
+    assert metrics == {"recluster_no_key_stats": True}
+    assert DeltaTable(pipeline.silver_uri).version() == version
+
+
+# --- Chunking: partition split, then key-ordered size split -------------------
+
+
+def chunk_source(rows: list[dict]) -> pl.DataFrame:
+    """Merge-source frame carrying only what _partition_chunks looks at."""
+    return pl.DataFrame(
+        rows,
+        schema={
+            "txn_id": pl.Int64,
+            "edw_inserted_dtm": pl.Datetime("us"),
+            "odin_year": pl.Int32,
+            "odin_month": pl.Int32,
+        },
+    )
+
+
+def dated_chunk_rows(txn_ids: list[int], year: int, month: int) -> list[dict]:
+    """Rows for one partition, in an order that is not key order."""
+    from datetime import datetime
+
+    return [
+        {
+            "txn_id": txn_id,
+            "edw_inserted_dtm": datetime(year, month, 1),
+            "odin_year": year,
+            "odin_month": month,
+        }
+        for txn_id in txn_ids
+    ]
+
+
+def test_partition_chunks_leaves_small_chunks_whole(job):
+    """Under the size limit, chunking is still one frame per partition."""
+    pipeline, _, _, _ = job
+    source = chunk_source(dated_chunk_rows([3, 1, 2], 2025, 1) + dated_chunk_rows([4], 2025, 3))
+
+    chunks = pipeline._partition_chunks(source, KEYS)
+
+    assert sorted(chunk.height for chunk in chunks) == [1, 3]
+    # No reordering when nothing needs slicing.
+    big = next(chunk for chunk in chunks if chunk.height == 3)
+    assert big.get_column("txn_id").to_list() == [3, 1, 2]
+
+
+def test_partition_chunks_slices_oversized_chunk_in_key_order(job):
+    """
+    An oversized chunk is cut into contiguous runs of keys, not arbitrary slices.
+
+    Key order is what makes the slices useful: delta-rs derives
+    ``target.k BETWEEN min(source.k) AND max(source.k)`` per merge, so slices with
+    disjoint key ranges scan disjoint files. Slicing the same rows in arbitrary
+    order would give every slice the full key range and prune nothing.
+    """
+    pipeline, _, _, _ = job
+    limit = delta_ods.MAX_CHUNK_RECORDS
+    # Shuffled so a correct implementation has to sort rather than luck into order.
+    txn_ids = [((i * 7919) % (limit * 2 + 1)) for i in range(limit * 2 + 1)]
+    source = chunk_source(dated_chunk_rows(txn_ids, 2025, 1))
+
+    chunks = pipeline._partition_chunks(source, KEYS)
+
+    assert [chunk.height for chunk in chunks] == [limit, limit, 1]
+    # Every slice is a contiguous run, so the ranges are disjoint and ascending.
+    ranges = [
+        (chunk.get_column("txn_id").min(), chunk.get_column("txn_id").max()) for chunk in chunks
+    ]
+    for (_, previous_max), (next_min, _) in zip(ranges, ranges[1:]):
+        assert previous_max < next_min
+    # No row is lost or duplicated by the slicing.
+    assert sorted(k for chunk in chunks for k in chunk.get_column("txn_id")) == sorted(txn_ids)
+
+
+def test_partition_chunks_slices_undated_rows_too(job):
+    """The unknown-partition rows are chunked by the same rule as everything else."""
+    pipeline, _, _, _ = job
+    limit = delta_ods.MAX_CHUNK_RECORDS
+    source = chunk_source(
+        [
+            {"txn_id": txn_id, "edw_inserted_dtm": None, "odin_year": 0, "odin_month": 0}
+            for txn_id in reversed(range(limit + 5))
+        ]
+    )
+
+    chunks = pipeline._partition_chunks(source, KEYS)
+
+    assert [chunk.height for chunk in chunks] == [limit, 5]
+    # Still unconstrained (null edw), so each slice merges against every partition —
+    # but against a narrow key range, which is what lets file skipping help.
+    assert pipeline._partition_constraint(chunks[0]) == ""
+    assert chunks[0].get_column("txn_id").to_list() == sorted(chunks[0].get_column("txn_id"))
+
+
+def test_partition_chunks_unpartitioned_table_still_sliced(job):
+    """A table with no partition columns starts as one chunk and is cut by size."""
+    pipeline, _, _, _ = job
+    limit = delta_ods.MAX_CHUNK_RECORDS
+    source = pl.DataFrame({"txn_id": list(reversed(range(limit + 1)))}, schema={"txn_id": pl.Int64})
+
+    chunks = pipeline._partition_chunks(source, KEYS)
+
+    assert [chunk.height for chunk in chunks] == [limit, 1]
+    assert chunks[0].get_column("txn_id").to_list() == sorted(chunks[0].get_column("txn_id"))
+
+
+def test_merge_cdc_across_slices_matches_unsliced_result(job):
+    """
+    A batch cut into several key-ordered slices produces the same table as one merge.
+
+    Slicing changes only how many MERGEs run: each slice keeps a predicate correct on
+    its own, and _build_merge_source has already reduced the batch to one row per key,
+    so no key spans two slices. Inserts, sparse updates and deletes are all present
+    here, across two partitions, so every merge branch crosses a slice boundary.
+    """
+    from datetime import datetime
+
+    pipeline, write_history, _, _ = job
+    jan, mar = datetime(2025, 1, 15), datetime(2025, 3, 20)
+    loads = [
+        {"txn_id": t, "amount": t, "header__change_oper": "L", "edw_inserted_dtm": dt}
+        for t, dt in [(1, jan), (2, jan), (3, mar), (4, mar)]
+    ]
+    cdc = [
+        # update (sparse: no amount), delete, and two inserts spread over both months
+        {
+            "txn_id": 1,
+            "status": "u",
+            "header__change_oper": "U",
+            "header__change_seq": "0001",
+            "edw_inserted_dtm": jan,
+        },
+        {
+            "txn_id": 3,
+            "header__change_oper": "D",
+            "header__change_seq": "0002",
+            "edw_inserted_dtm": mar,
+        },
+        {
+            "txn_id": 5,
+            "amount": 50,
+            "header__change_oper": "I",
+            "header__change_seq": "0003",
+            "edw_inserted_dtm": jan,
+        },
+        {
+            "txn_id": 6,
+            "amount": 60,
+            "header__change_oper": "I",
+            "header__change_seq": "0004",
+            "edw_inserted_dtm": mar,
+        },
+    ]
+    write_history(dated_history_rows(loads + cdc))
+    pipeline._rebuild_silver()
+
+    # One row per slice, so every key is merged in a MERGE of its own.
+    with patch.object(delta_ods, "MAX_CHUNK_RECORDS", 1):
+        pipeline._merge_cdc("0")
+
+    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table()).sort("txn_id")
+    assert out.get_column("txn_id").to_list() == [1, 2, 4, 5, 6]  # 3 deleted
+    assert out.get_column("amount").to_list() == [1, 2, 4, 50, 60]  # sparse U kept amount
+    assert out.get_column("status").to_list() == ["u", None, None, None, None]
+    assert out.get_column("odin_year").to_list() == [2025] * 5
+    assert out.get_column("odin_month").to_list() == [1, 1, 3, 1, 3]
