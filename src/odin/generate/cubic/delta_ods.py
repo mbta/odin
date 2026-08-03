@@ -894,10 +894,11 @@ class CubicODSDelta(OdinJob):
         """
         dfm = self._dfm_from_records(cdc_df)
         key_info = [c for c in dfm["dataInfo"]["columns"] if c["primaryKeyPos"] > 0]
-        assert len(set([c['primaryKeyPos'] for c in key_info])) == len(key_info)
+        assert len(set([c["primaryKeyPos"] for c in key_info])) == len(key_info)
         keys = [
             col["name"].lower()
-            for col in sorted(key_info,
+            for col in sorted(
+                key_info,
                 key=lambda c: c["primaryKeyPos"],
             )
         ]
