@@ -46,7 +46,7 @@ from odin.ingestion.qlik.dfm import dfm_from_s3
 from odin.ingestion.qlik.dfm import QlikDFM
 from odin.ingestion.qlik.utils import seq_as_datetime
 from odin.ingestion.qlik.tables import _ODIN_INSTANCE
-from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES_INSTANCE
+from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES
 
 NEXT_RUN_DEFAULT = 60 * 60 * 4  # 4 hours
 NEXT_RUN_BETA = 60 * 15  # 15 minutes
@@ -815,6 +815,6 @@ def schedule_cubic_ods_fact_gen(schedule: sched.scheduler) -> None:
 
     :param schedule: application scheduler
     """
-    for table in CUBIC_ODS_TABLES_INSTANCE:
+    for table in CUBIC_ODS_TABLES:
         job = CubicODSFact(table)
         schedule.enter(0, 1, job_proc_schedule, (job, schedule))

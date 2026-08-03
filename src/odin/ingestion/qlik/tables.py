@@ -1,216 +1,162 @@
 from odin.utils.instance import get_odin_instance
 
 
-CUBIC_ODS_TABLES_ALPHA = [
-    "EC_STAGE.METRIC_HISTORY",
-    "EDW.FAREREV_RECOVERY_TXN",
-    # WA160
-    "EDW.DATE_DIMENSION",
-    "EDW.FARE_PROD_USERS_LIST_DIMENSION",
-    "EDW.FARE_PRODUCT_DIMENSION",
-    "EDW.MEDIA_TYPE_DIMENSION",
-    "EDW.OPERATOR_DIMENSION",
-    "EDW.RIDE_TYPE_DIMENSION",
-    "EDW.ROUTE_DIMENSION",
-    "EDW.STOP_POINT_DIMENSION",
-    "EDW.TRANSIT_ACCOUNT_DIMENSION",  # high memory usage
-    "EDW.TXN_STATUS_DIMENSION",
-    "EDW.CARD_DIMENSION",
-    "EDW.DEVICE_DIMENSION",
-    # COMP B
-    "EDW.TXN_CHANNEL_MAP",
-    "EDW.CCH_AFC_TRANSACTION",
-    "EDW.PATRON_TRIP",
-    "EDW.TRIP_PAYMENT",
-    "EDW.PAYMENT_TYPE_DIMENSION",
-    "EDW.FARE_REVENUE_REPORT_SCHEDULE",  # addendum support
-    # FMIS
-    "EDW.FNP_GENERAL_JRNL_ACCOUNT_ENTRY",
-    "EDW.PAYMENT_SUMMARY",
-    # KPI
-    "EDW.DEVICE_LAST_STATE",
-    "EDW.DEVICE_EVENT",
-    "EDW.EVENT_TYPE_DIMENSION",
-    "EDW.ABP_TAP",
-    "EDW.KPI_MONTHLY_SLDC",
-    "EDW.KPI_SUMMARY_BY_DAY",
-    "EDW.KPI_AVAILABILITY_EVENT",
-    "EDW.KPI_TARGET",
-    "EDW.KPI",
-    "EDW.KPI_DETAIL_EVENTS_BY_DAY",
-    "EDW.KPI_RULE",
-    "EDW.SVN_INCIDENT",
-    "EDW.SVN_U_FS_EVENT_CODE",
-    "EDW.SVN_U_FS_FAULT_CODES",
-    "EDW.SVN_U_FS_FAULTY_ITEMS",
-    "EDW.SVN_U_FS_RPIR_CODE_RT_CAUSE_ID",
-    "EDW.SVN_U_KPI_LEVEL",
-    "EDW.SVN_WM_ORDER",
-    "EDW.SVN_WM_TASK",
-    "EDW.REVENUE_LOSS_ASSESSMENT",
-    # WC231
-    "CCH_STAGE.CATEGORY",
-    "EDW.BUSINESS_ENTITY_DIMENSION",
-    # "EDW.DISTRIBUTOR_DIMENSION", # no data
-    "EDW.SALE_TYPE_DIMENSION",
-    "CCH_STAGE.REPROCESS_ACTION",
-    "EDW.CREDIT_CARD_TYPE_DIMENSION",
-    "EDW.TRANSACTION_ORIGIN_DIMENSION",
-    "CCH_STAGE.CATEGORIZATION_RULE",
-    "CCH_STAGE.TRANSACTION_TYPE",
-    "EDW.CHGBK_ACTIVITY_TYPE_DIMENSION",
-    "EDW.RIDER_CLASS_DIMENSION",
-    "EDW.PURSE_TYPE_DIMENSION",
-    # "EDW.DISTRIBUTOR_ORDER", # no data
-    "EDW.CASHBOX_EVENT_DIMENSION",
-    "EDW.PASS_LIAB_EVENT_TYPE_DIMENSION",
-    # POLICY
-    "EDW.MEMBER_DIMENSION",
-    # WC700
-    "EDW.REASON_DIMENSION",
-    # Unprocessed Taps
-    "EDW.ABP_REPROCESS_LOG",
-    # WC320
-    "EDW.FRM_SRC_CRDB_ACQUIRER_CHGBK",
-    "EDW.TRAVEL_MODE_DIMENSION",
-    "EDW.PAL_CONFIRMATION",
-    "EDW.JOURNAL_ENTRY",
-    # no indication of association to need
-    "EDW.DEVICE_END_OF_DAY_MSG_COUNT",
-    "EDW.TAP_USAGE_SUMMARY",
-    "EDW.VEHICLE_TRIP",
-    "EDW.FACILITY_DIMENSION",
-    "EDW.KPI_OPERATING_DAY_SCHEDULE",
-    "EDW.CITATION",
-    "EDW.KPI_AGENCY_MAP",
-    "EDW.TOKEN_HISTORY",
-    "EDW.FRM_CRDB_RECON_SYSCONF_ACQCONF",
-    "EDW.TRANSIT_ACCOUNT_BALANCE",
-    "EDW.CUSTOMER_DIMENSION",
-    "EDW.PATRON_ORDER",
-    "EDW.PATRON_ORDER_LINE_ITEM",
-    "EDW.PATRON_ORDER_PAYMENT",
-    "EDW.READ_TRANSACTION",
-    "EDW.SALE_TXN_PAYMENT",
-    "EDW.SERVICE_TYPE_DIMENSION",
-    "EDW.UNSETTLED_CCA_CASH_COUNT",
-    "EDW.UNSETTLED_CRDB_ACQ_CONF",
-    "EDW.UNSETTLED_CRDB_CHGBK",
-    "EDW.UNSETTLED_DEVICE_CASH_STC",
-    # "EDW.UNSETTLED_DIST_ORDER", # no data
-    "EDW.UNSETTLED_MISC",
-    "EDW.UNSETTLED_PATRON_ORDER",
-    "EDW.UNSETTLED_SALE",
-    "EDW.UNSETTLED_USE",
-    "EDW.FRM_CRDB_CHGBK_ACTIVITY",
-    "EDW.FRM_CRDB_CHGBK_CASE",
-    "EDW.FRM_CRDB_CHGBK_MASTER",
-    "EDW.BE_INVOICE_STATUS_DIMENSION",
-    "EDW.BNFT_INVOICE_STATUS_DIMENSION",
-    "EDW.EMPLOYEE_DIMENSION",
-    "EDW.SVN_TASK",
-    "EDW.UNSETTLED_CRDB_SYS_CONF",
-    "EDW.FARE_PRODUCT_INSTANCE",
-    "EDW.ACCOUNT_BALANCE_BY_DAY",
-    "EDW.ABP_TRANSIT_ACCOUNT_X_TOKEN",
-    "EDW.SALES_SUMMARY_BY_DAY",
-    "EDW.PATRON_ORDER_STATUS_DIMENSION",
-    "EDW.PATRON_ORDER_TYPE_DIMENSION",
-    "EDW.CONTACT_DIMENSION",
-    "EDW.ACCOUNT_TRANSIT_LIABILITY",
-    "EDW.FRM_SRC_CRDB_ACQUIRER_CONF",
-    "EDW.DEVICE_CURRENT_SW_CONFIG",
-    "EDW.SALES_CHANNEL_DIMENSION",
-    "EDW.PROC_COST_PG_LOSS_DTL",
-    "EDW.PROC_COST_CHGBK_DTL",
-    "EDW.PROCESS_COST_SUMMARY",
-    "EDW.FRM_BANK_FEE_TYPE_DIMENSION",
-    "EDW.FRM_MERCHANT_MAPPING",
-    "EDW.CCH_GL_SUMMARY_IMPORT",
-    "EDW.FRM_CRDB_ACQ_BANK_FEE_DETAIL",
-    "EDW.FRM_BANK_FEE_SUMMARY",
-    "EDW.FRM_CRDB_ACQ_BANK_FEE",
-    "EDW.FEE_TYPE_DIMENSION",
-    "EDW.TIME_PERIOD_DIMENSION",
-    "EDW.CCH_REPROCESS_ACTION",
-    "EDW.GL_SUM_REC_STAT_DIMENSION",
-    "EDW.CCH_ACCOUNT",
-    "EDW.CCH_APPORTION_RULE_MAP",
-    "EDW.CCH_CATEGORY",
-    "EDW.CARD_ACTION",
-    "EDW.CARD_ACTION_REASON_DIMENSION",
-    "EDW.CARD_ACTION_TYPE_DIMENSION",
-    "EDW.FRAUD_ALERT_TYPE_DIMENSION",
-    "EDW.FRAUD_SUMMARY_BY_ACCOUNT",
-    "EDW.FRAUD_SUMMARY_BY_DAY",
-    "EDW.IFDM_FRAUD_ALERT",
-    "EDW.IFDM_FRAUD_ALERT_ACTION",
-    "EDW.CCH_APPORTION_RULE",
-    "EDW.CCH_RULE_MULTIPLIER_TYPE",
-    "EDW.CCH_RULES_SET",
-]
+_ODIN_INSTANCE = get_odin_instance()
+assert _ODIN_INSTANCE in {"alpha", "beta", "gamma", "delta"}
 
-CUBIC_ODS_TABLES_BETA: list[str] = [
-    # "EDW.TRANSACTION_HISTORY",  # high memory usage, not used in current reports
-    "EDW.PATRONAGE_SUMMARY",
-]
 
-CUBIC_ODS_TABLES_GAMMA: list[str] = []
+HISTORY_JOB_IND = 0
+LEGACY_FACT_JOB_IND = 1
+DELTA_FACT_JOB_IND = 2
 
-CUBIC_ODS_TABLES_DELTA: list[str] = [
-    "EDW.USE_TRANSACTION",
-]
-
-CUBIC_ODS_TABLES_BY_INSTANCE = {
-    "alpha": CUBIC_ODS_TABLES_ALPHA,
-    "beta": CUBIC_ODS_TABLES_BETA,
-    "gamma": CUBIC_ODS_TABLES_GAMMA,
-    "delta": CUBIC_ODS_TABLES_DELTA,
+TABLE_MANIFEST = {
+    "CCH_STAGE.CATEGORIZATION_RULE": ["alpha", "alpha", None],
+    "CCH_STAGE.CATEGORY": ["alpha", "alpha", None],
+    "CCH_STAGE.REPROCESS_ACTION": ["alpha", "alpha", None],
+    "CCH_STAGE.TRANSACTION_TYPE": ["alpha", "alpha", None],
+    "EC_STAGE.METRIC_HISTORY": ["alpha", "alpha", None],
+    "EDW.ABP_REPROCESS_LOG": ["alpha", "alpha", None],
+    "EDW.ABP_TAP": ["alpha", "alpha", None],
+    "EDW.ABP_TRANSIT_ACCOUNT_X_TOKEN": ["alpha", "alpha", None],
+    "EDW.ACCOUNT_BALANCE_BY_DAY": ["alpha", "alpha", None],
+    "EDW.ACCOUNT_TRANSIT_LIABILITY": ["alpha", "alpha", None],
+    "EDW.BE_INVOICE_STATUS_DIMENSION": ["alpha", "alpha", None],
+    "EDW.BNFT_INVOICE_STATUS_DIMENSION": ["alpha", "alpha", None],
+    "EDW.BUSINESS_ENTITY_DIMENSION": ["alpha", "alpha", None],
+    "EDW.CARD_ACTION": ["alpha", "alpha", None],
+    "EDW.CARD_ACTION_REASON_DIMENSION": ["alpha", "alpha", None],
+    "EDW.CARD_ACTION_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.CARD_DIMENSION": ["alpha", "alpha", None],
+    "EDW.CASHBOX_EVENT_DIMENSION": ["alpha", "alpha", None],
+    "EDW.CCH_ACCOUNT": ["alpha", "alpha", None],
+    "EDW.CCH_AFC_TRANSACTION": ["alpha", "alpha", None],
+    "EDW.CCH_APPORTION_RULE": ["alpha", "alpha", None],
+    "EDW.CCH_APPORTION_RULE_MAP": ["alpha", "alpha", None],
+    "EDW.CCH_CATEGORY": ["alpha", "alpha", None],
+    "EDW.CCH_GL_SUMMARY_IMPORT": ["alpha", "alpha", None],
+    "EDW.CCH_REPROCESS_ACTION": ["alpha", "alpha", None],
+    "EDW.CCH_RULES_SET": ["alpha", "alpha", None],
+    "EDW.CCH_RULE_MULTIPLIER_TYPE": ["alpha", "alpha", None],
+    "EDW.CHGBK_ACTIVITY_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.CITATION": ["alpha", "alpha", None],
+    "EDW.CONTACT_DIMENSION": ["alpha", "alpha", None],
+    "EDW.CREDIT_CARD_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.CUSTOMER_DIMENSION": ["alpha", "alpha", None],
+    "EDW.DATE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.DEVICE_CURRENT_SW_CONFIG": ["alpha", "alpha", None],
+    "EDW.DEVICE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.DEVICE_END_OF_DAY_MSG_COUNT": ["alpha", "alpha", None],
+    "EDW.DEVICE_EVENT": ["alpha", "alpha", None],
+    "EDW.DEVICE_LAST_STATE": ["alpha", "alpha", None],
+    "EDW.EMPLOYEE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.EVENT_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.FACILITY_DIMENSION": ["alpha", "alpha", None],
+    "EDW.FAREREV_RECOVERY_TXN": ["alpha", "alpha", None],
+    "EDW.FARE_PRODUCT_DIMENSION": ["alpha", "alpha", None],
+    "EDW.FARE_PRODUCT_INSTANCE": ["alpha", "alpha", None],
+    "EDW.FARE_PROD_USERS_LIST_DIMENSION": ["alpha", "alpha", None],
+    "EDW.FARE_REVENUE_REPORT_SCHEDULE": ["alpha", "alpha", None],
+    "EDW.FEE_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.FNP_GENERAL_JRNL_ACCOUNT_ENTRY": ["alpha", "alpha", None],
+    "EDW.FRAUD_ALERT_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.FRAUD_SUMMARY_BY_ACCOUNT": ["alpha", "alpha", None],
+    "EDW.FRAUD_SUMMARY_BY_DAY": ["alpha", "alpha", None],
+    "EDW.FRM_BANK_FEE_SUMMARY": ["alpha", "alpha", None],
+    "EDW.FRM_BANK_FEE_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.FRM_CRDB_ACQ_BANK_FEE": ["alpha", "alpha", None],
+    "EDW.FRM_CRDB_ACQ_BANK_FEE_DETAIL": ["alpha", "alpha", None],
+    "EDW.FRM_CRDB_CHGBK_ACTIVITY": ["alpha", "alpha", None],
+    "EDW.FRM_CRDB_CHGBK_CASE": ["alpha", "alpha", None],
+    "EDW.FRM_CRDB_CHGBK_MASTER": ["alpha", "alpha", None],
+    "EDW.FRM_CRDB_RECON_SYSCONF_ACQCONF": ["alpha", "alpha", None],
+    "EDW.FRM_MERCHANT_MAPPING": ["alpha", "alpha", None],
+    "EDW.FRM_SRC_CRDB_ACQUIRER_CHGBK": ["alpha", "alpha", None],
+    "EDW.FRM_SRC_CRDB_ACQUIRER_CONF": ["alpha", "alpha", None],
+    "EDW.GL_SUM_REC_STAT_DIMENSION": ["alpha", "alpha", None],
+    "EDW.IFDM_FRAUD_ALERT": ["alpha", "alpha", None],
+    "EDW.IFDM_FRAUD_ALERT_ACTION": ["alpha", "alpha", None],
+    "EDW.JOURNAL_ENTRY": ["alpha", "alpha", None],
+    "EDW.KPI": ["alpha", "alpha", None],
+    "EDW.KPI_AGENCY_MAP": ["alpha", "alpha", None],
+    "EDW.KPI_AVAILABILITY_EVENT": ["alpha", "alpha", None],
+    "EDW.KPI_DETAIL_EVENTS_BY_DAY": ["alpha", "alpha", None],
+    "EDW.KPI_MONTHLY_SLDC": ["alpha", "alpha", None],
+    "EDW.KPI_OPERATING_DAY_SCHEDULE": ["alpha", "alpha", None],
+    "EDW.KPI_RULE": ["alpha", "alpha", None],
+    "EDW.KPI_SUMMARY_BY_DAY": ["alpha", "alpha", None],
+    "EDW.KPI_TARGET": ["alpha", "alpha", None],
+    "EDW.MEDIA_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.MEMBER_DIMENSION": ["alpha", "alpha", None],
+    "EDW.OPERATOR_DIMENSION": ["alpha", "alpha", None],
+    "EDW.PAL_CONFIRMATION": ["alpha", "alpha", None],
+    "EDW.PASS_LIAB_EVENT_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.PATRON_ORDER": ["alpha", "alpha", None],
+    "EDW.PATRON_ORDER_LINE_ITEM": ["alpha", "alpha", None],
+    "EDW.PATRON_ORDER_PAYMENT": ["alpha", "alpha", None],
+    "EDW.PATRON_ORDER_STATUS_DIMENSION": ["alpha", "alpha", None],
+    "EDW.PATRON_ORDER_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.PATRON_TRIP": ["alpha", "alpha", None],
+    "EDW.PATRONAGE_SUMMARY": ["alpha", "beta", None],
+    "EDW.PAYMENT_SUMMARY": ["alpha", "alpha", None],
+    "EDW.PAYMENT_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.PROCESS_COST_SUMMARY": ["alpha", "alpha", None],
+    "EDW.PROC_COST_CHGBK_DTL": ["alpha", "alpha", None],
+    "EDW.PROC_COST_PG_LOSS_DTL": ["alpha", "alpha", None],
+    "EDW.PURSE_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.READ_TRANSACTION": ["alpha", "alpha", None],
+    "EDW.REASON_DIMENSION": ["alpha", "alpha", None],
+    "EDW.REVENUE_LOSS_ASSESSMENT": ["alpha", "alpha", None],
+    "EDW.RIDER_CLASS_DIMENSION": ["alpha", "alpha", None],
+    "EDW.RIDE_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.ROUTE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.SALE_TRANSACTION": ["alpha", None, "gamma"],
+    "EDW.SALES_CHANNEL_DIMENSION": ["alpha", "alpha", None],
+    "EDW.SALES_SUMMARY_BY_DAY": ["alpha", "alpha", None],
+    "EDW.SALE_TXN_PAYMENT": ["alpha", "alpha", None],
+    "EDW.SALE_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.SERVICE_TYPE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.STOP_POINT_DIMENSION": ["alpha", "alpha", None],
+    "EDW.SVN_INCIDENT": ["alpha", "alpha", None],
+    "EDW.SVN_TASK": ["alpha", "alpha", None],
+    "EDW.SVN_U_FS_EVENT_CODE": ["alpha", "alpha", None],
+    "EDW.SVN_U_FS_FAULTY_ITEMS": ["alpha", "alpha", None],
+    "EDW.SVN_U_FS_FAULT_CODES": ["alpha", "alpha", None],
+    "EDW.SVN_U_FS_RPIR_CODE_RT_CAUSE_ID": ["alpha", "alpha", None],
+    "EDW.SVN_U_KPI_LEVEL": ["alpha", "alpha", None],
+    "EDW.SVN_WM_ORDER": ["alpha", "alpha", None],
+    "EDW.SVN_WM_TASK": ["alpha", "alpha", None],
+    "EDW.TAP_USAGE_SUMMARY": ["alpha", "alpha", None],
+    "EDW.TIME_PERIOD_DIMENSION": ["alpha", "alpha", None],
+    "EDW.TOKEN_HISTORY": ["alpha", "alpha", None],
+    "EDW.TRANSACTION_ORIGIN_DIMENSION": ["alpha", "alpha", None],
+    "EDW.TRANSIT_ACCOUNT_BALANCE": ["alpha", "alpha", None],
+    "EDW.TRANSIT_ACCOUNT_DIMENSION": ["alpha", "alpha", None],
+    "EDW.TRAVEL_MODE_DIMENSION": ["alpha", "alpha", None],
+    "EDW.TRIP_PAYMENT": ["alpha", "alpha", None],
+    "EDW.TXN_CHANNEL_MAP": ["alpha", "alpha", None],
+    "EDW.TXN_STATUS_DIMENSION": ["alpha", "alpha", None],
+    "EDW.UNSETTLED_CCA_CASH_COUNT": ["alpha", "alpha", None],
+    "EDW.UNSETTLED_CRDB_ACQ_CONF": ["alpha", None, "delta"],
+    "EDW.UNSETTLED_CRDB_CHGBK": ["alpha", "alpha", None],
+    "EDW.UNSETTLED_CRDB_SYS_CONF": ["alpha", "alpha", None],
+    "EDW.UNSETTLED_DEVICE_CASH_STC": ["alpha", "alpha", None],
+    "EDW.UNSETTLED_MISC": ["alpha", "alpha", None],
+    "EDW.UNSETTLED_PATRON_ORDER": ["alpha", "alpha", None],
+    "EDW.UNSETTLED_SALE": ["alpha", "alpha", None],
+    "EDW.UNSETTLED_USE": ["alpha", "alpha", None],
+    "EDW.USE_TRANSACTION": ["alpha", None, "delta"],
+    "EDW.VEHICLE_TRIP": ["alpha", "alpha", None],
 }
 
-CUBIC_ODS_TABLES = (
-    CUBIC_ODS_TABLES_ALPHA + CUBIC_ODS_TABLES_BETA + CUBIC_ODS_TABLES_GAMMA + CUBIC_ODS_TABLES_DELTA
-)
 
-_ODIN_INSTANCE = get_odin_instance()
-
-CUBIC_ODS_TABLES_INSTANCE = CUBIC_ODS_TABLES_BY_INSTANCE[_ODIN_INSTANCE]
-
-# Tables materialized by the Delta-based silver job (generate/cubic/delta_ods.py),
-# split by instance like CUBIC_ODS_TABLES so the Delta pipeline can be rolled out
-# and verified table-by-table in parallel with the existing ODS fact pipeline.
-# Emptying an instance's list disables the Delta job on that instance. Each list
-# must be a subset of that instance's CUBIC_ODS_TABLES (the source history must
-# exist on the instance running the Delta job).
-CUBIC_ODS_DELTA_TABLES_ALPHA: list[str] = []
-
-CUBIC_ODS_DELTA_TABLES_BETA: list[str] = []
-
-CUBIC_ODS_DELTA_TABLES_GAMMA = [
-    "EDW.SALE_TRANSACTION",
+CUBIC_HISTORY_TABLES = [
+    t for t, inst in TABLE_MANIFEST.items() if inst[HISTORY_JOB_IND] == _ODIN_INSTANCE
 ]
 
-# Tables for the Odin instance named "delta" (not to be confused with the Delta
-# table format these lists configure).
-CUBIC_ODS_DELTA_TABLES_DELTA = [
-    "EDW.UNSETTLED_CRDB_ACQ_CONF",
-    "EDW.USE_TRANSACTION",
+CUBIC_ODS_TABLES = [
+    t for t, inst in TABLE_MANIFEST.items() if inst[LEGACY_FACT_JOB_IND] == _ODIN_INSTANCE
 ]
 
-CUBIC_ODS_DELTA_TABLES_BY_INSTANCE = {
-    "alpha": CUBIC_ODS_DELTA_TABLES_ALPHA,
-    "beta": CUBIC_ODS_DELTA_TABLES_BETA,
-    "gamma": CUBIC_ODS_DELTA_TABLES_GAMMA,
-    "delta": CUBIC_ODS_DELTA_TABLES_DELTA,
-}
-
-CUBIC_ODS_DELTA_TABLES = (
-    CUBIC_ODS_DELTA_TABLES_ALPHA
-    + CUBIC_ODS_DELTA_TABLES_BETA
-    + CUBIC_ODS_DELTA_TABLES_GAMMA
-    + CUBIC_ODS_DELTA_TABLES_DELTA
-)
-
-_ODIN_INSTANCE = get_odin_instance()
-
-CUBIC_ODS_DELTA_TABLES_INSTANCE = CUBIC_ODS_DELTA_TABLES_BY_INSTANCE[_ODIN_INSTANCE]
+CUBIC_ODS_DELTA_TABLES = [
+    t for t, inst in TABLE_MANIFEST.items() if inst[DELTA_FACT_JOB_IND] == _ODIN_INSTANCE
+]

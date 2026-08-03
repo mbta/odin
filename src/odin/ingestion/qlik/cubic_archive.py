@@ -37,7 +37,7 @@ from odin.ingestion.qlik.utils import re_get_first
 from odin.ingestion.qlik.dfm import QlikDFM
 from odin.ingestion.qlik.dfm import dfm_snapshot_dt
 from odin.ingestion.qlik.tables import _ODIN_INSTANCE
-from odin.ingestion.qlik.tables import CUBIC_ODS_TABLES_INSTANCE
+from odin.ingestion.qlik.tables import CUBIC_HISTORY_TABLES
 from odin.ingestion.qlik.clean import clean_old_snapshots
 from odin.utils.locations import CUBIC_QLIK_DATA
 from odin.utils.locations import DATA_SPRINGBOARD
@@ -383,7 +383,7 @@ def schedule_cubic_archive_qlik(schedule: sched.scheduler) -> None:
 
     :param schedule: application scheduler
     """
-    for table in CUBIC_ODS_TABLES_INSTANCE:
+    for table in CUBIC_HISTORY_TABLES:
         # This clean process should remain as long as new Qlik tables are being added.
         # This will move any qlik files, not associated with the most recent snapshot,
         # to the "ignore" odin partition, if there is an existing processed shapshot, it is a no-op
