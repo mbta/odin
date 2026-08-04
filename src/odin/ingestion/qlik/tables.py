@@ -162,8 +162,11 @@ CUBIC_ODS_DELTA_TABLES = [
     t for t, inst in TABLE_MANIFEST.items() if inst[DELTA_FACT_JOB_IND] == _ODIN_INSTANCE
 ]
 
-ProcessLog(process="table_manifest", auto_start=False).complete(
-    history_tables=",".join(CUBIC_HISTORY_TABLES),
-    ods_tables=",".join(CUBIC_ODS_TABLES),
-    delta_tables=",".join(CUBIC_ODS_DELTA_TABLES),
-)
+
+def log_cubic_table_manifest():
+    """Output a log showing Cubic table lists for the current instance."""
+    ProcessLog(process="table_manifest", auto_start=False).complete(
+        history_tables=",".join(CUBIC_HISTORY_TABLES),
+        ods_tables=",".join(CUBIC_ODS_TABLES),
+        delta_tables=",".join(CUBIC_ODS_DELTA_TABLES),
+    )

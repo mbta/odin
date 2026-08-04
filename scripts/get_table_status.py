@@ -334,8 +334,10 @@ def print_overall(
     #     f"stale = no run within {stale_seconds / 3600:g}h)\n"
     # )
     print("\nKey:")
-    print(f"\tBEHIND = Timestamp lag greater than {lag_seconds / 3600:g} hours, or "
-          "uningested data remains from source")
+    print(
+        f"\tBEHIND = Timestamp lag greater than {lag_seconds / 3600:g} hours, or "
+        "uningested data remains from source"
+    )
     print(f"\tSTALE = No successful update within {stale_seconds / 3600:g} hours.")
     print("\tOK = Everything up-to-date")
 
