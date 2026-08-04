@@ -329,10 +329,15 @@ def print_overall(
     key-info summary); otherwise only not-OK tables are listed.
     """
     print(f"Odin table status  --  {now.strftime('%Y-%m-%dT%H:%MZ')}")
-    print(
-        f"(behind = seq_lag > {lag_seconds / 3600:g}h or a job keep-up flag; "
-        f"stale = no run within {stale_seconds / 3600:g}h)\n"
-    )
+    # print(
+    #     f"(behind = seq_lag > {lag_seconds / 3600:g}h or a job keep-up flag; "
+    #     f"stale = no run within {stale_seconds / 3600:g}h)\n"
+    # )
+    print("\nKey:")
+    print(f"\tBEHIND = Timestamp lag greater than {lag_seconds / 3600:g} hours, or "
+          "uningested data remains from source")
+    print(f"\tSTALE = No successful update within {stale_seconds / 3600:g} hours.")
+    print("\tOK = Everything up-to-date")
 
     total_behind = total_stale = total_tables = 0
     with tempfile.TemporaryDirectory() as tmpdir:
