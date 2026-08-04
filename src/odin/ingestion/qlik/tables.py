@@ -1,4 +1,5 @@
 from odin.utils.instance import get_odin_instance
+from odin.utils.logger import ProcessLog
 
 
 _ODIN_INSTANCE = get_odin_instance()
@@ -160,3 +161,9 @@ CUBIC_ODS_TABLES = [
 CUBIC_ODS_DELTA_TABLES = [
     t for t, inst in TABLE_MANIFEST.items() if inst[DELTA_FACT_JOB_IND] == _ODIN_INSTANCE
 ]
+
+ProcessLog(process="table_manifest", auto_start=False).complete(
+    history_tables=",".join(CUBIC_HISTORY_TABLES),
+    ods_tables=",".join(CUBIC_ODS_TABLES),
+    delta_tables=",".join(CUBIC_ODS_DELTA_TABLES),
+)
