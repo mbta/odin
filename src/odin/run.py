@@ -9,6 +9,7 @@ from odin.utils.runtime import handle_sigterm
 from odin.utils.logger import ProcessLog
 from odin.migrate.process import start_migrations
 from odin.utils.aws.ecs import check_for_parallel_tasks
+from odin.ingestion.qlik.tables import log_cubic_table_manifest
 
 # Job Schedule functions
 from odin.utils.runtime import schedule_sigterm_check
@@ -63,6 +64,7 @@ def start():
     log_installed_packages()
     check_for_parallel_tasks()
     start_migrations()
+    log_cubic_table_manifest()
 
     ProcessLog("odin_event_loop")
     schedule = sched.scheduler(time.monotonic, time.sleep)
