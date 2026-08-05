@@ -1,5 +1,6 @@
 import os
 import sched
+import re
 import time
 from typing import Any
 from typing import List
@@ -168,8 +169,8 @@ class CubicODSFact(OdinJob):
 
         try:
             self.fact_snapshot = str(fast_last_mod_ds_max(self.s3_export, "odin_snapshot"))
-            if self.fact_snapshot is None:
-                # Fail to prevent data loss case
+            if re.match('[0-9]{8}T[0-9]{6}Z', self.fact_snapshot) is None:
+                # If fact_snapshot doesn't match expected format, fail to prevent data loss case
                 raise ValueError("Data exists but found invalid fact_snapshot.")
         except IndexError:
             self.fact_snapshot = ""
