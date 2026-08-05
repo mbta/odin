@@ -4,6 +4,7 @@ import time
 from typing import Any
 from typing import List
 from typing import Tuple
+from datetime import datetime
 
 import polars as pl
 import pyarrow as pa
@@ -168,9 +169,8 @@ class CubicODSFact(OdinJob):
 
         try:
             self.fact_snapshot = str(fast_last_mod_ds_max(self.s3_export, "odin_snapshot"))
-            if self.fact_snapshot is None:
-                # Fail to prevent data loss case
-                raise ValueError("Data exists but found invalid fact_snapshot.")
+            # Require fact_snapshot to adhere to date format, else fail to prevent data loss case
+            _ = datetime.strptime(self.fact_snapshot, "%Y%m%dT%H%M%SZ")
         except IndexError:
             self.fact_snapshot = ""
 
