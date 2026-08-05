@@ -169,7 +169,7 @@ class CubicODSFact(OdinJob):
 
         try:
             self.fact_snapshot = str(fast_last_mod_ds_max(self.s3_export, "odin_snapshot"))
-            if re.match('[0-9]{8}T[0-9]{6}Z', self.fact_snapshot) is None:
+            if re.match("[0-9]{8}T[0-9]{6}Z", self.fact_snapshot) is None:
                 # If fact_snapshot doesn't match expected format, fail to prevent data loss case
                 raise ValueError("Data exists but found invalid fact_snapshot.")
         except IndexError:

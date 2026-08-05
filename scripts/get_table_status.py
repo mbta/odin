@@ -54,6 +54,7 @@ from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import MASABI_STATUS
 from odin.utils.logger import LOGGER_NAME
 
+
 GROUPS: dict[str, dict[str, Any]] = {
     "ODS": {
         "prefix": CUBIC_ODS_FACT_STATUS,
@@ -117,9 +118,7 @@ def _fmt_count(value: Any) -> str:
     return f"{value:,}" if isinstance(value, int) else str(value)
 
 
-def fetch_group(
-    prefix: str, tmpdir: str, only: Optional[set[str]] = None
-) -> dict[str, dict]:
+def fetch_group(prefix: str, tmpdir: str, only: Optional[set[str]] = None) -> dict[str, dict]:
     """
     Download status objects under `prefix`; return {table: payload}
     """
@@ -225,7 +224,7 @@ def _stale_note(table: str, payload: dict, now: datetime) -> str:
     if last_run is None:
         return "status object has no valid last_run"
     ago = _fmt_duration((now - last_run).total_seconds())
-    cadence = _fmt_duration(payload.get("next_run_seconds")) 
+    cadence = _fmt_duration(payload.get("next_run_seconds"))
     seq_lag = payload.get("seq_lag_seconds")
     if isinstance(seq_lag, (int, float)):
         backlog = f"backlog {_fmt_duration(seq_lag)}"
@@ -335,10 +334,12 @@ def print_overall(
     When `detailed`, every table gets a per-table line (OK tables included, with a
     key-info summary); otherwise only not-OK tables are listed.
     """
-    print(f"Odin table status  --  {now.strftime('%Y-%m-%dT%H:%MZ')}")
+    print(f"Odin table status  --  {now.strftime('%Y-%m-%dT%H:%MZ')}\n")
     print(
-        f"(behind = seq_lag > {lag_seconds / 3600:g}h or a job keep-up flag; "
-        f"stale = no run within {stale_seconds / 3600:g}h)\n"
+        f"BEHIND = Latest timestamp older than {lag_seconds / 3600:g} hours, or more data "
+        "available from source.\n"
+        f"STALE = No successful update in the past {stale_seconds / 3600:g} hours\n"
+        "OK = Up-to-date with source\n"
     )
 
     total_behind = total_stale = total_tables = 0
@@ -430,9 +431,7 @@ def main() -> int:
     # Single table: fetch just that table's object, not the whole group.
     if args.table:
         with tempfile.TemporaryDirectory() as tmpdir:
-            payloads = fetch_group(
-                GROUPS[args.group]["prefix"], tmpdir, only={args.table}
-            )
+            payloads = fetch_group(GROUPS[args.group]["prefix"], tmpdir, only={args.table})
         payload = payloads.get(args.table, {})
         if args.json:
             print(json.dumps(payload, indent=2))
