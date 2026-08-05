@@ -174,7 +174,7 @@ def dfm_type_to_polars(field: DFMdataInfocolumns) -> pl.DataType:
     :return: qlik type converted to polars
     """
     qlik_type = field["type"]
-    field['precision'] = dfm_field_precision(field)
+    field["precision"] = dfm_field_precision(field)
 
     if field["name"] == "header__change_seq":
         return pl.String()
