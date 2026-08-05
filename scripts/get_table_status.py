@@ -54,7 +54,6 @@ from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import MASABI_STATUS
 from odin.utils.logger import LOGGER_NAME
 
-
 GROUPS: dict[str, dict[str, Any]] = {
     "ODS": {
         "prefix": CUBIC_ODS_FACT_STATUS,
@@ -205,7 +204,7 @@ def _behind_note(payload: dict) -> str:
     if payload.get("caught_up") is False:
         parts.append("hit row limit")
     if payload.get("cdc_budget_nearly_full") is True or payload.get("merge_budget_full") is True:
-        parts.append("running at capacity")
+        parts.append("budget full")
     catchup = payload.get("catchup_processing_seconds")
     if isinstance(catchup, (int, float)) and catchup > 0:
         wall = payload.get("catchup_wall_seconds")
@@ -225,12 +224,7 @@ def _stale_note(table: str, payload: dict, now: datetime) -> str:
         return "status object has no valid last_run"
     ago = _fmt_duration((now - last_run).total_seconds())
     cadence = _fmt_duration(payload.get("next_run_seconds"))
-    seq_lag = payload.get("seq_lag_seconds")
-    if isinstance(seq_lag, (int, float)):
-        backlog = f"backlog {_fmt_duration(seq_lag)}"
-    else:
-        backlog = "up-to-date"
-    return f"last run {ago} ago (cadence {cadence}), {backlog}"
+    return f"last run {ago} ago (cadence {cadence})"
 
 
 def _ok_note(payload: dict, now: datetime) -> str:
@@ -334,13 +328,15 @@ def print_overall(
     When `detailed`, every table gets a per-table line (OK tables included, with a
     key-info summary); otherwise only not-OK tables are listed.
     """
-    print(f"Odin table status  --  {now.strftime('%Y-%m-%dT%H:%MZ')}\n")
+    print(f"Odin table status  --  {now.strftime('%Y-%m-%dT%H:%MZ')}")
+
+    print("\nKey:")
     print(
-        f"BEHIND = Latest timestamp older than {lag_seconds / 3600:g} hours, or more data "
-        "available from source.\n"
-        f"STALE = No successful update in the past {stale_seconds / 3600:g} hours\n"
-        "OK = Up-to-date with source\n"
+        f"\tBEHIND = Timestamp lag greater than {lag_seconds / 3600:g} hours, or "
+        "uningested data remains from source"
     )
+    print(f"\tSTALE = No successful update within {stale_seconds / 3600:g} hours.")
+    print("\tOK = Everything up-to-date")
 
     total_behind = total_stale = total_tables = 0
     with tempfile.TemporaryDirectory() as tmpdir:
