@@ -54,6 +54,7 @@ from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import MASABI_STATUS
 from odin.utils.logger import LOGGER_NAME
 
+
 GROUPS: dict[str, dict[str, Any]] = {
     "ODS": {
         "prefix": CUBIC_ODS_FACT_STATUS,
@@ -204,7 +205,7 @@ def _behind_note(payload: dict) -> str:
     if payload.get("caught_up") is False:
         parts.append("hit row limit")
     if payload.get("cdc_budget_nearly_full") is True or payload.get("merge_budget_full") is True:
-        parts.append("budget full")
+        parts.append("running at full capacity")
     catchup = payload.get("catchup_processing_seconds")
     if isinstance(catchup, (int, float)) and catchup > 0:
         wall = payload.get("catchup_wall_seconds")
@@ -222,9 +223,16 @@ def _stale_note(table: str, payload: dict, now: datetime) -> str:
     last_run = _parse_iso(payload.get("last_run"))
     if last_run is None:
         return "status object has no valid last_run"
+
+    seq_lag = payload.get("seq_lag_seconds")
+    if isinstance(seq_lag, (int, float)):
+        lag_statement = f", backlog {_fmt_duration(seq_lag)}"
+    else:
+        lag_statement = ""
+
     ago = _fmt_duration((now - last_run).total_seconds())
     cadence = _fmt_duration(payload.get("next_run_seconds"))
-    return f"last run {ago} ago (cadence {cadence})"
+    return f"last run {ago} ago (cadence {cadence}){lag_statement}"
 
 
 def _ok_note(payload: dict, now: datetime) -> str:
@@ -332,11 +340,11 @@ def print_overall(
 
     print("\nKey:")
     print(
-        f"\tBEHIND = Timestamp lag greater than {lag_seconds / 3600:g} hours, or "
+        f"\tBEHIND = Latest timestamp older than {lag_seconds / 3600:g} hours, and/or "
         "uningested data remains from source"
     )
     print(f"\tSTALE = No successful update within {stale_seconds / 3600:g} hours.")
-    print("\tOK = Everything up-to-date")
+    print("\tOK = Not stale or behind\n")
 
     total_behind = total_stale = total_tables = 0
     with tempfile.TemporaryDirectory() as tmpdir:
