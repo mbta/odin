@@ -73,7 +73,7 @@ def start():
 
     # Schedule ODIN Jobs
     schedule_sigterm_check(schedule)
-    if odin_instance in ["alpha", "beta", "gamma"]:
+    if odin_instance in ["alpha", "beta", "gamma", "delta"]:
         schedule_cubic_archive_qlik(schedule)
 
     if odin_instance in ["alpha", "beta"]:
