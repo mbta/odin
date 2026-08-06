@@ -98,6 +98,13 @@ DFM_PRECISION_EXCEPTIONS: List[DFMprecisionException] = [
         "drift_precision": 19,
         "archive_precision": 10,
     },
+    {
+        "name": "PAL_CONFIRMATION_ID",
+        "type": "NUMERIC",
+        "scale": 0,
+        "drift_precision": 19,
+        "archive_precision": 10,
+    },
 ]
 
 
