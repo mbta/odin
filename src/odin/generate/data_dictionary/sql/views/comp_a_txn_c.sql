@@ -150,7 +150,7 @@ pt.payment_type_key,
 st.operating_day_key,
 st.settlement_day_key
 FROM
-cubic_ods.edw_sale_transaction AS st
+cubic_delta.edw_sale_transaction AS st
 INNER JOIN cubic_ods.edw_sale_txn_payment AS sp ON
 (((sp.dw_transaction_id = st.dw_transaction_id)
     AND (sp.transaction_dtm = st.transaction_dtm)))
