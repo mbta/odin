@@ -483,19 +483,7 @@ class CubicODSDelta(OdinJob):
         log.complete(rows_loaded=delta_row_count(self.silver))
 
     def _check_load_records(self) -> None:
-        """
-        Assert the snapshot's "L" records can produce a valid silver table.
-
-        Load images are expected to carry ``edw_inserted_dtm``; one without it lands
-        in the odin_year=0 partition. That is no longer a correctness problem — a
-        merge matching on key alone reaches that partition like any other — but it
-        is still a junk bucket: rows with no date locality that every reclustering
-        pass has to keep rewriting, and a signal that the feed has changed shape.
-
-        Checked before the overwrite, deliberately. A rebuild that scattered a
-        chunk of the table into odin_year=0 would stand until the next snapshot
-        rolls, which on these tables is a year away.
-        """
+        """Assert the snapshot's "L" records can produce a valid silver table."""
         checks = ["count(*)"]
         if self.part_columns:
             checks.append('count(*) FILTER (WHERE "edw_inserted_dtm" IS NULL)')
@@ -1076,17 +1064,8 @@ class CubicODSDelta(OdinJob):
         _recluster_inserted_partitions), and the keys on these tables broadly track
         the partitioning column, so a key run maps onto a small set of files.
 
-        Chunking by partition instead produced a long tail of tiny merges — a batch
-        touching forty months paid forty commits, forty log replays and forty plans
-        to change a handful of rows each, and that fixed cost dominated the run.
-        Key ranges absorb those scattered rows into whichever run they fall in.
-
         No chunk carries a partition constraint, so every merge matches purely on
-        key and cannot miss a target row wherever it lives. That is what retires the
-        partition-immutability hazard: pruning is now delta-rs's business, and a
-        poorly-clustered table costs scan time rather than correctness. Partitioning
-        itself stays — it bounds reclustering and gives readers a dated layout — it
-        just no longer decides how the merge is cut.
+        key and cannot miss a target row wherever it lives.
         """
         if source.height <= MAX_CHUNK_RECORDS:
             return [source]
@@ -1122,11 +1101,6 @@ class CubicODSDelta(OdinJob):
             f"primary key columns {sorted(missing)} absent from silver table for {self.table}"
         )
 
-        # "I" rows write their partition values verbatim, so one without an
-        # edw_inserted_dtm creates a row in odin_year=0 — see _check_load_records
-        # for why that bucket is unwanted even though it is now reachable. "U" rows
-        # are exempt: they keep the target's partition values (see update_set), so a
-        # sparse update to an existing row never moves it there.
         if "odin_year" in source.columns:
             inserts = source.filter(pl.col("odin_resolved_oper") == "I")
             null_edw = inserts.get_column("edw_inserted_dtm").null_count()
@@ -1160,8 +1134,6 @@ class CubicODSDelta(OdinJob):
         }
         insert_set = {col: f'source."{col}"' for col in target_cols if col in source_cols}
 
-        # Merge one partition at a time so delta-rs only rewrites a single
-        # partition's files per MERGE, bounding peak memory.
         dt = self.silver
         chunks = self._merge_chunks(source, keys)
         totals: dict = {}

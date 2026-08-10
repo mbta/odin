@@ -741,15 +741,8 @@ def test_rebuild_silver_without_load_records_raises(job):
     assert read_silver().get_column("txn_id").to_list() == [7]
 
 
-def test_rebuild_silver_null_edw_lands_in_zero_partition(job):
-    """
-    On a partitioned table, an L record with a null edw_inserted_dtm is loaded.
-
-    It lands in odin_year=0, which used to be unreachable — a partition-pruned merge
-    never scanned it, so the row could never be updated again and the rebuild
-    rejected the snapshot outright. Merges match on key alone now, so that partition
-    is ordinary and a table carrying null timestamps just works.
-    """
+def test_rebuild_silver_null_edw_on_partitioned_table_raises(job):
+    """On a partitioned table, an L record with a null edw_inserted_dtm raises pre-write."""
     from datetime import datetime
 
     pipeline, write_history, _, _ = job
@@ -762,25 +755,17 @@ def test_rebuild_silver_null_edw_lands_in_zero_partition(job):
                     "header__change_oper": "L",
                     "edw_inserted_dtm": datetime(2025, 1, 15),
                 },
+                # Null edw_inserted_dtm would land this row in the odin_year=0 bucket.
                 {"txn_id": 2, "amount": 20, "header__change_oper": "L"},
             ]
         )
     )
-    pipeline._rebuild_silver()
-
-    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table()).sort("txn_id")
-    assert out.get_column("txn_id").to_list() == [1, 2]
-    assert out.get_column("odin_year").to_list() == [2025, 0]
+    with pytest.raises(AssertionError, match="edw_inserted_dtm"):
+        pipeline._rebuild_silver()
 
 
-def test_merge_cdc_reaches_row_in_the_zero_partition(job):
-    """
-    A null-edw row is insertable and remains updatable afterwards.
-
-    The insert asserts that used to guard odin_year=0 existed because a pruned merge
-    could never revisit it. This walks the full path the guard was protecting: insert
-    a row with no timestamp, then update it in a later batch and see the change land.
-    """
+def test_merge_cdc_insert_with_null_edw_raises(job):
+    """On a partitioned table, an insertable CDC record with null edw_inserted_dtm raises."""
     from datetime import datetime
 
     pipeline, write_history, _, _ = job
@@ -793,30 +778,83 @@ def test_merge_cdc_reaches_row_in_the_zero_partition(job):
                     "header__change_oper": "L",
                     "edw_inserted_dtm": datetime(2025, 1, 15),
                 },
-                # Full-image I record with no edw_inserted_dtm -> odin_year=0.
+                # Full-image I record missing edw_inserted_dtm: inserting it would
+                # put the row in the odin_year=0 bucket.
                 {
                     "txn_id": 2,
                     "amount": 20,
                     "header__change_oper": "I",
                     "header__change_seq": "0001",
                 },
-                # ...and a later sparse update to that same row.
-                {
-                    "txn_id": 2,
-                    "amount": 99,
-                    "header__change_oper": "U",
-                    "header__change_seq": "0002",
-                },
             ]
         )
     )
     pipeline._rebuild_silver()
+    with pytest.raises(AssertionError, match="edw_inserted_dtm"):
+        pipeline._merge_cdc("0")
+
+
+def test_merge_cdc_reaches_a_row_already_in_the_zero_partition(job):
+    """
+    A row that is already in odin_year=0 can still be updated.
+
+    The asserts above keep new ones from being created, but a table built before
+    they existed may already hold some. This writes one directly, bypassing them, to
+    confirm the old trap is gone: a partition-pruned merge could never revisit that
+    partition, so such a row was stranded permanently. Matching on key alone reaches
+    it like any other.
+    """
+    pipeline, write_history, _, _ = job
+    write_history(
+        dated_history_rows(
+            [
+                {
+                    "txn_id": 2,
+                    "amount": 99,
+                    "header__change_oper": "U",
+                    "header__change_seq": "0001",
+                }
+            ]
+        )
+    )
+    pipeline.part_columns = ["odin_year", "odin_month"]
+    write_deltalake(
+        pipeline.silver_uri,
+        pa.Table.from_pylist(
+            [
+                {
+                    "txn_id": 2,
+                    "amount": 20,
+                    "status": None,
+                    "header__change_seq": None,
+                    "odin_snapshot": TEST_SNAPSHOT,
+                    "edw_inserted_dtm": None,
+                    "odin_year": 0,
+                    "odin_month": 0,
+                }
+            ],
+            schema=pa.schema(
+                list(SILVER_SCHEMA)
+                + [
+                    pa.field("edw_inserted_dtm", pa.timestamp("us")),
+                    pa.field("odin_year", pa.int32()),
+                    pa.field("odin_month", pa.int32()),
+                ]
+            ),
+        ),
+        mode="overwrite",
+        schema_mode="overwrite",
+        partition_by=["odin_year", "odin_month"],
+    )
+    pipeline.silver = DeltaTable(pipeline.silver_uri)
+
     pipeline._merge_cdc("0")
 
-    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table()).sort("txn_id")
-    assert out.get_column("txn_id").to_list() == [1, 2]
-    assert out.get_column("amount").to_list() == [10, 99]  # the 0-partition row updated
-    assert out.get_column("odin_year").to_list() == [2025, 0]
+    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table())
+    # 99, not the pre-existing 20: the merge matched rather than dropping the update
+    # as an orphan, which is exactly what the old partition-pruned merge did here.
+    assert out.get_column("amount").to_list() == [99]
+    assert out.get_column("odin_year").to_list() == [0]  # stays put, but was reached
 
 
 def test_merge_cdc_insert_adds_new_key(job):
