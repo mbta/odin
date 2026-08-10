@@ -1,3 +1,4 @@
+from typing import Dict, List
 from odin.utils.instance import get_odin_instance
 from odin.utils.logger import ProcessLog
 
@@ -10,7 +11,7 @@ HISTORY_JOB_IND = 0
 LEGACY_FACT_JOB_IND = 1
 DELTA_FACT_JOB_IND = 2
 
-TABLE_MANIFEST = {
+TABLE_MANIFEST: Dict[str, List[str | None]] = {
     "CCH_STAGE.CATEGORIZATION_RULE": ["alpha", "alpha", None],
     "CCH_STAGE.CATEGORY": ["alpha", "alpha", None],
     "CCH_STAGE.REPROCESS_ACTION": ["alpha", "alpha", None],
