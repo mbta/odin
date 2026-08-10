@@ -21,8 +21,10 @@ a contents-derived watermark would regress and re-read that batch forever.
 
 The source data is treated as untrusted: every run asserts the invariants it
 depends on (required columns present, primary keys declared and present, CDC
-records carry a change sequence, and a load snapshot is non-empty). Violations
-raise rather than silently producing a corrupt silver table.
+records carry a change sequence, a load snapshot is non-empty, and — on
+year/month-partitioned tables — load and insert images carry a non-null
+``edw_inserted_dtm``). Violations raise rather than silently producing a corrupt
+silver table.
 
 Merges match on primary key alone and are cut into key-ordered chunks, never by
 partition, so a MERGE can always find its target row wherever it lives. File
@@ -30,8 +32,10 @@ selection is left to delta-rs, which derives a key-range filter from that
 predicate; the silver table is kept sorted by key so the filter prunes well.
 Partitioning by odin_year/odin_month remains for the reader layout and to bound
 reclustering, but it no longer participates in the merge — which is why a key
-whose ``edw_inserted_dtm`` changes, or a row that never had one, is now ordinary
-data rather than a hazard.
+whose ``edw_inserted_dtm`` changes is now ordinary data rather than a hazard.
+The null-``edw_inserted_dtm`` asserts above survive that change for a different
+reason: such rows are no longer unreachable, just undesirable, since odin_year=0
+collects rows with no date locality that every reclustering pass rewrites.
 
 Two Qlik Replicate behaviors are relied on without a runtime check:
   - ``header__change_seq`` is unique per change record, so paging with
@@ -482,15 +486,23 @@ class CubicODSDelta(OdinJob):
         """
         Assert the snapshot's "L" records can produce a valid silver table.
 
-        A null ``edw_inserted_dtm`` used to be rejected here: such a row landed in
-        the odin_year=0 partition, which a partition-pruned merge never reached.
-        Merges match on key alone now, so that partition is reachable like any
-        other and a table carrying null timestamps simply works.
+        Load images are expected to carry ``edw_inserted_dtm``; one without it lands
+        in the odin_year=0 partition. That is no longer a correctness problem — a
+        merge matching on key alone reaches that partition like any other — but it
+        is still a junk bucket: rows with no date locality that every reclustering
+        pass has to keep rewriting, and a signal that the feed has changed shape.
+
+        Checked before the overwrite, deliberately. A rebuild that scattered a
+        chunk of the table into odin_year=0 would stand until the next snapshot
+        rolls, which on these tables is a year away.
         """
+        checks = ["count(*)"]
+        if self.part_columns:
+            checks.append('count(*) FILTER (WHERE "edw_inserted_dtm" IS NULL)')
         row = (
             self._db()
             .execute(
-                f"SELECT count(*) FROM {self._read_history} "
+                f"SELECT {', '.join(checks)} FROM {self._read_history} "
                 "WHERE snapshot = ? AND header__change_oper = 'L'",
                 [self.history_snapshot],
             )
@@ -499,6 +511,12 @@ class CubicODSDelta(OdinJob):
         assert row is not None and row[0] > 0, (
             f"snapshot {self.history_snapshot} for {self.table} has no L (load) records"
         )
+        if self.part_columns:
+            assert row[1] == 0, (
+                f"snapshot {self.history_snapshot} for {self.table} has {row[1]} L (load) "
+                "records with a null edw_inserted_dtm; those rows would land in the "
+                "odin_year=0 partition"
+            )
 
     # ------------------------------------------------------------------
     # CDC MERGE (silver update from I/U/D records)
@@ -1103,6 +1121,19 @@ class CubicODSDelta(OdinJob):
         assert not missing, (
             f"primary key columns {sorted(missing)} absent from silver table for {self.table}"
         )
+
+        # "I" rows write their partition values verbatim, so one without an
+        # edw_inserted_dtm creates a row in odin_year=0 — see _check_load_records
+        # for why that bucket is unwanted even though it is now reachable. "U" rows
+        # are exempt: they keep the target's partition values (see update_set), so a
+        # sparse update to an existing row never moves it there.
+        if "odin_year" in source.columns:
+            inserts = source.filter(pl.col("odin_resolved_oper") == "I")
+            null_edw = inserts.get_column("edw_inserted_dtm").null_count()
+            assert null_edw == 0, (
+                f"{null_edw} insert-resolved CDC records for {self.table} carry a null "
+                "edw_inserted_dtm; inserted rows would land in the odin_year=0 partition"
+            )
 
         passthrough = {"odin_snapshot", "header__change_seq"}
         partition_cols = {"odin_year", "odin_month"}
