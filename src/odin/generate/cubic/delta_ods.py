@@ -21,11 +21,17 @@ a contents-derived watermark would regress and re-read that batch forever.
 
 The source data is treated as untrusted: every run asserts the invariants it
 depends on (required columns present, primary keys declared and present, CDC
-records carry a change sequence, a load snapshot is non-empty, and — on
-year/month-partitioned tables — load and insert images carry a non-null
-``edw_inserted_dtm``, since a row without one would land in an odin_year=0
-partition that the pruned merge scan never revisits). Violations raise rather
-than silently producing a corrupt silver table.
+records carry a change sequence, and a load snapshot is non-empty). Violations
+raise rather than silently producing a corrupt silver table.
+
+Merges match on primary key alone and are cut into key-ordered chunks, never by
+partition, so a MERGE can always find its target row wherever it lives. File
+selection is left to delta-rs, which derives a key-range filter from that
+predicate; the silver table is kept sorted by key so the filter prunes well.
+Partitioning by odin_year/odin_month remains for the reader layout and to bound
+reclustering, but it no longer participates in the merge — which is why a key
+whose ``edw_inserted_dtm`` changes, or a row that never had one, is now ordinary
+data rather than a hazard.
 
 Two Qlik Replicate behaviors are relied on without a runtime check:
   - ``header__change_seq`` is unique per change record, so paging with
@@ -473,14 +479,18 @@ class CubicODSDelta(OdinJob):
         log.complete(rows_loaded=delta_row_count(self.silver))
 
     def _check_load_records(self) -> None:
-        """Assert the snapshot's "L" records can produce a valid silver table."""
-        checks = ["count(*)"]
-        if self.part_columns:
-            checks.append('count(*) FILTER (WHERE "edw_inserted_dtm" IS NULL)')
+        """
+        Assert the snapshot's "L" records can produce a valid silver table.
+
+        A null ``edw_inserted_dtm`` used to be rejected here: such a row landed in
+        the odin_year=0 partition, which a partition-pruned merge never reached.
+        Merges match on key alone now, so that partition is reachable like any
+        other and a table carrying null timestamps simply works.
+        """
         row = (
             self._db()
             .execute(
-                f"SELECT {', '.join(checks)} FROM {self._read_history} "
+                f"SELECT count(*) FROM {self._read_history} "
                 "WHERE snapshot = ? AND header__change_oper = 'L'",
                 [self.history_snapshot],
             )
@@ -489,12 +499,6 @@ class CubicODSDelta(OdinJob):
         assert row is not None and row[0] > 0, (
             f"snapshot {self.history_snapshot} for {self.table} has no L (load) records"
         )
-        if self.part_columns:
-            assert row[1] == 0, (
-                f"snapshot {self.history_snapshot} for {self.table} has {row[1]} L (load) "
-                "records with a null edw_inserted_dtm; rows would land in the odin_year=0 "
-                "partition, which partition-pruned merges never revisit"
-            )
 
     # ------------------------------------------------------------------
     # CDC MERGE (silver update from I/U/D records)
@@ -622,7 +626,6 @@ class CubicODSDelta(OdinJob):
         max_seq_processed = str(max_seq)
 
         keys = self._discover_keys(cdc_df)
-        self._check_partition_stability(cdc_df, keys)
         source = self._build_merge_source(cdc_df, keys)
         # The raw batch holds every CDC record; `source` holds one resolved row per
         # key. Drop the larger of the two before the merge rather than after it.
@@ -663,12 +666,13 @@ class CubicODSDelta(OdinJob):
         """
         Log fields describing the partitions a merge touches (dated tables only).
 
-        Reported from the merge source (the same values _partition_constraint
-        prunes by): how many distinct odin_year/odin_month partitions the batch
-        reaches and the row count landing in each, oldest first — the signal
-        for pathological update patterns (e.g. frequent history-wide sweeps).
-        Rows without edw_inserted_dtm have an unknown target partition; they
-        are counted separately and disable pruning for the whole merge.
+        How many distinct odin_year/odin_month partitions the batch writes to and
+        the row count landing in each, oldest first — the signal for pathological
+        update patterns (e.g. frequent history-wide sweeps). Merges no longer prune
+        by partition, so this describes write spread rather than scan scope: a batch
+        fanned across many partitions opens a parquet writer per partition, which is
+        the memory cost worth watching. Rows without edw_inserted_dtm keep whatever
+        partition their target row already had, and are counted separately.
         """
         if "odin_year" not in source.columns:
             return {}
@@ -685,7 +689,6 @@ class CubicODSDelta(OdinJob):
         metrics = {
             "partitions_touched": parts.height,
             "partition_rows": ",".join(labels),
-            "partition_scan_pruned": bool(self._partition_constraint(source)),
         }
         unknown = source.get_column("edw_inserted_dtm").null_count()
         if unknown:
@@ -909,39 +912,6 @@ class CubicODSDelta(OdinJob):
         )
         return keys
 
-    def _check_partition_stability(self, cdc_df: pl.DataFrame, keys: list[str]) -> None:
-        """
-        Assert no key's CDC records disagree on edw_inserted_dtm.
-
-        Merging one partition at a time means each MERGE scans only the partition
-        its own source rows land in, so a key whose target row lives in a *different*
-        partition is never seen: the row is inserted alongside the old one instead
-        of replacing it, and the key silently duplicates. The whole scheme rests on
-        edw_inserted_dtm being fixed for the life of a key, which makes a row's
-        partition fixed too.
-
-        This is the affordable half of that invariant — it compares a key's records
-        against each other, in memory, and so catches a feed that starts mutating
-        the column (including a delete/re-insert that reuses a primary key with a
-        new timestamp, which a merge chunk cannot resolve). It cannot catch a
-        mutation relative to a row written by an *earlier* batch; confirming that
-        would mean reading every key's current partition out of silver on every
-        run, which costs more than the merge it protects.
-        """
-        if "edw_inserted_dtm" not in cdc_df.columns:
-            return
-        disagreeing = (
-            cdc_df.filter(pl.col("edw_inserted_dtm").is_not_null())
-            .group_by(keys)
-            .agg(pl.col("edw_inserted_dtm").n_unique().alias("distinct_edw"))
-            .filter(pl.col("distinct_edw") > 1)
-        )
-        assert disagreeing.height == 0, (
-            f"{disagreeing.height} key(s) in the {self.table} CDC batch carry more than one "
-            "edw_inserted_dtm; a key's partition must not change or the partition-scoped "
-            f"merge would duplicate it. Offending keys: {disagreeing.head(5).rows()}"
-        )
-
     def _dfm_from_records(self, cdc_df: pl.DataFrame) -> QlikDFM:
         """Locate a DFM for the CDC source CSVs, trying processed then source paths."""
         for candidate in self._dfm_candidates(cdc_df):
@@ -1019,9 +989,8 @@ class CubicODSDelta(OdinJob):
         # Data values: latest non-null per column across the key's records at or
         # after its reset (all records when there is none). By construction this
         # folds I + trailing Us for "I" keys and only Us for "U" keys; for "D"
-        # keys it starts at the delete image itself, whose values are unused by
-        # the delete except edw_inserted_dtm, which _partition_constraint needs
-        # to keep the merge scan pruned (it names the deleted row's partition).
+        # keys it starts at the delete image itself, whose values the delete does
+        # not use.
         folded = (
             cdc_df.join(resets.select(*keys, "_reset_seq"), on=keys, how="left", nulls_equal=True)
             .filter(
@@ -1075,68 +1044,41 @@ class CubicODSDelta(OdinJob):
             else f'(target."{k}" = source."{k}" OR (target."{k}" IS NULL AND source."{k}" IS NULL))'
             for k in keys
         )
-        return key_pred + self._partition_constraint(source)
+        return key_pred
 
-    def _partition_constraint(self, source: pl.DataFrame) -> str:
+    def _merge_chunks(self, source: pl.DataFrame, keys: list[str]) -> list[pl.DataFrame]:
         """
-        Return a partition-pruning clause for the merge, or '' when unsafe.
+        Split the merge source into key-ordered chunks of at most MAX_CHUNK_RECORDS.
 
-        Emits ` AND ((odin_year = Y1 AND odin_month = M1) OR ...)` naming the exact
-        (year, month) partitions the source touches, restricting the scan to just
-        those.
+        The whole source is sorted by key and cut into contiguous runs. Chunking is
+        deliberately *not* done by partition: each chunk's job is to be a narrow key
+        range, so that the ``target.k BETWEEN min(source.k) AND max(source.k)``
+        delta-rs derives under ``streamed_exec=False`` selects only the files
+        covering that range. Files are key-ordered within a partition (z_order, see
+        _recluster_inserted_partitions), and the keys on these tables broadly track
+        the partitioning column, so a key run maps onto a small set of files.
+
+        Chunking by partition instead produced a long tail of tiny merges — a batch
+        touching forty months paid forty commits, forty log replays and forty plans
+        to change a handful of rows each, and that fixed cost dominated the run.
+        Key ranges absorb those scattered rows into whichever run they fall in.
+
+        No chunk carries a partition constraint, so every merge matches purely on
+        key and cannot miss a target row wherever it lives. That is what retires the
+        partition-immutability hazard: pruning is now delta-rs's business, and a
+        poorly-clustered table costs scan time rather than correctness. Partitioning
+        itself stays — it bounds reclustering and gives readers a dated layout — it
+        just no longer decides how the merge is cut.
         """
-        if "odin_year" not in source.columns or "odin_month" not in source.columns:
-            return ""
-        if source.get_column("edw_inserted_dtm").null_count() > 0:
-            return ""
-        pairs = (
-            source.select("odin_year", "odin_month")
-            .unique()
-            .sort(["odin_year", "odin_month"])
-            .rows()
-        )
-        if not pairs:
-            return ""
-        pair_sql = " OR ".join(
-            f'(target."odin_year" = CAST({y} AS INT) AND target."odin_month" = CAST({m} AS INT))'
-            for y, m in pairs
-        )
-        return f" AND ({pair_sql})"
-
-    def _partition_chunks(self, source: pl.DataFrame, keys: list[str]) -> list[pl.DataFrame]:
-        """
-        Split the merge source into chunks small enough to merge one at a time.
-
-        Two cuts, in order. First by (odin_year, odin_month), so delta-rs rewrites
-        only one partition's files per MERGE; non-dated tables lack the partition
-        columns and start as one chunk, and null-edw rows share the (0, 0) chunk,
-        which _partition_constraint leaves unpruned. Then any chunk still over
-        MAX_CHUNK_RECORDS is cut again into contiguous runs of that size, sorted
-        by key columns.
-
-        The rationale for the latter sort is to reduce the number of files touched
-        by each chunk merge (where files have been sorted by key via z_order().)
-        """
-        chunks = (
-            source.partition_by(["odin_year", "odin_month"])
-            if "odin_year" in source.columns and "odin_month" in source.columns
-            else [source]
-        )
-        if all(chunk.height <= MAX_CHUNK_RECORDS for chunk in chunks):
-            return chunks
-        else:
-            sliced: list[pl.DataFrame] = []
-            for chunk in chunks:
-                if chunk.height <= MAX_CHUNK_RECORDS:
-                    sliced.append(chunk)
-                    continue
-                ordered = chunk.sort(keys)
-                sliced.extend(
-                    ordered.slice(offset, MAX_CHUNK_RECORDS)
-                    for offset in range(0, ordered.height, MAX_CHUNK_RECORDS)
-                )
-            assert sum(map(len, chunks)) == sum(map(len, sliced))
-            return sliced
+        if source.height <= MAX_CHUNK_RECORDS:
+            return [source]
+        ordered = source.sort(keys)
+        chunks = [
+            ordered.slice(offset, MAX_CHUNK_RECORDS)
+            for offset in range(0, ordered.height, MAX_CHUNK_RECORDS)
+        ]
+        assert sum(map(len, chunks)) == source.height
+        return chunks
 
     def _merge_apply(self, source: pl.DataFrame, keys: list[str], watermark: str) -> dict:
         """
@@ -1161,15 +1103,6 @@ class CubicODSDelta(OdinJob):
         assert not missing, (
             f"primary key columns {sorted(missing)} absent from silver table for {self.table}"
         )
-
-        if "odin_year" in source.columns:
-            inserts = source.filter(pl.col("odin_resolved_oper") == "I")
-            null_edw = inserts.get_column("edw_inserted_dtm").null_count()
-            assert null_edw == 0, (
-                f"{null_edw} insert-resolved CDC records for {self.table} carry a null "
-                "edw_inserted_dtm; inserted rows would land in the odin_year=0 "
-                "partition, which partition-pruned merges never revisit"
-            )
 
         passthrough = {"odin_snapshot", "header__change_seq"}
         partition_cols = {"odin_year", "odin_month"}
@@ -1199,7 +1132,7 @@ class CubicODSDelta(OdinJob):
         # Merge one partition at a time so delta-rs only rewrites a single
         # partition's files per MERGE, bounding peak memory.
         dt = self.silver
-        chunks = self._partition_chunks(source, keys)
+        chunks = self._merge_chunks(source, keys)
         totals: dict = {}
         for chunk in chunks:
             predicate = self._merge_predicate(keys, chunk)

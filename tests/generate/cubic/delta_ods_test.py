@@ -270,8 +270,8 @@ def test_merge_cdc_dated_table_derives_year_and_month(job):
     assert out.get_column("odin_month").to_list() == [1, 3]
 
 
-# Two partitions, each holding two keys whose ranges overlap the source key, so
-# only a partition constraint (not key-stat pruning) can skip a file.
+# Two partitions holding disjoint key ranges (1-2 and 3-4), the key-clustered
+# layout z_order maintains, so a narrow source key range can skip a whole file.
 def _two_partition_history() -> "pa.Table":
     from datetime import datetime
 
@@ -284,14 +284,14 @@ def _two_partition_history() -> "pa.Table":
                 "edw_inserted_dtm": datetime(2024, 1, 5),
             },
             {
-                "txn_id": 3,
-                "amount": 30,
+                "txn_id": 2,
+                "amount": 20,
                 "header__change_oper": "L",
                 "edw_inserted_dtm": datetime(2024, 1, 6),
             },
             {
-                "txn_id": 2,
-                "amount": 20,
+                "txn_id": 3,
+                "amount": 30,
                 "header__change_oper": "L",
                 "edw_inserted_dtm": datetime(2025, 3, 5),
             },
@@ -305,8 +305,15 @@ def _two_partition_history() -> "pa.Table":
     )
 
 
-def test_merge_prunes_untouched_partitions(job):
-    """A CDC update carrying edw_inserted_dtm skips files outside its partition."""
+def test_merge_prunes_by_key_range(job):
+    """
+    A merge skips files whose recorded key range cannot hold the source's keys.
+
+    This is the only pruning left: with no partition constraint, delta-rs derives
+    ``target.k BETWEEN min(source.k) AND max(source.k)`` from the key predicate
+    (under streamed_exec=False) and applies it to file selection. It pays only when
+    the target is key-clustered, which is what reclustering maintains.
+    """
     from datetime import datetime
 
     pipeline, write_history, _, _ = job
@@ -314,7 +321,7 @@ def test_merge_prunes_untouched_partitions(job):
     update = dated_history_rows(
         [
             {
-                "txn_id": 2,
+                "txn_id": 3,
                 "amount": 99,
                 "header__change_oper": "U",
                 "header__change_seq": "0001",
@@ -329,11 +336,11 @@ def test_merge_prunes_untouched_partitions(job):
     source = pipeline._build_merge_source(cdc_df, KEYS)
     metrics = pipeline._merge_apply(source, KEYS, "0001")
 
-    # The (2024, 1) file is skipped by the partition constraint, not key stats.
+    # The file holding keys 1-2 cannot contain key 3, so it is never read.
     assert metrics["num_target_files_skipped_during_scan"] >= 1
     out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table()).sort("txn_id")
     assert out.get_column("txn_id").to_list() == [1, 2, 3, 4]
-    assert out.filter(pl.col("txn_id") == 2).get_column("amount").to_list() == [99]
+    assert out.filter(pl.col("txn_id") == 3).get_column("amount").to_list() == [99]
 
 
 def test_read_cdc_keeps_tied_boundary_seqs_together(job):
@@ -361,53 +368,6 @@ def test_read_cdc_empty_when_caught_up(job):
         history_rows([{"txn_id": 1, "header__change_oper": "I", "header__change_seq": "0001"}])
     )
     assert pipeline._read_cdc("0005", limit=100).height == 0
-
-
-def test_partition_constraint_names_exact_pairs_not_cross_product(job):
-    """
-    The constraint names the (year, month) pairs the batch touches, not year x month.
-
-    Independent ``odin_year IN (...) AND odin_month IN (...)`` lists admit every
-    combination of the two, so a batch touching 2024-01 and 2025-03 would also drag
-    2024-03 and 2025-01 into the scan. Since the scan predicate is what bounds merge
-    memory, that cross product is the difference between scanning two partitions and
-    scanning dozens.
-    """
-    from datetime import datetime
-
-    pipeline, write_history, _, _ = job
-    base = _two_partition_history()
-    updates = dated_history_rows(
-        [
-            {
-                "txn_id": 1,
-                "amount": 11,
-                "header__change_oper": "U",
-                "header__change_seq": "0001",
-                "edw_inserted_dtm": datetime(2024, 1, 5),
-            },
-            {
-                "txn_id": 2,
-                "amount": 99,
-                "header__change_oper": "U",
-                "header__change_seq": "0002",
-                "edw_inserted_dtm": datetime(2025, 3, 5),
-            },
-        ]
-    )
-    write_history(pa.concat_tables([base, updates]))
-    pipeline._rebuild_silver()
-
-    cdc_df = pipeline._read_cdc("0", limit=100)
-    source = pipeline._build_merge_source(cdc_df, KEYS)
-    constraint = pipeline._partition_constraint(source)
-
-    assert "2024" in constraint and "2025" in constraint
-    # Both real pairs are named...
-    assert '"odin_year" = CAST(2024 AS INT) AND target."odin_month" = CAST(1 AS INT)' in constraint
-    assert '"odin_year" = CAST(2025 AS INT) AND target."odin_month" = CAST(3 AS INT)' in constraint
-    # ...and only those two, so the phantom 2024-03 / 2025-01 combinations are absent.
-    assert constraint.count("odin_year") == 2
 
 
 def test_merge_writes_stay_compressed(job):
@@ -512,8 +472,15 @@ def test_merge_cdc_releases_duckdb_before_merging(job):
     assert seen["con_open_during_merge"] is False
 
 
-def test_merge_no_prune_when_edw_missing(job):
-    """A CDC update missing edw_inserted_dtm falls back to an unpruned scan, still correct."""
+def test_merge_undated_update_prunes_on_key_alone(job):
+    """
+    A sparse update with no edw_inserted_dtm still prunes, because the key prunes.
+
+    This was the expensive case: with no timestamp the target partition was unknown,
+    so the merge ran unconstrained and scanned and rewrote the whole table. Pruning
+    comes from the key range now, which every CDC record carries by definition, so a
+    missing timestamp costs nothing.
+    """
     pipeline, write_history, _, _ = job
     base = _two_partition_history()
     update = dated_history_rows(
@@ -526,14 +493,11 @@ def test_merge_no_prune_when_edw_missing(job):
     source = pipeline._build_merge_source(cdc_df, KEYS)
     metrics = pipeline._merge_apply(source, KEYS, "0001")
 
-    # No partition constraint, and key ranges overlap, so no file can be skipped.
-    assert metrics["num_target_files_skipped_during_scan"] == 0
+    assert metrics["num_target_files_skipped_during_scan"] >= 1
     out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table()).sort("txn_id")
-    row2 = out.filter(pl.col("txn_id") == 2)
-    assert row2.get_column("amount").to_list() == [99]
-    # Partition preserved from the retained edw_inserted_dtm (not clobbered to 0).
-    assert row2.get_column("odin_year").to_list() == [2025]
-    assert row2.get_column("odin_month").to_list() == [3]
+    assert out.filter(pl.col("txn_id") == 2).get_column("amount").to_list() == [99]
+    # The row keeps the partition it already had rather than moving to odin_year=0.
+    assert out.filter(pl.col("txn_id") == 2).get_column("odin_year").to_list() == [2024]
 
 
 def test_rebuild_records_snapshot_and_initial_watermark(job):
@@ -660,13 +624,14 @@ def test_read_state_survives_an_interrupted_run(job):
     assert pipeline._read_state() == (TEST_SNAPSHOT, "0")
 
 
-def test_partition_changing_key_is_rejected_not_duplicated(job):
+def test_partition_changing_key_is_updated_not_duplicated(job):
     """
-    A key whose edw_inserted_dtm changes is caught rather than silently duplicated.
+    A key whose edw_inserted_dtm moves it between partitions is updated in place.
 
-    Each partition merge scans only its own partition, so a key whose target row
-    lives elsewhere is not seen and gets inserted alongside the old row. The batch
-    must be rejected instead.
+    This used to be rejected outright: a partition-scoped merge scanned only its own
+    partition, so a key whose target row lived elsewhere was never seen and got
+    inserted alongside the old row. Matching on key alone, the merge finds the row
+    wherever it is, and the partition change is just a row moving files.
     """
     from datetime import datetime
 
@@ -690,7 +655,7 @@ def test_partition_changing_key_is_rejected_not_duplicated(job):
                 "header__change_seq": "0001",
                 "edw_inserted_dtm": datetime(2024, 1, 5),
             },
-            # same key, different edw_inserted_dtm -> would move partitions
+            # same key, different edw_inserted_dtm -> moves partitions
             {
                 "txn_id": 1,
                 "amount": 12,
@@ -703,8 +668,13 @@ def test_partition_changing_key_is_rejected_not_duplicated(job):
     write_history(pa.concat_tables([base, cdc]))
     pipeline._rebuild_silver()
 
-    with pytest.raises(AssertionError, match="more than one edw_inserted_dtm"):
-        pipeline._merge_cdc("0")
+    pipeline._merge_cdc("0")
+
+    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table())
+    assert out.height == 1  # one row, not the old one plus a duplicate
+    assert out.get_column("amount").to_list() == [12]
+    assert out.get_column("odin_year").to_list() == [2025]
+    assert out.get_column("odin_month").to_list() == [3]
 
 
 def test_delete_only_batch_advances_watermark(job):
@@ -771,8 +741,15 @@ def test_rebuild_silver_without_load_records_raises(job):
     assert read_silver().get_column("txn_id").to_list() == [7]
 
 
-def test_rebuild_silver_null_edw_on_partitioned_table_raises(job):
-    """On a partitioned table, an L record with a null edw_inserted_dtm raises pre-write."""
+def test_rebuild_silver_null_edw_lands_in_zero_partition(job):
+    """
+    On a partitioned table, an L record with a null edw_inserted_dtm is loaded.
+
+    It lands in odin_year=0, which used to be unreachable — a partition-pruned merge
+    never scanned it, so the row could never be updated again and the rebuild
+    rejected the snapshot outright. Merges match on key alone now, so that partition
+    is ordinary and a table carrying null timestamps just works.
+    """
     from datetime import datetime
 
     pipeline, write_history, _, _ = job
@@ -785,18 +762,25 @@ def test_rebuild_silver_null_edw_on_partitioned_table_raises(job):
                     "header__change_oper": "L",
                     "edw_inserted_dtm": datetime(2025, 1, 15),
                 },
-                # Null edw_inserted_dtm would land this row in the unreachable
-                # odin_year=0 partition.
                 {"txn_id": 2, "amount": 20, "header__change_oper": "L"},
             ]
         )
     )
-    with pytest.raises(AssertionError, match="edw_inserted_dtm"):
-        pipeline._rebuild_silver()
+    pipeline._rebuild_silver()
+
+    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table()).sort("txn_id")
+    assert out.get_column("txn_id").to_list() == [1, 2]
+    assert out.get_column("odin_year").to_list() == [2025, 0]
 
 
-def test_merge_cdc_insert_with_null_edw_raises(job):
-    """On a partitioned table, an insertable CDC record with null edw_inserted_dtm raises."""
+def test_merge_cdc_reaches_row_in_the_zero_partition(job):
+    """
+    A null-edw row is insertable and remains updatable afterwards.
+
+    The insert asserts that used to guard odin_year=0 existed because a pruned merge
+    could never revisit it. This walks the full path the guard was protecting: insert
+    a row with no timestamp, then update it in a later batch and see the change land.
+    """
     from datetime import datetime
 
     pipeline, write_history, _, _ = job
@@ -809,20 +793,30 @@ def test_merge_cdc_insert_with_null_edw_raises(job):
                     "header__change_oper": "L",
                     "edw_inserted_dtm": datetime(2025, 1, 15),
                 },
-                # Full-image I record missing edw_inserted_dtm: inserting it would
-                # put the row in the unreachable odin_year=0 partition.
+                # Full-image I record with no edw_inserted_dtm -> odin_year=0.
                 {
                     "txn_id": 2,
                     "amount": 20,
                     "header__change_oper": "I",
                     "header__change_seq": "0001",
                 },
+                # ...and a later sparse update to that same row.
+                {
+                    "txn_id": 2,
+                    "amount": 99,
+                    "header__change_oper": "U",
+                    "header__change_seq": "0002",
+                },
             ]
         )
     )
     pipeline._rebuild_silver()
-    with pytest.raises(AssertionError, match="edw_inserted_dtm"):
-        pipeline._merge_cdc("0")
+    pipeline._merge_cdc("0")
+
+    out = pl.from_arrow(DeltaTable(pipeline.silver_uri).to_pyarrow_table()).sort("txn_id")
+    assert out.get_column("txn_id").to_list() == [1, 2]
+    assert out.get_column("amount").to_list() == [10, 99]  # the 0-partition row updated
+    assert out.get_column("odin_year").to_list() == [2025, 0]
 
 
 def test_merge_cdc_insert_adds_new_key(job):
@@ -1338,7 +1332,6 @@ def test_partition_metrics_reports_touched_partitions(job):
     assert metrics == {
         "partitions_touched": 2,
         "partition_rows": "2024-01=2,2025-03=1",
-        "partition_scan_pruned": True,
     }
 
 
@@ -1357,7 +1350,6 @@ def test_partition_metrics_counts_unknown_partition_rows(job):
     metrics = pipeline._partition_metrics(source)
     assert metrics["partitions_touched"] == 1
     assert metrics["partition_rows"] == "2025-03=1"
-    assert metrics["partition_scan_pruned"] is False
     assert metrics["partition_rows_unknown"] == 1
 
 
@@ -1751,20 +1743,25 @@ def dated_chunk_rows(txn_ids: list[int], year: int, month: int) -> list[dict]:
     ]
 
 
-def test_partition_chunks_leaves_small_chunks_whole(job):
-    """Under the size limit, chunking is still one frame per partition."""
+def test_merge_chunks_ignores_partitions(job):
+    """
+    Under the size limit the whole source is one chunk, however many partitions.
+
+    Chunking by partition produced a long tail of tiny merges, each paying a commit,
+    a log replay and a plan to change a handful of rows. Rows spread across two
+    months merge together now.
+    """
     pipeline, _, _, _ = job
     source = chunk_source(dated_chunk_rows([3, 1, 2], 2025, 1) + dated_chunk_rows([4], 2025, 3))
 
-    chunks = pipeline._partition_chunks(source, KEYS)
+    chunks = pipeline._merge_chunks(source, KEYS)
 
-    assert sorted(chunk.height for chunk in chunks) == [1, 3]
+    assert [chunk.height for chunk in chunks] == [4]
     # No reordering when nothing needs slicing.
-    big = next(chunk for chunk in chunks if chunk.height == 3)
-    assert big.get_column("txn_id").to_list() == [3, 1, 2]
+    assert chunks[0].get_column("txn_id").to_list() == [3, 1, 2, 4]
 
 
-def test_partition_chunks_slices_oversized_chunk_in_key_order(job):
+def test_merge_chunks_slices_oversized_chunk_in_key_order(job):
     """
     An oversized chunk is cut into contiguous runs of keys, not arbitrary slices.
 
@@ -1779,7 +1776,7 @@ def test_partition_chunks_slices_oversized_chunk_in_key_order(job):
     txn_ids = [((i * 7919) % (limit * 2 + 1)) for i in range(limit * 2 + 1)]
     source = chunk_source(dated_chunk_rows(txn_ids, 2025, 1))
 
-    chunks = pipeline._partition_chunks(source, KEYS)
+    chunks = pipeline._merge_chunks(source, KEYS)
 
     assert [chunk.height for chunk in chunks] == [limit, limit, 1]
     # Every slice is a contiguous run, so the ranges are disjoint and ascending.
@@ -1792,8 +1789,8 @@ def test_partition_chunks_slices_oversized_chunk_in_key_order(job):
     assert sorted(k for chunk in chunks for k in chunk.get_column("txn_id")) == sorted(txn_ids)
 
 
-def test_partition_chunks_slices_undated_rows_too(job):
-    """The unknown-partition rows are chunked by the same rule as everything else."""
+def test_merge_chunks_slices_undated_rows_too(job):
+    """Rows with no edw_inserted_dtm are chunked by the same rule as everything else."""
     pipeline, _, _, _ = job
     limit = delta_ods.MAX_CHUNK_RECORDS
     source = chunk_source(
@@ -1803,22 +1800,21 @@ def test_partition_chunks_slices_undated_rows_too(job):
         ]
     )
 
-    chunks = pipeline._partition_chunks(source, KEYS)
+    chunks = pipeline._merge_chunks(source, KEYS)
 
     assert [chunk.height for chunk in chunks] == [limit, 5]
-    # Still unconstrained (null edw), so each slice merges against every partition —
-    # but against a narrow key range, which is what lets file skipping help.
-    assert pipeline._partition_constraint(chunks[0]) == ""
+    # Nothing special is done for them any more: they are keyed and sliced like the
+    # rest, and merge against a narrow key range rather than an unpruned whole table.
     assert chunks[0].get_column("txn_id").to_list() == sorted(chunks[0].get_column("txn_id"))
 
 
-def test_partition_chunks_unpartitioned_table_still_sliced(job):
+def test_merge_chunks_unpartitioned_table_still_sliced(job):
     """A table with no partition columns starts as one chunk and is cut by size."""
     pipeline, _, _, _ = job
     limit = delta_ods.MAX_CHUNK_RECORDS
     source = pl.DataFrame({"txn_id": list(reversed(range(limit + 1)))}, schema={"txn_id": pl.Int64})
 
-    chunks = pipeline._partition_chunks(source, KEYS)
+    chunks = pipeline._merge_chunks(source, KEYS)
 
     assert [chunk.height for chunk in chunks] == [limit, 1]
     assert chunks[0].get_column("txn_id").to_list() == sorted(chunks[0].get_column("txn_id"))
