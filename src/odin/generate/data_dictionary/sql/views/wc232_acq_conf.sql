@@ -12,6 +12,6 @@ SELECT
   COALESCE(UNSETTLED_CRDB_ACQ_CONF.TRANSACTION_AMOUNT,0)/100 AS transaction_amount,
   UNSETTLED_CRDB_ACQ_CONF.TRANSIT_ACCOUNT_ID
 FROM
-  cubic_ods.edw_unsettled_crdb_acq_conf UNSETTLED_CRDB_ACQ_CONF
+  cubic_delta.edw_unsettled_crdb_acq_conf UNSETTLED_CRDB_ACQ_CONF
 )
 ;
