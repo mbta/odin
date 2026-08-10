@@ -1,3 +1,4 @@
+from typing import Dict, List
 from odin.utils.instance import get_odin_instance
 from odin.utils.logger import ProcessLog
 
@@ -10,7 +11,7 @@ HISTORY_JOB_IND = 0
 LEGACY_FACT_JOB_IND = 1
 DELTA_FACT_JOB_IND = 2
 
-TABLE_MANIFEST = {
+TABLE_MANIFEST: Dict[str, List[str | None]] = {
     "CCH_STAGE.CATEGORIZATION_RULE": ["alpha", "alpha", None],
     "CCH_STAGE.CATEGORY": ["alpha", "alpha", None],
     "CCH_STAGE.REPROCESS_ACTION": ["alpha", "alpha", None],
@@ -48,7 +49,7 @@ TABLE_MANIFEST = {
     "EDW.DEVICE_DIMENSION": ["alpha", "alpha", None],
     "EDW.DEVICE_END_OF_DAY_MSG_COUNT": ["alpha", "alpha", None],
     "EDW.DEVICE_EVENT": ["alpha", "alpha", None],
-    "EDW.DEVICE_LAST_STATE": ["delta", None, "delta"],
+    "EDW.DEVICE_LAST_STATE": ["gamma", "gamma", "gamma"],
     "EDW.EMPLOYEE_DIMENSION": ["alpha", "alpha", None],
     "EDW.EVENT_TYPE_DIMENSION": ["alpha", "alpha", None],
     "EDW.FACILITY_DIMENSION": ["alpha", "alpha", None],
