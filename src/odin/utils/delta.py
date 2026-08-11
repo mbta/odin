@@ -155,13 +155,6 @@ def fact_to_delta(
     """
     Copy a legacy Cubic ODS fact table into its Delta silver table.
 
-    This is the cheap migration path onto ``generate/cubic/delta_ods.py`` for a
-    table whose Qlik history holds an unreasonable amount of CDC since its last
-    snapshot: rather than have CubicODSDelta rebuild from the snapshot's "L"
-    records and then chew through that whole backlog, the already-current fact
-    table is translated in place into a Delta table and the job picks up from
-    the fact table's position.
-
     The translation is purely a reshaping — no CDC is read or applied:
 
       * ``odin_index`` (fact-only) is dropped, so the schema matches what
@@ -176,15 +169,11 @@ def fact_to_delta(
     the max ``header__change_seq`` present in it. ``delta.targetFileSize`` is set
     on the table as well, so the first merge does not have to correct file sizing.
 
-    Two things worth knowing about the recorded watermark. It is derived from the
-    surviving rows, which is exactly the resume point ods_fact.py itself uses, but
-    it can sit *behind* the last sequence actually applied — a CDC batch of deletes
-    removes the row holding the max sequence. The delta job therefore replays from
-    there, which is safe: replaying a contiguous suffix of the change stream over
-    the same rows resolves to the same table (see _build_merge_source). And if the
-    Qlik history has rolled to a newer snapshot since the fact table last ran, the
-    delta job will find the mismatch and rebuild from history — the migration is
-    wasted work in that case, not a corrupt table.
+    Note about the recorded watermark. It is derived from the surviving rows, which
+    is exactly the resume point ods_fact.py itself uses, but it can sit *behind*
+    the last sequence actually applied — a CDC batch of deletes removes the row
+    holding the max sequence. The delta job therefore replays from there, which is
+    safe.
 
     :param table: Cubic ODS table name (e.g. "EDW.FARE_RULE")
     :param fact_root: source fact dataset; defaults to the springboard fact path
@@ -216,12 +205,9 @@ def fact_to_delta(
     missing = set(REQUIRED_FACT_COLUMNS) - set(fact_columns)
     assert not missing, f"fact table for {table} is missing required columns: {sorted(missing)}"
 
-    # The snapshot generation the fact table was loaded from. load_new_snapshot
-    # rewrites every row when the snapshot rolls, so a table straddling two of
-    # them is a broken fact table and there is no single position to record.
     snapshot_min, snapshot_max = ds_metadata_min_max(fact_ds, "odin_snapshot")
     assert snapshot_min == snapshot_max and snapshot_max, (
-        f"fact table for {table} does not carry a single odin_snapshot "
+        f"fact table for {table} carries multiple values for odin_snapshot "
         f"(min={snapshot_min!r}, max={snapshot_max!r})"
     )
     snapshot = str(snapshot_max)
@@ -230,7 +216,8 @@ def fact_to_delta(
     datetime.strptime(snapshot, SNAPSHOT_FMT)
 
     _, max_seq = ds_metadata_min_max(fact_ds, "header__change_seq")
-    watermark = INITIAL_WATERMARK if max_seq is None else str(max_seq)
+    assert max_seq is not None, "Current change watermark could not be found."
+    watermark = str(max_seq)
 
     read_columns = [
         c for c in fact_columns if c not in FACT_ONLY_COLUMNS and c not in FACT_PARTITION_COLUMNS
