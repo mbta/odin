@@ -11,7 +11,7 @@ SELECT
     ,u.transit_account_id
     ,tm.travel_mode_name
 FROM
-    cubic_ods.edw_sale_transaction s
+    cubic_delta.edw_sale_transaction s
 JOIN
     cubic_ods.edw_trip_payment tp
     ON
@@ -21,7 +21,7 @@ JOIN
     ON
         t.patron_trip_id = tp.patron_trip_id
 JOIN
-    cubic_ods.edw_use_transaction u
+    cubic_delta.edw_use_transaction u
     ON
         u.patron_trip_id = tp.patron_trip_id
         AND u.trip_price_count = tp.trip_price_count
