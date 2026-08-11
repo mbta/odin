@@ -29,7 +29,7 @@ SELECT
     ut.settlement_day_key,
     ut.posting_day_key
 FROM
-    cubic_ods.edw_use_transaction AS ut
+    cubic_delta.edw_use_transaction AS ut
 INNER JOIN cubic_ods.edw_patron_trip AS tr ON
     (((tr.patron_trip_id = ut.patron_trip_id)
         AND (tr."source" = ut."source")))
@@ -47,10 +47,10 @@ INNER JOIN cubic_ods.edw_trip_payment AS tp ON
                                 AND (ut.fare_due > 0))
                         OR ((tp.je_is_fare_adjustment = 1)
                             AND (ut.ride_type_key = 24)))))
-LEFT JOIN cubic_ods.edw_sale_transaction AS s ON
+LEFT JOIN cubic_delta.edw_sale_transaction AS s ON
     (((s.purse_load_id = tp.purse_load_id)
         AND (s.sale_type_key = 26)))
-LEFT JOIN cubic_ods.edw_sale_transaction AS bcp ON
+LEFT JOIN cubic_delta.edw_sale_transaction AS bcp ON
     (((bcp.bankcard_payment_id = tp.bankcard_payment_id)
         AND (bcp.sale_type_key = 20)
             AND (bcp.bankcard_payment_type_key IN (1, 2, 3))))
@@ -133,7 +133,7 @@ s.operating_day_key,
 s.settlement_day_key,
 s.posting_day_key
 FROM
-cubic_ods.edw_sale_transaction AS s
+cubic_delta.edw_sale_transaction AS s
 INNER JOIN cubic_ods.edw_sale_txn_payment AS sp ON
 (((sp.dw_transaction_id = s.dw_transaction_id)
     AND (sp.transaction_dtm = s.transaction_dtm)))

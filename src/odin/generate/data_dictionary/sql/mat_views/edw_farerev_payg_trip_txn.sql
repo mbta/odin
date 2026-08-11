@@ -20,7 +20,7 @@ WITH agg AS (
         END AS extension_charge_reason,
         sum(((tp.bankcard_value + CASE WHEN (((tp.bankcard_payment_id IS NOT NULL) OR (mt.payg_flag = 1))) THEN (tp.uncollectible_amount) ELSE 0 END) + CASE WHEN (((s.purse_load_id IS NOT NULL) AND (mt.payg_flag = 1))) THEN (tp.stored_value) ELSE 0 END)) AS fare_revenue_raw
     FROM
-        cubic_ods.edw_use_transaction AS ut
+        cubic_delta.edw_use_transaction AS ut
     INNER JOIN cubic_ods.edw_patron_trip AS tr ON
         (((tr.patron_trip_id = ut.patron_trip_id)
             AND (tr."source" = ut."source")))
@@ -38,10 +38,10 @@ WITH agg AS (
                                     AND (ut.fare_due > 0))
                             OR ((tp.je_is_fare_adjustment = 1)
                                 AND (ut.ride_type_key = 24)))))
-    LEFT JOIN cubic_ods.edw_sale_transaction AS s ON
+    LEFT JOIN cubic_delta.edw_sale_transaction AS s ON
         (((s.purse_load_id = tp.purse_load_id)
             AND (s.sale_type_key = 26)))
-    LEFT JOIN cubic_ods.edw_sale_transaction AS bcp ON
+    LEFT JOIN cubic_delta.edw_sale_transaction AS bcp ON
         (((bcp.bankcard_payment_id = tp.bankcard_payment_id)
             AND (bcp.sale_type_key = 20)
                 AND (bcp.bankcard_payment_type_key IN (1, 2, 3))))
@@ -128,7 +128,7 @@ s.operating_day_key,
 s.settlement_day_key,
 s.posting_day_key
 FROM
-cubic_ods.edw_sale_transaction AS s
+cubic_delta.edw_sale_transaction AS s
 INNER JOIN cubic_ods.edw_sale_txn_payment AS sp ON
 (((sp.dw_transaction_id = s.dw_transaction_id)
     AND (sp.transaction_dtm = s.transaction_dtm)))
