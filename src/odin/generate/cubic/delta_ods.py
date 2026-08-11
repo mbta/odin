@@ -64,7 +64,6 @@ import pyarrow as pa
 
 from deltalake import CommitProperties
 from deltalake import DeltaTable
-from deltalake import WriterProperties
 from deltalake import write_deltalake
 from deltalake.exceptions import SchemaMismatchError
 
@@ -74,8 +73,16 @@ from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import list_partitions
 from odin.utils.aws.s3 import s3_file
 from odin.utils.aws.s3 import s3_folder
+from odin.utils.delta import DELTA_WRITER_PROPERTIES
+from odin.utils.delta import INITIAL_WATERMARK
+from odin.utils.delta import STATE_SNAPSHOT_KEY
+from odin.utils.delta import STATE_WATERMARK_KEY
+from odin.utils.delta import TARGET_FILE_SIZE_BYTES
+from odin.utils.delta import TARGET_FILE_SIZE_PROPERTY
 from odin.utils.delta import open_delta
 from odin.utils.delta import row_count as delta_row_count
+from odin.utils.delta import set_target_file_size
+from odin.utils.delta import state_commit_properties
 from odin.utils.locations import CUBIC_ODS_DELTA_DATA
 from odin.utils.locations import CUBIC_ODS_DELTA_STATUS
 from odin.utils.locations import CUBIC_QLIK_PROCESSED
@@ -110,12 +117,7 @@ MAX_CHUNK_RECORDS = 25_000
 
 CDC_OPERS = ("I", "U", "D")
 
-DELTA_WRITER_PROPERTIES = WriterProperties(max_row_group_size=64 * 1024, compression="SNAPPY")
-
 os.environ.setdefault("DELTARS_MAX_CONCURRENCY_TASKS", "4")
-
-TARGET_FILE_SIZE_PROPERTY = "delta.targetFileSize"
-TARGET_FILE_SIZE_BYTES = 32 * 1024 * 1024
 
 # Reclustering (z-order) trigger. A unit — one partition, or the whole table when
 # unpartitioned — is re-sorted by primary key once enough of its files carry a key
@@ -126,12 +128,6 @@ RECLUSTER_MIN_OVERLAPPING_FILES = 4
 # and peak memory matters more here than wall time.
 RECLUSTER_MAX_CONCURRENT_TASKS = 1
 
-# Keys under which each Delta commit records the job's input position in its
-# custom metadata (readable via DeltaTable.history()). This is the source of
-# truth for "where the table is at", independent of the surviving row contents.
-STATE_SNAPSHOT_KEY = "odin_snapshot"
-STATE_WATERMARK_KEY = "odin_cdc_watermark"
-INITIAL_WATERMARK = "0"  # header__change_seq is a zero-padded string; all seqs > "0"
 HISTORY_SCAN_LIMIT = 50  # commits to scan back for the latest recorded position
 # Deeper fallback for _read_state. One merged batch now commits once per partition it
 # touches, so an interrupted run can bury the last recorded position well past the
@@ -274,22 +270,19 @@ class CubicODSDelta(OdinJob):
         """
         Put delta.targetFileSize on silver when it is missing or stale.
 
-        An explicit alter is required rather than just passing ``configuration`` to
-        write_deltalake: that argument only takes effect when the table is *created*.
-
         Committing only on a mismatch makes this a no-op on every run after the first.
         """
         if self.silver is None:
             return
-        target = str(TARGET_FILE_SIZE_BYTES)
-        if self.silver.metadata().configuration.get(TARGET_FILE_SIZE_PROPERTY) == target:
+        if self.silver.metadata().configuration.get(TARGET_FILE_SIZE_PROPERTY) == str(
+            TARGET_FILE_SIZE_BYTES
+        ):
             return
-        self.silver.alter.set_table_properties({TARGET_FILE_SIZE_PROPERTY: target})
-        self.silver = DeltaTable(self.silver_uri)
+        self.silver = set_target_file_size(self.silver, self.silver_uri)
         ProcessLog(
             "delta_set_target_file_size",
             table=self.table,
-            target_file_size=target,
+            target_file_size=str(TARGET_FILE_SIZE_BYTES),
         ).complete()
 
     def _db(self) -> duckdb.DuckDBPyConnection:
@@ -358,12 +351,7 @@ class CubicODSDelta(OdinJob):
 
     def _commit_state(self, watermark: str) -> CommitProperties:
         """Commit metadata recording the current snapshot and CDC watermark."""
-        return CommitProperties(
-            custom_metadata={
-                STATE_SNAPSHOT_KEY: self.history_snapshot,
-                STATE_WATERMARK_KEY: watermark,
-            }
-        )
+        return state_commit_properties(self.history_snapshot, watermark)
 
     def _commit_watermark(self, watermark: str) -> None:
         """
