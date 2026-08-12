@@ -174,6 +174,9 @@ def is_behind(payload: dict, lag_seconds: float) -> bool:
     jobs_lag = payload.get("jobs_lag")  # AFC
     if isinstance(jobs_lag, int) and jobs_lag > 0:
         return True
+    pending = payload.get("cdc_records_pending")
+    if isinstance(pending, int) and pending == 0 and payload.get("cdc_budget_nearly_full") is False:
+        return False
     # Secondary: a true backlog (seq lag, not clock lag) beyond the threshold.
     seq_lag = payload.get("seq_lag_seconds")
     if isinstance(seq_lag, (int, float)) and seq_lag > lag_seconds:
