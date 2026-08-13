@@ -33,14 +33,20 @@ Usage:
     python scripts/get_table_status.py                      # overall summary (hides OK tables)
     python scripts/get_table_status.py --detailed           # include info for OK tables
     python scripts/get_table_status.py --group ODS --table EDW.SALE_TRANSACTION # table details
+    python scripts/get_table_status.py --slack              # post to Slack using $SLACK_WEBHOOK
+    python scripts/get_table_status.py --slack-test         # preview Slack message, post nothing
 """
 
 import argparse
+import contextlib
+import io
 import json
 import logging
 import os
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -83,6 +89,17 @@ DEFAULT_LAG_HOURS = 4.0
 # connection pool is sized well above this.
 MAX_FETCH_WORKERS = 16
 
+# Webhook URL == credential for posting to Slack
+# Ensure it never is passed in plain text, or makes it to error messages
+SLACK_WEBHOOK_ENV = "SLACK_WEBHOOK"
+
+# Slack `text` field accepts max 40,000 characters, truncate to fit if
+# necessary.
+# Not expecting to see this limit hit: --detailed view as of 2026-08-12 is
+# displaying about 20k characters, and most status reports will be ~1k
+SLACK_TEXT_LIMIT = 40000
+TRUNCATION_NOTICE = "\n[truncated: report exceeded Slack's 40,000 character limit]"
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -119,9 +136,7 @@ def _fmt_count(value: Any) -> str:
 
 
 def fetch_group(prefix: str, tmpdir: str, only: Optional[set[str]] = None) -> dict[str, dict]:
-    """
-    Download status objects under `prefix`; return {table: payload}
-    """
+    """Download status objects under `prefix`; return {table: payload}"""
     objects = list_objects(f"{DATA_SPRINGBOARD}/{prefix}/", in_filter=".json")
     wanted = [(os.path.basename(obj.path)[: -len(".json")], obj.path) for obj in objects]
     if only is not None:
@@ -339,7 +354,7 @@ def print_overall(
     When `detailed`, every table gets a per-table line (OK tables included, with a
     key-info summary); otherwise only not-OK tables are listed.
     """
-    print(f"Odin table status  --  {now.strftime('%Y-%m-%dT%H:%MZ')}")
+    print(f"Fares table status: {now.strftime('%Y-%m-%dT%H:%MZ')}")
 
     print("\nKey:")
     print(
@@ -392,6 +407,58 @@ def print_overall(
     return problems
 
 
+def _fit_to_slack_limit(report: str, overhead: int) -> str:
+    budget = SLACK_TEXT_LIMIT - overhead
+    if len(report) <= budget:
+        return report
+    keep = max(budget - len(TRUNCATION_NOTICE), 0)
+    return report[:keep].rstrip() + TRUNCATION_NOTICE
+
+
+def _slack_post(webhook: str, payload: dict) -> None:
+    """
+    POST one message to `webhook`, raising RuntimeError with no URL in the message.
+
+    urllib puts the request URL into HTTPError's string form, so failures are re-raised
+    with only the status and Slack's error string ("invalid_payload", "no_service", ...).
+    Letting the original propagate would print the webhook into a public CI log.
+    """
+    request = urllib.request.Request(
+        webhook,
+        json.dumps(payload).encode("utf-8"),
+        {"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = response.read().decode("utf-8", "replace").strip()
+        if body != "ok":
+            raise RuntimeError(f"Slack returned an unexpected body: {body!r}")
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace").strip()
+        raise RuntimeError(f"Slack rejected the message: HTTP {error.code} {detail}") from None
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"Could not reach Slack: {error.reason}") from None
+
+
+def build_slack_message(report: str, problems: int) -> str:
+    """Add header to status body, which can optionally contain emojis (including mbta ones)"""
+    if problems:
+        lead = f":mbta_bus_intensifies: *Fares table status*: {problems} table(s) behind or stale"
+    else:
+        lead = ":white_check_mark: *Fares table status*: all tables OK"
+
+    # The fence and the lead-in count against Slack's cap along with the report.
+    prefix = f"{lead}\n```\n"
+    suffix = "\n```"
+    body = _fit_to_slack_limit(report, len(prefix) + len(suffix))
+    return f"{prefix}{body}{suffix}"
+
+
+def post_report_to_slack(message: str, webhook: str) -> None:
+    """Post an already-rendered message to Slack as text"""
+    _slack_post(webhook, {"text": message})
+
+
 def main() -> int:
     """Parse args and dispatch to the single-table or overall view."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0] if __doc__ else None)
@@ -420,10 +487,40 @@ def main() -> int:
         action="store_true",
         help="keep Odin's per-S3-call INFO logging (suppressed by default)",
     )
+    parser.add_argument(
+        "--slack",
+        action="store_true",
+        help=(
+            "post the summary to Slack rather than printing it; the webhook URL is read "
+            f"from ${SLACK_WEBHOOK_ENV}. Exit status then reports whether the report was "
+            "delivered, not whether the tables are healthy"
+        ),
+    )
+    parser.add_argument(
+        "--slack-test",
+        action="store_true",
+        help=(
+            "render the Slack message and print it here instead of posting; needs no "
+            f"${SLACK_WEBHOOK_ENV} and contacts Slack not at all"
+        ),
+    )
+    parser.add_argument(
+        "--only-if-problems",
+        action="store_true",
+        help="with --slack, post nothing when every table is OK",
+    )
     args = parser.parse_args()
+
+    slack_mode = args.slack or args.slack_test
 
     if args.table and not args.group:
         parser.error("--table requires --group")
+
+    if slack_mode and (args.json or args.table):
+        parser.error("--slack applies to the overall/group view, not to --json or --table")
+
+    if args.only_if_problems and not slack_mode:
+        parser.error("--only-if-problems requires --slack or --slack-test")
 
     # The S3 helpers log an INFO line per list/download via Odin's shared logger, which
     # would bury this summary. Quiet that logger unless --verbose is asked for; leave the
@@ -455,6 +552,46 @@ def main() -> int:
             for group in groups:
                 out[group] = fetch_group(GROUPS[group]["prefix"], tmpdir)
         print(json.dumps(out, indent=2))
+        return 0
+
+    if slack_mode:
+        # --slack-test never contacts Slack, so it must not require the credential.
+        webhook = os.environ.get(SLACK_WEBHOOK_ENV, "").strip()
+        if not webhook and not args.slack_test:
+            print(f"{SLACK_WEBHOOK_ENV} is unset; cannot post to Slack.", file=sys.stderr)
+            return 1
+
+        # Capture the report instead of printing it. On a public repo the CI job log is
+        # world-readable, so the summary should reach Slack without passing through stdout.
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            problems = print_overall(groups, now, stale_seconds, lag_seconds, args.detailed)
+
+        if problems == 0 and args.only_if_problems:
+            if args.slack_test:
+                print("Every table is OK; --only-if-problems would post nothing.", file=sys.stderr)
+            return 0
+
+        message = build_slack_message(buffer.getvalue().strip(), problems)
+
+        if args.slack_test:
+            # The message goes to stdout so it can be piped or diffed; the size note goes
+            # to stderr so it never pollutes that output. Flush first, or the note (on
+            # unbuffered stderr) jumps ahead of the message when stdout is piped.
+            print(message, flush=True)
+            truncated = TRUNCATION_NOTICE.strip() in message
+            note = f"{len(message):,} of {SLACK_TEXT_LIMIT:,} characters"
+            print(
+                f"\n[--slack-test: not posted; {note}{'; TRUNCATED' if truncated else ''}]",
+                file=sys.stderr,
+            )
+            return 0
+
+        try:
+            post_report_to_slack(message, webhook)
+        except RuntimeError as error:
+            print(str(error), file=sys.stderr)
+            return 1
         return 0
 
     return 1 if print_overall(groups, now, stale_seconds, lag_seconds, args.detailed) else 0
