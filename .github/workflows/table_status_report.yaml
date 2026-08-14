@@ -1,0 +1,70 @@
+name: Table Status Report
+
+# Posts the Odin per-table freshness summary to Slack once a day.
+#
+# The report is never written to this job's log: `get_table_status.py --slack` captures
+# its own stdout and POSTs it to the webhook. mbta/odin is a public repository, so job
+# logs are world-readable
+
+on:
+  schedule:
+    # 12:00 UTC daily (08:00 ET in summer, 07:00 ET in winter)
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+    inputs:
+      detailed:
+        description: Include a line for every table, OK ones included
+        type: boolean
+        default: false
+      stale_hours:
+        description: No run within this many hours counts as stale
+        type: string
+        default: '24'
+      lag_hours:
+        description: Backlog over this many hours counts as behind
+        type: string
+        default: '4'
+
+concurrency:
+  group: table-status-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: Report Table Status
+    runs-on: ubuntu-22.04
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout Branch
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # The status script only touches S3 via odin.utils.aws.s3, so it needs boto3 and
+      # psutil, not the full requirements.txt
+      - name: Install Dependencies
+        run: pip install boto3 psutil
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Post Status Report to Slack
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          DATA_SPRINGBOARD: mbta-ctd-dataplatform-springboard
+          PYTHONPATH: src
+          ODIN_INSTANCE: alpha
+        run: |
+          python scripts/get_table_status.py \
+            --slack \
+            --stale-hours "${{ inputs.stale_hours || '24' }}" \
+            --lag-hours "${{ inputs.lag_hours || '4' }}" \
+            ${{ inputs.detailed && '--detailed' || '' }}
