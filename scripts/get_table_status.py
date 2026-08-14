@@ -64,11 +64,15 @@ from odin.utils.logger import LOGGER_NAME
 GROUPS: dict[str, dict[str, Any]] = {
     "ODS": {
         "prefix": CUBIC_ODS_FACT_STATUS,
-        "tables": ("odin.ingestion.qlik.tables", "CUBIC_ODS_TABLES_INSTANCE"),
+        "tables": ("odin.ingestion.qlik.tables", "CUBIC_ODS_TABLES"),
     },
     "delta_ODS": {
+        # CUBIC_ODS_DELTA_TABLES only lists the tables belonging to whichever instance
+        # this process resolves to, but the status prefix holds every instance's objects.
+        # Read the manifest directly so the expected list covers all of them.
         "prefix": CUBIC_ODS_DELTA_STATUS,
-        "tables": ("odin.ingestion.qlik.tables", "CUBIC_ODS_DELTA_TABLES_INSTANCE"),
+        "tables": ("odin.ingestion.qlik.tables", "TABLE_MANIFEST"),
+        "manifest_index": "DELTA_FACT_JOB_IND",
     },
     "AFC": {
         "prefix": AFC_STATUS,
@@ -91,7 +95,7 @@ MAX_FETCH_WORKERS = 16
 
 # Webhook URL == credential for posting to Slack
 # Ensure it never is passed in plain text, or makes it to error messages
-SLACK_WEBHOOK_ENV = "SLACK_WEBHOOK"
+SLACK_WEBHOOK = os.environ.get("SLACK_WEBHOOK", "").strip()
 
 # Slack `text` field accepts max 40,000 characters, truncate to fit if
 # necessary.
@@ -165,9 +169,16 @@ def fetch_group(prefix: str, tmpdir: str, only: Optional[set[str]] = None) -> di
 def expected_tables(group: str) -> list[str]:
     """Best-effort import of a group's configured table list; [] if unavailable."""
     module_path, attr = GROUPS[group]["tables"]
+    index_name = GROUPS[group].get("manifest_index")
     try:
         module = __import__(module_path, fromlist=[attr])
-        return list(getattr(module, attr))
+        configured = getattr(module, attr)
+        if index_name is None:
+            return list(configured)
+        # TABLE_MANIFEST maps table -> per-job instance assignment, None where that job
+        # does not run for the table. Taking every non-None entry covers all instances.
+        index = getattr(module, index_name)
+        return [table for table, jobs in configured.items() if jobs[index] is not None]
     except Exception:  # noqa: BLE001 - the list is a nicety, not a requirement
         return []
 
@@ -347,9 +358,9 @@ def print_overall(
     stale_seconds: float,
     lag_seconds: float,
     detailed: bool = False,
-) -> int:
+) -> tuple[int, int]:
     """
-    Print the summary for `groups`; return the count of not-OK tables.
+    Print the summary for `groups`; return (not-OK table count, total tables seen).
 
     When `detailed`, every table gets a per-table line (OK tables included, with a
     key-info summary); otherwise only not-OK tables are listed.
@@ -404,7 +415,7 @@ def print_overall(
 
     problems = total_behind + total_stale
     print(f"Summary: {total_behind} behind, {total_stale} stale across {total_tables} tables.")
-    return problems
+    return problems, total_tables
 
 
 def _fit_to_slack_limit(report: str, overhead: int) -> str:
@@ -417,33 +428,45 @@ def _fit_to_slack_limit(report: str, overhead: int) -> str:
 
 def _slack_post(webhook: str, payload: dict) -> None:
     """
-    POST one message to `webhook`, raising RuntimeError with no URL in the message.
+    POST one message to `webhook`; every failure becomes a RuntimeError with no URL in it
 
-    urllib puts the request URL into HTTPError's string form, so failures are re-raised
-    with only the status and Slack's error string ("invalid_payload", "no_service", ...).
-    Letting the original propagate would print the webhook into a public CI log.
+    Anything urllib raises (rejection, unreachable host, read timeout, malformed URL)
+    is reported the same way, so the caller has one exception type to catch and no failure
+    mode can escape as a traceback out of a scheduled job.
     """
-    request = urllib.request.Request(
-        webhook,
-        json.dumps(payload).encode("utf-8"),
-        {"Content-Type": "application/json"},
-    )
     try:
+        # Built inside the try: a webhook missing its https:// scheme raises here, not
+        # at urlopen.
+        request = urllib.request.Request(
+            webhook,
+            json.dumps(payload).encode("utf-8"),
+            {"Content-Type": "application/json"},
+        )
         with urllib.request.urlopen(request, timeout=30) as response:
             body = response.read().decode("utf-8", "replace").strip()
-        if body != "ok":
-            raise RuntimeError(f"Slack returned an unexpected body: {body!r}")
     except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", "replace").strip()
-        raise RuntimeError(f"Slack rejected the message: HTTP {error.code} {detail}") from None
-    except urllib.error.URLError as error:
-        raise RuntimeError(f"Could not reach Slack: {error.reason}") from None
+        # Slack names the reason in the body: invalid_payload/no_service/no_text
+        detail = f"HTTP {error.code} {error.read().decode('utf-8', 'replace').strip()}"
+    except Exception as error:  # noqa: BLE001 - report every failure the same way
+        detail = f"{type(error).__name__}: {error}"
+    else:
+        if body == "ok":
+            return
+        detail = f"unexpected response body {body!r}"
+
+    # Scrub before raising: a webhook stored without its https:// scheme comes back
+    # inside ValueError's message, and this repo's CI logs are public.
+    raise RuntimeError(f"Could not post to Slack: {detail}".replace(webhook, "<webhook>"))
 
 
-def build_slack_message(report: str, problems: int) -> str:
+def build_slack_message(report: str, problems: int, total_tables: int) -> str:
     """Add header to status body, which can optionally contain emojis (including mbta ones)"""
-    if problems:
-        lead = f":mbta_bus_intensifies: *Fares table status*: {problems} table(s) behind or stale"
+    if total_tables == 0:
+        # Seeing no tables at all is most likely a failure to read:
+        # list_objects swallows AccessDenied/NoSuchBucket and returns an empty list.
+        lead = ":rotating_light: *Fares table status*: NO DATA. Could not read any status objects"
+    elif problems:
+        lead = f":warning: *Fares table status*: {problems} table(s) behind or stale"
     else:
         lead = ":white_check_mark: *Fares table status*: all tables OK"
 
@@ -452,11 +475,6 @@ def build_slack_message(report: str, problems: int) -> str:
     suffix = "\n```"
     body = _fit_to_slack_limit(report, len(prefix) + len(suffix))
     return f"{prefix}{body}{suffix}"
-
-
-def post_report_to_slack(message: str, webhook: str) -> None:
-    """Post an already-rendered message to Slack as text"""
-    _slack_post(webhook, {"text": message})
 
 
 def main() -> int:
@@ -492,7 +510,7 @@ def main() -> int:
         action="store_true",
         help=(
             "post the summary to Slack rather than printing it; the webhook URL is read "
-            f"from ${SLACK_WEBHOOK_ENV}. Exit status then reports whether the report was "
+            "from $SLACK_WEBHOOK. Exit status then reports whether the report was "
             "delivered, not whether the tables are healthy"
         ),
     )
@@ -501,7 +519,7 @@ def main() -> int:
         action="store_true",
         help=(
             "render the Slack message and print it here instead of posting; needs no "
-            f"${SLACK_WEBHOOK_ENV} and contacts Slack not at all"
+            "$SLACK_WEBHOOK and contacts Slack not at all"
         ),
     )
     parser.add_argument(
@@ -556,23 +574,26 @@ def main() -> int:
 
     if slack_mode:
         # --slack-test never contacts Slack, so it must not require the credential.
-        webhook = os.environ.get(SLACK_WEBHOOK_ENV, "").strip()
-        if not webhook and not args.slack_test:
-            print(f"{SLACK_WEBHOOK_ENV} is unset; cannot post to Slack.", file=sys.stderr)
+        if not SLACK_WEBHOOK and not args.slack_test:
+            print("SLACK_WEBHOOK is unset; cannot post to Slack.", file=sys.stderr)
             return 1
 
         # Capture the report instead of printing it. On a public repo the CI job log is
         # world-readable, so the summary should reach Slack without passing through stdout.
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
-            problems = print_overall(groups, now, stale_seconds, lag_seconds, args.detailed)
+            problems, total_tables = print_overall(
+                groups, now, stale_seconds, lag_seconds, args.detailed
+            )
 
-        if problems == 0 and args.only_if_problems:
+        # A read that turned up nothing is always worth reporting, even under
+        # --only-if-problems: silence there would look identical to a healthy day.
+        if problems == 0 and total_tables > 0 and args.only_if_problems:
             if args.slack_test:
                 print("Every table is OK; --only-if-problems would post nothing.", file=sys.stderr)
             return 0
 
-        message = build_slack_message(buffer.getvalue().strip(), problems)
+        message = build_slack_message(buffer.getvalue().strip(), problems, total_tables)
 
         if args.slack_test:
             # The message goes to stdout so it can be piped or diffed; the size note goes
@@ -588,13 +609,15 @@ def main() -> int:
             return 0
 
         try:
-            post_report_to_slack(message, webhook)
+            _slack_post(SLACK_WEBHOOK, {"text": message})
         except RuntimeError as error:
             print(str(error), file=sys.stderr)
             return 1
-        return 0
+        # No tables indicates a problem regardless
+        return 1 if total_tables == 0 else 0
 
-    return 1 if print_overall(groups, now, stale_seconds, lag_seconds, args.detailed) else 0
+    problems, total_tables = print_overall(groups, now, stale_seconds, lag_seconds, args.detailed)
+    return 1 if problems or total_tables == 0 else 0
 
 
 if __name__ == "__main__":

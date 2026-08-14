@@ -61,6 +61,7 @@ jobs:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           DATA_SPRINGBOARD: mbta-ctd-dataplatform-springboard
           PYTHONPATH: src
+          ODIN_INSTANCE: alpha
         run: |
           python scripts/get_table_status.py \
             --slack \
