@@ -254,6 +254,7 @@ class CubicODSDelta(OdinJob):
 
             next_run = self._merge_cdc(cdc_watermark)
             self._write_status(next_run)
+            self._checkpoint_log()
 
             self.start_kwargs.update(
                 {
@@ -291,6 +292,13 @@ class CubicODSDelta(OdinJob):
             table=self.table,
             target_file_size=target,
         ).complete()
+
+    def _checkpoint_log(self) -> None:
+        """Collapse the commit log into a checkpoint at the end of the run."""
+        assert self.silver is not None
+        log = ProcessLog("delta_checkpoint_log", table=self.table)
+        self.silver.create_checkpoint()
+        log.complete(version=self.silver.version())
 
     def _db(self) -> duckdb.DuckDBPyConnection:
         """Return the run-scoped DuckDB connection, creating it on first use."""

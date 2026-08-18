@@ -8,6 +8,7 @@ local Delta silver table, then call the steps directly and assert on silver's
 contents. DuckDB reads the parquet; delta-rs writes the silver table.
 """
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -1553,6 +1554,35 @@ def test_ensure_target_file_size_sets_then_leaves_property(job):
     version = DeltaTable(pipeline.silver_uri).version()
     pipeline._ensure_target_file_size()
     assert DeltaTable(pipeline.silver_uri).version() == version  # no second commit
+
+
+def test_checkpoint_log_leaves_nothing_to_replay(job):
+    """
+    A checkpoint at the run's end collapses the commits piled up behind it.
+
+    Readers replay only the commits *after* the newest checkpoint, and it is that
+    count -- not the log's total size -- that decides how many S3 responses the
+    delta kernel holds open while a query drains them.
+    """
+    pipeline, write_history, _, _ = job
+    write_history(history_rows([{"txn_id": 1, "amount": 10, "header__change_oper": "L"}]))
+    pipeline._rebuild_silver()
+
+    empty = pa.Table.from_pylist(
+        [], schema=pa.schema(DeltaTable(pipeline.silver_uri).schema().to_arrow())
+    )
+    for _ in range(5):
+        write_deltalake(pipeline.silver_uri, empty, mode="append")
+
+    pipeline.silver = DeltaTable(pipeline.silver_uri)
+    pipeline._checkpoint_log()
+
+    log_dir = Path(pipeline.silver_uri) / "_delta_log"
+    version = DeltaTable(pipeline.silver_uri).version()
+    assert (log_dir / f"{version:020d}.checkpoint.parquet").exists()
+    # Every commit is at or below the checkpoint, so a reader replays no JSON.
+    unconsolidated = [p for p in log_dir.glob("*.json") if int(p.stem) > version]
+    assert unconsolidated == []
 
 
 def test_discover_keys_ordered_by_primary_key_position():
