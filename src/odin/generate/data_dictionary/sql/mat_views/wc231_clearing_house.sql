@@ -1,6 +1,3 @@
-DROP VIEW IF EXISTS cubic_reports.wc231_clearing_house;
-CREATE VIEW cubic_reports.wc231_clearing_house
-AS
 SELECT
     CCH_STAGE_CATEGORY.CATEGORY_NAME,
     EDW_CCH_AFC_TRANSACTION.DEVICE_ID,
