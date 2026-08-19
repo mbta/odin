@@ -49,7 +49,7 @@ TABLE_MANIFEST: Dict[str, List[str | None]] = {
     "EDW.DEVICE_DIMENSION": ["alpha", "alpha", None],
     "EDW.DEVICE_END_OF_DAY_MSG_COUNT": ["alpha", "alpha", None],
     "EDW.DEVICE_EVENT": ["alpha", "alpha", None],
-    "EDW.DEVICE_LAST_STATE": ["gamma", "gamma", "gamma"],
+    "EDW.DEVICE_LAST_STATE": ["gamma", "gamma", None],
     "EDW.EMPLOYEE_DIMENSION": ["alpha", "alpha", None],
     "EDW.EVENT_TYPE_DIMENSION": ["alpha", "alpha", None],
     "EDW.FACILITY_DIMENSION": ["alpha", "alpha", None],
