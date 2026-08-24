@@ -125,12 +125,12 @@ class OdinJob(ABC):
                 self.run_delay_secs = NEXT_RUN_FAILED
             sentry_sdk.capture_exception(exception)
 
-            log.add_metadata(
-                print_log=False,
-                run_delay_mins=f"{self.run_delay_secs / 60:.2f}",
-                **self.start_kwargs,
-            )
-            log.failed(exception)
+            # log.add_metadata(
+            #     print_log=False,
+            #     run_delay_mins=f"{self.run_delay_secs / 60:.2f}",
+            #     **self.start_kwargs,
+            # )
+            # log.failed(exception)
 
         finally:
             self.reset_tmpdir()
