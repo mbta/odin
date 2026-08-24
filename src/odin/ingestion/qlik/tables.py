@@ -148,6 +148,7 @@ TABLE_MANIFEST: Dict[str, List[str | None]] = {
     "EDW.UNSETTLED_USE": ["alpha", "alpha", None],
     "EDW.USE_TRANSACTION": ["delta", None, "delta"],
     "EDW.VEHICLE_TRIP": ["alpha", "alpha", None],
+    "EDW.BUS_DIMENSION": ["alpha", "alpha", None],
 }
 
 
