@@ -12,6 +12,7 @@ import tempfile
 import sched
 
 import psutil
+import sentry_sdk
 
 from odin.utils.logger import ProcessLog
 from odin.utils.logger import MdValues
@@ -122,6 +123,8 @@ class OdinJob(ABC):
         except Exception as exception:
             if self.run_delay_secs is None:
                 self.run_delay_secs = NEXT_RUN_FAILED
+            sentry_sdk.capture_exception(exception)
+
             log.add_metadata(
                 print_log=False,
                 run_delay_mins=f"{self.run_delay_secs / 60:.2f}",
