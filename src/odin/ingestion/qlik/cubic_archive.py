@@ -386,11 +386,16 @@ def schedule_cubic_archive_qlik(schedule: sched.scheduler) -> None:
     for table in CUBIC_HISTORY_TABLES:
         # This clean process should remain as long as new Qlik tables are being added.
         # This will move any qlik files, not associated with the most recent snapshot,
-        # to the "ignore" odin partition, if there is an existing processed shapshot, it is a no-op
+        # to the "ignore" odin partition, if there is an existing processed shapshot, it is a no-op.
+        # If there is an error here, we don't schedule the job for that table.
         try:
             clean_old_snapshots(table)
+        except IndexError as exception:
+            # Catch missing snapshot error, report as non-error
+            ProcessLog("schedule_cubic_archive_qlik", table=table,
+                       exception=repr(exception))
+            continue
         except Exception as exception:
-            # on Error don't schedule Archive Job
             log = ProcessLog("schedule_cubic_archive_qlik", table=table)
             log.failed(exception)
             continue
