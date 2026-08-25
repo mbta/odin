@@ -392,8 +392,7 @@ def schedule_cubic_archive_qlik(schedule: sched.scheduler) -> None:
             clean_old_snapshots(table)
         except IndexError as exception:
             # Catch missing snapshot error, report as non-error
-            ProcessLog("schedule_cubic_archive_qlik", table=table,
-                       exception=repr(exception))
+            ProcessLog("schedule_cubic_archive_qlik", table=table, exception=repr(exception))
             continue
         except Exception as exception:
             log = ProcessLog("schedule_cubic_archive_qlik", table=table)
