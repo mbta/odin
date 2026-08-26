@@ -22,8 +22,10 @@ from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import S3Object
 from odin.utils.aws.s3 import download_object
 from odin.ingestion.qlik.dfm import dfm_from_s3
+from odin.ingestion.qlik.dfm import dfm_escapes_quotes
 from odin.ingestion.qlik.dfm import dfm_to_polars_schema
 from odin.ingestion.qlik.dfm import QlikDFM
+from odin.ingestion.qlik.tables import CUBIC_QLIK_ESCAPED_QUOTE_TABLES
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_column_min_max
 
@@ -101,6 +103,7 @@ def find_qlik_load_files(table: str, save_local: bool) -> List[Tuple[str, QlikDF
         os.path.join(DATA_ERROR, IN_QLIK_PREFIX, table),
     )
     paths: List[Tuple[str, QlikDFM]] = []
+    legacy_count = 0
     log = ProcessLog("find_qlik_load_files", table=table)
     try:
         for prefix in prefixes:
@@ -127,8 +130,12 @@ def find_qlik_load_files(table: str, save_local: bool) -> List[Tuple[str, QlikDF
                     continue
                 if obj.last_modified > (datetime.now(tz=UTC) - timedelta(hours=6)):
                     raise RecentSnapshotError(f"{obj.path} modified with the last 6 hours.")
-                paths.append((obj.path, dfm_from_s3(obj.path)))
-        log.complete(num_load_files=len(paths))
+                dfm = dfm_from_s3(obj.path)
+                if table in CUBIC_QLIK_ESCAPED_QUOTE_TABLES and not dfm_escapes_quotes(dfm):
+                    legacy_count += 1
+                    continue
+                paths.append((obj.path, dfm))
+        log.complete(num_load_files=len(paths), num_legacy_files=legacy_count)
     except RecentSnapshotError as exception:
         log.complete(skipped_recent_snapshot=True)
         raise exception
@@ -261,10 +268,14 @@ def cdc_csv_to_parquet(read_folder: str, write_folder: str) -> Tuple[List[str], 
                         fout.write(f.read())
 
             # Create parquet file from joined csv
-            schema = dfm_to_polars_schema(
-                dfm_from_s3(csv_gz_objects[0]),
-                prefix={"header__from_csv": pl.String()},
-            )
+            dfm = dfm_from_s3(csv_gz_objects[0])
+            dfm_table = f"{dfm['dataInfo']['sourceSchema']}.{dfm['dataInfo']['sourceTable']}"
+            if dfm_table in CUBIC_QLIK_ESCAPED_QUOTE_TABLES and not dfm_escapes_quotes(dfm):
+                raise ValueError(
+                    f"{csv_gz_objects[0]} is a legacy (unescaped quote) export for {dfm_table}, "
+                    "which is registered in CUBIC_QLIK_ESCAPED_QUOTE_TABLES."
+                )
+            schema = dfm_to_polars_schema(dfm, prefix={"header__from_csv": pl.String()})
             pq_out = os.path.join(write_folder, f"{len(os.listdir(write_folder))}.parquet")
             pl.scan_csv(
                 merge_file,
