@@ -141,19 +141,6 @@ def dfm_from_s3(dfm_path: str) -> QlikDFM:
     return json.load(stream_object(dfm_path))
 
 
-def dfm_escapes_quotes(dfm: QlikDFM) -> bool:
-    """
-    Report whether a dfm file escapes quotes embedded in a quoted field.
-
-    Cubic exports data with escapeChar == '"' to enable parsing of CLOB data.
-
-    :param dfm: DFM object to check
-
-    :return: True if embedded quotes are escaped
-    """
-    return dfm["formatInfo"]["options"]["escapeChar"] == '"'
-
-
 def dfm_snapshot_dt(dfm: QlikDFM) -> datetime:
     """
     Convert Qlik DFM fileInfo.startWriteTimestamp to datetime object.
