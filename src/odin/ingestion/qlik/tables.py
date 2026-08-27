@@ -164,6 +164,12 @@ CUBIC_ODS_DELTA_TABLES = [
     t for t, inst in TABLE_MANIFEST.items() if inst[DELTA_FACT_JOB_IND] == _ODIN_INSTANCE
 ]
 
+# Add tables here if Cubic exports them with escapeChar='"', which is done to support CLOB data.
+# All other tables do not define escape characters.
+CUBIC_QLIK_ESCAPED_QUOTE_TABLES = {
+    "EDW.ABP_REPROCESS_LOG",
+}
+
 
 def log_cubic_table_manifest():
     """Output a log showing Cubic table lists for the current instance."""
