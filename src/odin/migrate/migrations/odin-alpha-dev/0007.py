@@ -9,7 +9,6 @@ from odin.utils.aws.s3 import S3Object
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import rename_objects
 from odin.utils.locations import DATA_ARCHIVE
-from odin.utils.locations import DATA_ERROR
 from odin.utils.locations import IN_QLIK_PREFIX
 from odin.utils.locations import CUBIC_QLIK_IGNORED
 from odin.ingestion.qlik.dfm import dfm_from_s3
