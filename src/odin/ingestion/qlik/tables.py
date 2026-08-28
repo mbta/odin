@@ -149,6 +149,10 @@ TABLE_MANIFEST: Dict[str, List[str | None]] = {
     "EDW.USE_TRANSACTION": ["delta", None, "delta"],
     "EDW.VEHICLE_TRIP": ["alpha", "alpha", None],
     "EDW.BUS_DIMENSION": ["alpha", "alpha", None],
+    "EDW.DAILY_CASH_BALANCE_SUMMARY": ["alpha", "alpha", None],
+    "EDW.DAILY_POS_CASH_BALANCE_SUMMARY": ["alpha", "alpha", None],
+    "EDW.FNP_PARSED_MANUAL_JOURNAL": ["alpha", "alpha", None],
+    "EDW.COMPONENT_MAINT_COUNT": ["alpha", "alpha", None],
 }
 
 
@@ -163,6 +167,12 @@ CUBIC_ODS_TABLES = [
 CUBIC_ODS_DELTA_TABLES = [
     t for t, inst in TABLE_MANIFEST.items() if inst[DELTA_FACT_JOB_IND] == _ODIN_INSTANCE
 ]
+
+# Add tables here if Cubic exports them with escapeChar='"', which is done to support CLOB data.
+# All other tables do not define escape characters.
+CUBIC_QLIK_ESCAPED_QUOTE_TABLES = {
+    "EDW.ABP_REPROCESS_LOG",
+}
 
 
 def log_cubic_table_manifest():

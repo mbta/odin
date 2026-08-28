@@ -4,6 +4,7 @@ import shutil
 import hashlib
 import sched
 import tempfile
+import polars as pl
 
 from datetime import datetime
 from typing import List
@@ -38,6 +39,7 @@ from odin.ingestion.qlik.dfm import QlikDFM
 from odin.ingestion.qlik.dfm import dfm_snapshot_dt
 from odin.ingestion.qlik.tables import _ODIN_INSTANCE
 from odin.ingestion.qlik.tables import CUBIC_HISTORY_TABLES
+from odin.ingestion.qlik.tables import CUBIC_QLIK_ESCAPED_QUOTE_TABLES
 from odin.ingestion.qlik.clean import clean_old_snapshots
 from odin.utils.locations import CUBIC_QLIK_DATA
 from odin.utils.locations import DATA_SPRINGBOARD
@@ -63,17 +65,24 @@ def _long_run_interval() -> int:
     return NEXT_RUN_BETA if _ODIN_INSTANCE == "beta" else NEXT_RUN_LONG
 
 
-def thread_save_csv(args: Tuple[str, str]) -> Tuple[int, Optional[str]]:
+def thread_save_csv(args: Tuple[str, str, bool]) -> Tuple[int, Optional[str]]:
     """
     Save csv file from S3 to local disk.
 
-    The S3 path of the csv file will be pre-pended to each csv row.
+    The S3 path of the csv file will be pre-pended to each csv record.
 
-    :param args: (csv_s3_object, directory to save to)
+    If escaped_quotes is True, this uses Polars to identify record boundaries. This is needed
+    because csv files with CLOB data can contain escaped newline characters, which would
+    result in malformed csv files.
+
+    Output is equivalent, so any table could be parsed with escaped_quotes == True, but
+    will specify manually now for stability.
+
+    :param args: (csv_s3_object, directory to save to, endpoint escapes embedded quotes)
 
     :return: (bytes_written, object_path, save_failed)
     """
-    obj_path, save_dir = args
+    obj_path, save_dir, escaped_quotes = args
     bytes_written = 0
     save_file = obj_path.replace("s3://", "").replace("/", "|").replace(".gz", "")
     b_path = f'"{obj_path}",'.encode("utf8")
@@ -81,10 +90,26 @@ def thread_save_csv(args: Tuple[str, str]) -> Tuple[int, Optional[str]]:
         with gzip.open(stream_object(obj_path), "rb") as r_bytes:
             save_folder = os.path.join(save_dir, hashlib.sha1(r_bytes.readline()).hexdigest())
             os.makedirs(save_folder, exist_ok=True)
-            with open(os.path.join(save_folder, save_file), mode="wb") as w_bytes:
-                for line in r_bytes.readlines():
-                    w_bytes.write(b_path + line)
-                bytes_written = w_bytes.tell()
+            save_path = os.path.join(save_folder, save_file)
+            if escaped_quotes:
+                with tempfile.TemporaryDirectory() as stage_dir:
+                    stage_path = os.path.join(stage_dir, "export.csv")
+                    with open(stage_path, mode="wb") as w_bytes:
+                        shutil.copyfileobj(r_bytes, w_bytes)
+                    pl.scan_csv(
+                        stage_path,
+                        has_header=False,
+                        infer_schema=False,
+                    ).select(
+                        pl.lit(obj_path).alias("header__from_csv"),
+                        pl.all(),
+                    ).sink_csv(save_path, include_header=False)
+                bytes_written = os.path.getsize(save_path)
+            else:
+                with open(save_path, mode="wb") as w_bytes:
+                    for line in r_bytes.readlines():
+                        w_bytes.write(b_path + line)
+                    bytes_written = w_bytes.tell()
         return_path = None
 
     except Exception as exception:
@@ -101,6 +126,7 @@ class ArchiveCubicQlikTable(OdinJob):
     def __init__(self, table: str) -> None:
         """Create QlikSingleTable instance."""
         self.table = table
+        self.escaped_quotes = table in CUBIC_QLIK_ESCAPED_QUOTE_TABLES
 
         self.save_local = True
         if running_in_aws():
@@ -284,7 +310,9 @@ class ArchiveCubicQlikTable(OdinJob):
                 failed_objects: List[str] = []
                 # Create temporary directory for cdc file downloads
                 with tempfile.TemporaryDirectory() as tmpdir:
-                    work_objs = [(obj.path, tmpdir) for obj in groups[snap_part]]
+                    work_objs = [
+                        (obj.path, tmpdir, self.escaped_quotes) for obj in groups[snap_part]
+                    ]
                     # download .csv.gz cdc files in batches using ThreadPool download operation
                     # returns size of uncompressed csv file to determine when a bunch of downloaded
                     # csv files should be converted to parquet
@@ -392,8 +420,7 @@ def schedule_cubic_archive_qlik(schedule: sched.scheduler) -> None:
             clean_old_snapshots(table)
         except IndexError as exception:
             # Catch missing snapshot error, report as non-error
-            ProcessLog("schedule_cubic_archive_qlik", table=table,
-                       exception=repr(exception))
+            ProcessLog("schedule_cubic_archive_qlik", table=table, exception=repr(exception))
             continue
         except Exception as exception:
             log = ProcessLog("schedule_cubic_archive_qlik", table=table)
