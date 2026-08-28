@@ -80,23 +80,29 @@ def start():
 
     odin_instance = get_odin_instance()
 
-    # Schedule ODIN Jobs
-    schedule_sigterm_check(schedule)
-    if odin_instance in ["alpha", "beta", "gamma", "delta"]:
-        schedule_cubic_archive_qlik(schedule)
-        schedule_cubic_ods_fact_gen(schedule)
+    schedule_cubic_archive_qlik(schedule)
 
-    if odin_instance in ["alpha", "beta"]:
-        schedule_delta_ods(schedule)
-        schedule_masabi_archive(schedule)
-        schedule_afc_archive(schedule)
+    # # Schedule ODIN Jobs
+    # schedule_sigterm_check(schedule)
+    # if odin_instance in ["alpha", "beta", "gamma", "delta"]:
+    #     schedule_cubic_archive_qlik(schedule)
+    #     schedule_cubic_ods_fact_gen(schedule)
 
-    if odin_instance in ["gamma", "delta"]:
-        schedule_delta_ods(schedule)
+    # if odin_instance in ["alpha", "beta"]:
+    #     schedule_delta_ods(schedule)
+    #     schedule_masabi_archive(schedule)
+    #     schedule_afc_archive(schedule)
 
-    if odin_instance in ["alpha"]:
-        schedule_restricted_afc_archive(schedule)
-        # schedule_tableau_upload(schedule)
-        schedule_dictionary(schedule)
+    # if odin_instance in ["gamma", "delta"]:
+    #     schedule_delta_ods(schedule)
+
+    # if odin_instance in ["alpha"]:
+    #     schedule_restricted_afc_archive(schedule)
+    #     # schedule_tableau_upload(schedule)
+    #     schedule_dictionary(schedule)
 
     schedule.run()
+
+
+if __name__ == '__main__':
+    start()

@@ -356,7 +356,6 @@ class ArchiveCubicQlikTable(OdinJob):
         # OdinJob base class; only the swallowed RecentSnapshotError is logged here.
         self.start_kwargs = {"table": self.table, "save_local": self.save_local}
         try:
-            error = 1/0
             self.archive_objects: List[str] = []
 
             next_run_secs = _default_run_interval()
