@@ -111,11 +111,11 @@ class OdinJob(ABC):
             send_default_pii=False,
             environment=AWS_ENV,
             integrations=[
-                 LoggingIntegration(
-                     level=logging.INFO,
-                     event_level=None,
-                 )
-             ],
+                LoggingIntegration(
+                    level=logging.INFO,
+                    event_level=None,
+                )
+            ],
         )
 
         # Two-tiered try-except so that we can catch errors from the inner 'finally' clause

@@ -44,7 +44,7 @@ def start():
     sentry_sdk.init(
         dsn="https://3754469300c152623b00648eb7cdd491@o89189.ingest.us.sentry.io/4511949758529536",
         send_default_pii=False,
-        environment=AWS_ENV
+        environment=AWS_ENV,
     )
 
     signal.signal(signal.SIGTERM, handle_sigterm)
@@ -80,29 +80,23 @@ def start():
 
     odin_instance = get_odin_instance()
 
-    schedule_cubic_archive_qlik(schedule)
+    # Schedule ODIN Jobs
+    schedule_sigterm_check(schedule)
+    if odin_instance in ["alpha", "beta", "gamma", "delta"]:
+        schedule_cubic_archive_qlik(schedule)
+        schedule_cubic_ods_fact_gen(schedule)
 
-    # # Schedule ODIN Jobs
-    # schedule_sigterm_check(schedule)
-    # if odin_instance in ["alpha", "beta", "gamma", "delta"]:
-    #     schedule_cubic_archive_qlik(schedule)
-    #     schedule_cubic_ods_fact_gen(schedule)
+    if odin_instance in ["alpha", "beta"]:
+        schedule_delta_ods(schedule)
+        schedule_masabi_archive(schedule)
+        schedule_afc_archive(schedule)
 
-    # if odin_instance in ["alpha", "beta"]:
-    #     schedule_delta_ods(schedule)
-    #     schedule_masabi_archive(schedule)
-    #     schedule_afc_archive(schedule)
+    if odin_instance in ["gamma", "delta"]:
+        schedule_delta_ods(schedule)
 
-    # if odin_instance in ["gamma", "delta"]:
-    #     schedule_delta_ods(schedule)
-
-    # if odin_instance in ["alpha"]:
-    #     schedule_restricted_afc_archive(schedule)
-    #     # schedule_tableau_upload(schedule)
-    #     schedule_dictionary(schedule)
+    if odin_instance in ["alpha"]:
+        schedule_restricted_afc_archive(schedule)
+        # schedule_tableau_upload(schedule)
+        schedule_dictionary(schedule)
 
     schedule.run()
-
-
-if __name__ == '__main__':
-    start()
