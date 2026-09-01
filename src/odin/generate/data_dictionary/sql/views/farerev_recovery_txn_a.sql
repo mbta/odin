@@ -1,5 +1,5 @@
-DROP VIEW IF EXISTS cubic_reports.farerev_recovery_txn_a;
-CREATE VIEW cubic_reports.farerev_recovery_txn_a
+DROP VIEW IF EXISTS cubic_reports.comp_c_addendum_farerev_recovery_txn_a;
+CREATE VIEW cubic_reports.comp_c_addendum_farerev_recovery_txn_a
 AS
 WITH edw_farerev_recovery_txn_v AS (
 SELECT

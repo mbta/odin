@@ -1,5 +1,5 @@
-DROP VIEW IF EXISTS cubic_reports.wo118;
-CREATE VIEW cubic_reports.wo118
+DROP VIEW IF EXISTS cubic_reports.product_transfer_details_wo118;
+CREATE VIEW cubic_reports.product_transfer_details_wo118
 AS
 SELECT
 'WO118',

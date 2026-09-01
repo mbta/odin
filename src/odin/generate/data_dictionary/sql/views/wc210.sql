@@ -1,5 +1,5 @@
-DROP VIEW IF EXISTS cubic_reports.wc210;
-CREATE VIEW cubic_reports.wc210
+DROP VIEW IF EXISTS cubic_reports.clearinghouse_apportn_posting_wc210;
+CREATE VIEW cubic_reports.clearinghouse_apportn_posting_wc210
 AS
 (WITH CCH_RULE_SET_APPORTN_RULES AS (
 SELECT arm.cch_rules_set_id AS rule_set_id,

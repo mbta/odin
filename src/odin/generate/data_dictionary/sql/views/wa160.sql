@@ -1,5 +1,5 @@
-DROP VIEW IF EXISTS cubic_reports.wa160;
-CREATE VIEW cubic_reports.wa160
+DROP VIEW IF EXISTS cubic_reports.use_txns_wa160;
+CREATE VIEW cubic_reports.use_txns_wa160
 AS
 SELECT
     strptime(posting_day_key::varchar,'%Y%m%d')::date as posting_date,

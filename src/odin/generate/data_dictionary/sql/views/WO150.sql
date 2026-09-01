@@ -1,5 +1,5 @@
-DROP VIEW IF EXISTS cubic_reports.wo150;
-CREATE VIEW cubic_reports.wo150
+DROP VIEW IF EXISTS cubic_reports.csr_patron_adjustments_wo150;
+CREATE VIEW cubic_reports.csr_patron_adjustments_wo150
 AS
 WITH CSR_PATRON_ORDER_DETAIL AS (SELECT o.order_dtm AS order_date,
        strptime(CAST(py.settlement_day_key AS VARCHAR),'%Y%m%d') AS sales_settlement_date,
