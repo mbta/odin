@@ -1,5 +1,5 @@
-DROP VIEW IF EXISTS cubic_reports.farerev_payg_trip_txn_c_v2;
-CREATE VIEW cubic_reports.farerev_payg_trip_txn_c_v2 AS
+DROP VIEW IF EXISTS cubic_reports.comp_b_farerev_payg_trip_txn_c;
+CREATE VIEW cubic_reports.comp_b_farerev_payg_trip_txn_c AS
 WITH EDW_FAREREV_PAYG_TRIP_TXN AS (
     SELECT * FROM cubic_reports.edw_farerev_payg_trip_txn
 ),
