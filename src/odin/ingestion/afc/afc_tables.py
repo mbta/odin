@@ -17,7 +17,6 @@ API_TABLES_ALPHA = [
     "v_stop_points",
     "v_ta_ca_relations",
     "v_ta_legal_relations",
-    "v_trips",
     "v_tvmstation",
     "v_tvmtable",
     "v_cashless_payments",
@@ -50,6 +49,7 @@ API_TABLES_BETA: list[str] = [
     "v_svw_balance_changes",
     "v_eventhistory",
     "v_mainshift",
+    "v_trips",
 ]
 
 API_TABLES_GAMMA: list[str] = []
