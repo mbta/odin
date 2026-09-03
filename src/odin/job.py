@@ -13,6 +13,11 @@ import sched
 
 import psutil
 
+import sentry_sdk
+from sentry_sdk.integrations.logging import LoggingIntegration
+import logging
+
+from odin.utils.aws.ecs import AWS_ENV
 from odin.utils.logger import ProcessLog
 from odin.utils.logger import MdValues
 from odin.utils.runtime import sigterm_check
@@ -100,39 +105,58 @@ class OdinJob(ABC):
         tmpdir_val: "ValueProxy[str]",
     ) -> None:
         """Start Odin job with logging."""
-        sigterm_check()
-        self.reset_tmpdir()
-        # Publish the tmpdir path so the parent can sample its on-disk size (DuckDB and
-        # other scratch spill into here) even after an OOM kill of this subprocess.
-        tmpdir_val.value = self.tmpdir
-        self.run_delay_secs: int | None = None
-        log = ProcessLog(
-            process=self.__class__.__name__,
-            auto_start=True,
-            **self.start_kwargs,
+        # Re-initialize Sentry in the subprocess
+        sentry_sdk.init(
+            dsn="https://3754469300c152623b00648eb7cdd491@o89189.ingest.us.sentry.io/4511949758529536",
+            send_default_pii=False,
+            environment=AWS_ENV,
+            integrations=[
+                LoggingIntegration(
+                    level=logging.INFO,
+                    event_level=None,
+                )
+            ],
         )
+
+        # Two-tiered try-except so that we can catch errors from the inner 'finally' clause
         try:
-            self.run_delay_secs = self.run()
-
-            log.complete(
-                run_delay_mins=f"{self.run_delay_secs / 60:.2f}",
-                **self.start_kwargs,
-            )
-
-        except Exception as exception:
-            if self.run_delay_secs is None:
-                self.run_delay_secs = NEXT_RUN_FAILED
-            log.add_metadata(
-                print_log=False,
-                run_delay_mins=f"{self.run_delay_secs / 60:.2f}",
-                **self.start_kwargs,
-            )
-            log.failed(exception)
-
-        finally:
+            sigterm_check()
             self.reset_tmpdir()
-            assert isinstance(self.run_delay_secs, int)
-            return_val.value = self.run_delay_secs
+            # Publish the tmpdir path so the parent can sample its on-disk size (DuckDB and
+            # other scratch spill into here) even after an OOM kill of this subprocess.
+            tmpdir_val.value = self.tmpdir
+            self.run_delay_secs: int | None = None
+            log = ProcessLog(
+                process=self.__class__.__name__,
+                auto_start=True,
+                **self.start_kwargs,
+            )
+            try:
+                self.run_delay_secs = self.run()
+
+                log.complete(
+                    run_delay_mins=f"{self.run_delay_secs / 60:.2f}",
+                    **self.start_kwargs,
+                )
+
+            except Exception as exception:
+                if self.run_delay_secs is None:
+                    self.run_delay_secs = NEXT_RUN_FAILED
+
+                log.add_metadata(
+                    print_log=False,
+                    run_delay_mins=f"{self.run_delay_secs / 60:.2f}",
+                    **self.start_kwargs,
+                )
+                log.failed(exception)
+                raise exception
+            finally:
+                self.reset_tmpdir()
+                assert isinstance(self.run_delay_secs, int)
+                return_val.value = self.run_delay_secs
+        except Exception as exception:
+            print(f"Sentry capturing: {exception}")
+            sentry_sdk.capture_exception(exception)
 
 
 def _proc_tree_rss_mb(proc: psutil.Process) -> float:

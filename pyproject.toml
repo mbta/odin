@@ -22,7 +22,8 @@ dependencies = [
     "tableauhyperapi",
     "tableauserverclient",
     "pyyaml",
-    "types-PyYAML"
+    "types-PyYAML",
+    "sentry-sdk",
 ]
 optional-dependencies.dev = [
     "ipykernel",

@@ -2,6 +2,8 @@ import sched
 import signal
 import time
 
+import sentry_sdk
+
 from odin.utils.instance import get_odin_instance
 from odin.utils.runtime import validate_env_vars
 from odin.utils.runtime import log_installed_packages
@@ -9,6 +11,7 @@ from odin.utils.runtime import handle_sigterm
 from odin.utils.logger import ProcessLog
 from odin.migrate.process import start_migrations
 from odin.utils.aws.ecs import check_for_parallel_tasks
+from odin.utils.aws.ecs import AWS_ENV
 from odin.ingestion.qlik.tables import log_cubic_table_manifest
 
 # Job Schedule functions
@@ -38,6 +41,12 @@ def start():
     guarantees certain logging characteristics for every job and makes certain that the Job will not
     fail in a way that interrupts the execution of subsequently scheduled jobs.
     """
+    sentry_sdk.init(
+        dsn="https://3754469300c152623b00648eb7cdd491@o89189.ingest.us.sentry.io/4511949758529536",
+        send_default_pii=False,
+        environment=AWS_ENV,
+    )
+
     signal.signal(signal.SIGTERM, handle_sigterm)
     validate_env_vars(
         required=[
