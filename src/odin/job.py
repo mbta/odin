@@ -21,11 +21,15 @@ from odin.utils.aws.ecs import AWS_ENV
 from odin.utils.logger import ProcessLog
 from odin.utils.logger import MdValues
 from odin.utils.runtime import sigterm_check
+from odin.utils.instance import get_odin_instance
 
 NEXT_RUN_DEFAULT = 60 * 60 * 6  # 6 hours
 NEXT_RUN_SIGSEGV = 60 * 5  # 5 minutes
 NEXT_RUN_SIGKILL = 60 * 5  # 5 minutes
-NEXT_RUN_FAILED = 60 * 60 * 24  # 24 hours
+NEXT_RUN_FAILED_DEFAULT = 60 * 60 * 12  # 12 hours
+NEXT_RUN_FAILED_BETA = 60 * 60 * 1  # 1 hour
+
+NEXT_RUN_FAILED = NEXT_RUN_FAILED_BETA if get_odin_instance() == "beta" else NEXT_RUN_FAILED_DEFAULT
 
 # How often the parent samples a running job subprocess' memory and disk spill, in seconds
 MEM_POLL_INTERVAL_SECS = 1.0
