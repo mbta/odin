@@ -29,17 +29,19 @@ Rarely-updated tables (like the DIMENSION tables) have a large clock_lag_seconds
 upstream). Classification uses the backlog signals, never the clock lag, so these tables
 read as OK as long as they are caught up to history.
 
+Views are hand-maintained in a constant, and include all required tables for each view,
+which can span across groups. A view is up to date if ALL of its tables are up to date,
+and otherwise matches its worst member's status.
+
 Usage:
     python scripts/get_table_status.py                      # overall summary (hides OK tables)
     python scripts/get_table_status.py --detailed           # include info for OK tables
-    python scripts/get_table_status.py --group ODS --table EDW.SALE_TRANSACTION # table details
+    python scripts/get_table_status.py --table ODS:EDW.SALE_TRANSACTION  # one table's details
     python scripts/get_table_status.py --slack              # post to Slack using $SLACK_WEBHOOK
     python scripts/get_table_status.py --slack-test         # preview Slack message, post nothing
 """
 
 import argparse
-import contextlib
-import io
 import json
 import logging
 import os
@@ -49,7 +51,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import list_objects
@@ -61,33 +63,140 @@ from odin.utils.locations import MASABI_STATUS
 from odin.utils.logger import LOGGER_NAME
 
 
-GROUPS: dict[str, dict[str, Any]] = {
-    "ODS": {
-        "prefix": CUBIC_ODS_FACT_STATUS,
-        "tables": ("odin.ingestion.qlik.tables", "CUBIC_ODS_TABLES"),
-    },
-    "delta_ODS": {
-        # CUBIC_ODS_DELTA_TABLES only lists the tables belonging to whichever instance
-        # this process resolves to, but the status prefix holds every instance's objects.
-        # Read the manifest directly so the expected list covers all of them.
-        "prefix": CUBIC_ODS_DELTA_STATUS,
-        "tables": ("odin.ingestion.qlik.tables", "TABLE_MANIFEST"),
-        "manifest_index": "DELTA_FACT_JOB_IND",
-    },
-    "AFC": {
-        "prefix": AFC_STATUS,
-        "tables": ("odin.ingestion.afc.afc_tables", "API_TABLES_INSTANCE"),
-    },
-    "masabi": {
-        "prefix": MASABI_STATUS,
-        "tables": ("odin.ingestion.masabi.masabi_tables", "TABLES_INSTANCE"),
-    },
+class Group(NamedTuple):
+    prefix: str  # location of logs in bucket
+    module: str  # location of table lists in code
+    attr: str  # name of table list
+    manifest_index: Optional[str] = None  # used for delta_ODS; see expected_tables()
+
+
+GROUPS: dict[str, Group] = {
+    "ODS": Group(CUBIC_ODS_FACT_STATUS, "odin.ingestion.qlik.tables", "CUBIC_ODS_TABLES"),
+    # CUBIC_ODS_DELTA_TABLES only lists the tables belonging to whichever instance this
+    # process resolves to, but the status prefix holds every instance's objects. Read the
+    # manifest directly so the expected list covers all of them.
+    "delta_ODS": Group(
+        CUBIC_ODS_DELTA_STATUS,
+        "odin.ingestion.qlik.tables",
+        "TABLE_MANIFEST",
+        manifest_index="DELTA_FACT_JOB_IND",
+    ),
+    "AFC": Group(AFC_STATUS, "odin.ingestion.afc.afc_tables", "API_TABLES_INSTANCE"),
+    "masabi": Group(MASABI_STATUS, "odin.ingestion.masabi.masabi_tables", "TABLES_INSTANCE"),
 }
 
 OK, BEHIND, STALE = "OK", "BEHIND", "STALE"
 
+# STALE is considered 'worse' than BEHIND when a single status is needed
+RANK = {STALE: 0, BEHIND: 1, OK: 2}
+
 DEFAULT_STALE_HOURS = 24.0
 DEFAULT_LAG_HOURS = 4.0
+
+# Views take the status of the worst member, according to the RANK constant
+# E.g., a view with one BEHIND table is BEHIND, unless it has a STALE table
+VIEWS: dict[str, tuple[str, ...]] = {
+    "WO110": (
+        "ODS:EDW.BUSINESS_ENTITY_DIMENSION",
+        "ODS:EDW.CARD_DIMENSION",
+        "ODS:EDW.CONTACT_DIMENSION",
+        "ODS:EDW.EMPLOYEE_DIMENSION",
+        "ODS:EDW.FARE_PROD_USERS_LIST_DIMENSION",
+        "ODS:EDW.FARE_PRODUCT_DIMENSION",
+        "ODS:EDW.FEE_TYPE_DIMENSION",
+        "ODS:EDW.OPERATOR_DIMENSION",
+        "ODS:EDW.PATRON_ORDER",
+        "ODS:EDW.PATRON_ORDER_LINE_ITEM",
+        "ODS:EDW.PATRON_ORDER_PAYMENT",
+        "ODS:EDW.PATRON_ORDER_STATUS_DIMENSION",
+        "ODS:EDW.PATRON_ORDER_TYPE_DIMENSION",
+        "ODS:EDW.PAYMENT_TYPE_DIMENSION",
+        "ODS:EDW.PURSE_TYPE_DIMENSION",
+        "ODS:EDW.REASON_DIMENSION",
+        "ODS:EDW.RIDER_CLASS_DIMENSION",
+        "ODS:EDW.TRANSIT_ACCOUNT_DIMENSION",
+    ),
+    "comp_b_txn_a": (
+        "ODS:EDW.FARE_REVENUE_REPORT_SCHEDULE",
+        "delta_ODS:EDW.SALE_TRANSACTION",
+        "delta_ODS:EDW.USE_TRANSACTION",
+        "ODS:EDW.CARD_DIMENSION",
+        "ODS:EDW.MEDIA_TYPE_DIMENSION",
+        "ODS:EDW.OPERATOR_DIMENSION",
+        "ODS:EDW.PATRON_TRIP",
+        "ODS:EDW.PAYMENT_TYPE_DIMENSION",
+        "ODS:EDW.READ_TRANSACTION",
+        "ODS:EDW.SALE_TXN_PAYMENT",
+        "ODS:EDW.TRIP_PAYMENT",
+        "ODS:EDW.TXN_CHANNEL_MAP",
+    ),
+    "comp_b_txn_c": (
+        "ODS:EDW.FARE_REVENUE_REPORT_SCHEDULE",
+        "delta_ODS:EDW.SALE_TRANSACTION",
+        "delta_ODS:EDW.USE_TRANSACTION",
+        "ODS:EDW.CARD_DIMENSION",
+        "ODS:EDW.MEDIA_TYPE_DIMENSION",
+        "ODS:EDW.OPERATOR_DIMENSION",
+        "ODS:EDW.PATRON_TRIP",
+        "ODS:EDW.PAYMENT_TYPE_DIMENSION",
+        "ODS:EDW.READ_TRANSACTION",
+        "ODS:EDW.SALE_TXN_PAYMENT",
+        "ODS:EDW.TRIP_PAYMENT",
+        "ODS:EDW.TXN_CHANNEL_MAP",
+    ),
+    "comp_a_addendum_farerev_prod_sales_txn_a": (
+        "delta_ODS:EDW.SALE_TRANSACTION",
+        "ODS:EDW.CUSTOMER_DIMENSION",
+        "ODS:EDW.DATE_DIMENSION",
+        "ODS:EDW.DEVICE_DIMENSION",
+        "ODS:EDW.FARE_PRODUCT_DIMENSION",
+        "ODS:EDW.FARE_REVENUE_REPORT_SCHEDULE",
+        "ODS:EDW.PATRON_ORDER",
+        "ODS:EDW.PATRON_ORDER_LINE_ITEM",
+        "ODS:EDW.PATRON_ORDER_PAYMENT",
+        "ODS:EDW.PAYMENT_TYPE_DIMENSION",
+        "ODS:EDW.REASON_DIMENSION",
+        "ODS:EDW.SALE_TXN_PAYMENT",
+        "ODS:EDW.TXN_CHANNEL_MAP",
+    ),
+    "comp_a_farerev_prod_sales_txn_c": (
+        "delta_ODS:EDW.SALE_TRANSACTION",
+        "ODS:EDW.CUSTOMER_DIMENSION",
+        "ODS:EDW.DATE_DIMENSION",
+        "ODS:EDW.DEVICE_DIMENSION",
+        "ODS:EDW.FARE_PRODUCT_DIMENSION",
+        "ODS:EDW.FARE_REVENUE_REPORT_SCHEDULE",
+        "ODS:EDW.PATRON_ORDER",
+        "ODS:EDW.PATRON_ORDER_LINE_ITEM",
+        "ODS:EDW.PATRON_ORDER_PAYMENT",
+        "ODS:EDW.PAYMENT_TYPE_DIMENSION",
+        "ODS:EDW.REASON_DIMENSION",
+        "ODS:EDW.SALE_TXN_PAYMENT",
+        "ODS:EDW.TXN_CHANNEL_MAP",
+    ),
+}
+
+
+class ViewSummary(NamedTuple):
+    """One view's members, ranked worst-first; the view's own state is the worst of them."""
+
+    name: str
+    members: tuple[tuple[str, str], ...]  # (state, "GROUP:table"), worst first
+
+    @property
+    def state(self) -> str:
+        """The rolled-up state: the worst member's, since members are sorted worst-first."""
+        return self.members[0][0] if self.members else OK
+
+    @property
+    def total(self) -> int:
+        """How many tables the view is built over."""
+        return len(self.members)
+
+    def count(self, state: str) -> int:
+        """How many of the view's members are in `state`."""
+        return sum(1 for member_state, _ in self.members if member_state == state)
+
 
 # Cap on concurrent status downloads; the shared boto3 client is thread-safe and its
 # connection pool is sized well above this.
@@ -102,7 +211,11 @@ SLACK_WEBHOOK = os.environ.get("SLACK_WEBHOOK", "").strip()
 # Not expecting to see this limit hit: --detailed view as of 2026-08-12 is
 # displaying about 20k characters, and most status reports will be ~1k
 SLACK_TEXT_LIMIT = 40000
-TRUNCATION_NOTICE = "\n[truncated: report exceeded Slack's 40,000 character limit]"
+TRUNCATION_NOTICE = "[truncated: report exceeded Slack's 40,000 character limit]"
+
+# Literal emoji rather than Slack ":emoji:" strings, so that it formats the
+# same in the console output
+STATE_EMOJI = {OK: "🟢", BEHIND: "🟡", STALE: "🟠"}
 
 
 def _utc_now() -> datetime:
@@ -139,6 +252,55 @@ def _fmt_count(value: Any) -> str:
     return f"{value:,}" if isinstance(value, int) else str(value)
 
 
+class Line(NamedTuple):
+    """
+    One row of the report, held as data so it can be rendered for Slack or console.
+
+    If a Line doesn't have text or note, it renders as a blank separator.
+    """
+
+    text: str
+    state: Optional[str] = None
+    note: str = ""
+    depth: int = 0  # nesting depth; 0-depth rows are bolded
+
+
+def render(lines: list[Line]) -> str:
+    """Render report rows, identically for the terminal and for Slack"""
+    out = []
+    for line in lines:
+        if not line.text and not line.note:
+            out.append("")
+            continue
+        marker = f"{STATE_EMOJI[line.state]} " if line.state else ""
+        label = f"*{line.text}*" if line.depth == 0 and line.text else line.text
+        note = f": {line.note}" if line.note else ""
+        out.append(f"{'    ' * line.depth}{marker}{label}{note}")
+    return "\n".join(out)
+
+
+def state_note(state: str, note: str = "") -> str:
+    """
+    Name the state in the note unless it is OK, so the circle is never the only signal.
+
+    Yellow and orange read alike at a glance; the word is what separates BEHIND from STALE.
+    """
+    if state == OK:
+        return note
+    return f"{state}: {note}" if note else state
+
+
+def member_key(group: str, table: str) -> str:
+    """Build the "GROUP:table" key VIEWS members are written in."""
+    return f"{group}:{table}"
+
+
+def split_member(member: str) -> tuple[str, str]:
+    """Split "GROUP:table" back apart; table names may themselves contain no colon."""
+    group, _, table = member.partition(":")
+    return group, table
+
+
 def fetch_group(prefix: str, tmpdir: str, only: Optional[set[str]] = None) -> dict[str, dict]:
     """Download status objects under `prefix`; return {table: payload}"""
     objects = list_objects(f"{DATA_SPRINGBOARD}/{prefix}/", in_filter=".json")
@@ -168,19 +330,45 @@ def fetch_group(prefix: str, tmpdir: str, only: Optional[set[str]] = None) -> di
 
 def expected_tables(group: str) -> list[str]:
     """Best-effort import of a group's configured table list; [] if unavailable."""
-    module_path, attr = GROUPS[group]["tables"]
-    index_name = GROUPS[group].get("manifest_index")
+    config = GROUPS[group]
     try:
-        module = __import__(module_path, fromlist=[attr])
-        configured = getattr(module, attr)
-        if index_name is None:
+        module = __import__(config.module, fromlist=[config.attr])
+        configured = getattr(module, config.attr)
+        if config.manifest_index is None:
             return list(configured)
         # TABLE_MANIFEST maps table -> per-job instance assignment, None where that job
         # does not run for the table. Taking every non-None entry covers all instances.
-        index = getattr(module, index_name)
+        index = getattr(module, config.manifest_index)
         return [table for table, jobs in configured.items() if jobs[index] is not None]
     except Exception:  # noqa: BLE001 - the list is a nicety, not a requirement
         return []
+
+
+def config_errors() -> list[str]:
+    """Report errors if VIEWS constant configured incorrectly (bad group or no table)"""
+    errors = []
+    for view, members in VIEWS.items():
+        for member in members:
+            group, table = split_member(member)
+            if group not in GROUPS:
+                errors.append(f"view {view!r}: {member!r} names unknown group {group!r}")
+            elif not table:
+                errors.append(f"view {view!r}: {member!r} format must be 'group:table'")
+    return errors
+
+
+def summarize_view(name: str, states_by_group: dict[str, dict[str, str]]) -> ViewSummary:
+    """
+    Give each view the status of the worst member, according to the RANK constant
+
+    Members missing from `states_by_group` never published status objects, so are STALE
+    """
+    rows = []
+    for member in VIEWS[name]:
+        group, table = split_member(member)
+        rows.append((states_by_group.get(group, {}).get(table, STALE), member))
+    rows.sort(key=lambda row: (RANK[row[0]], row[1]))
+    return ViewSummary(name=name, members=tuple(rows))
 
 
 def is_behind(payload: dict, lag_seconds: float) -> bool:
@@ -243,7 +431,7 @@ def _behind_note(payload: dict) -> str:
     return ", ".join(parts) if parts else "not caught up"
 
 
-def _stale_note(table: str, payload: dict, now: datetime) -> str:
+def _stale_note(payload: dict, now: datetime) -> str:
     """One-line reason a STALE table is stale."""
     if not payload:
         return "no status object published"
@@ -287,13 +475,27 @@ def _ok_note(payload: dict, now: datetime) -> str:
     return ", ".join(parts) if parts else "caught up"
 
 
+def note_for(state: str, payload: dict, now: datetime) -> str:
+    """Pick the right one-line note for a table in `state` and name the state in it."""
+    if state == STALE:
+        note = _stale_note(payload, now)
+    elif state == BEHIND:
+        note = _behind_note(payload)
+    else:
+        note = _ok_note(payload, now)
+    return state_note(state, note)
+
+
 def print_table_detail(
     group: str, table: str, payload: dict, now: datetime, stale_seconds: float, lag_seconds: float
 ) -> None:
     """Print the full single-table summary."""
     state = classify(payload, now, stale_seconds, lag_seconds)
     print(f"{table}  ({group})")
-    print(f"  state:        {state}")
+    print(f"  state:        {STATE_EMOJI[state]} {state}")
+    views = [name for name, members in VIEWS.items() if member_key(group, table) in members]
+    if views:
+        print(f"  views:        {', '.join(views)}")
     if "_error" in payload:
         print(f"  problem:      {payload['_error']}")
         return
@@ -352,78 +554,145 @@ def print_table_detail(
             print(f"  {flag}: {payload[flag]}")
 
 
-def print_overall(
+def _view_detail(summary: ViewSummary) -> str:
+    """Build the counts phrase on a view's own line, e.g. 'all 4 tables up to date'."""
+    tables = "table" if summary.total == 1 else "tables"
+    if summary.state == OK:
+        return f"all {summary.total} {tables} up to date"
+    parts = []
+    if summary.count(BEHIND):
+        parts.append(f"{summary.count(BEHIND)} behind")
+    if summary.count(STALE):
+        parts.append(f"{summary.count(STALE)} STALE")
+    return f"{', '.join(parts)} of {summary.total} {tables}"
+
+
+def view_lines(summaries: list[ViewSummary], detailed: bool = False) -> list[Line]:
+    """
+    Build the view block, comprising a row per view with problem members nested
+
+    Member tables that are OK are only displayed if `detailed` is True
+    """
+    lines = [Line("Views")]
+    for summary in summaries:
+        lines.append(Line(summary.name, state=summary.state, note=_view_detail(summary), depth=1))
+        for state, member in summary.members:
+            if state == OK and not detailed:
+                continue
+            lines.append(Line(member, state=state, note=state_note(state), depth=2))
+    return lines
+
+
+def fetch_all(groups: list[str], tmpdir: str) -> dict[str, dict[str, dict]]:
+    """
+    Download every group's status objects up front; return {group: {table: payload}}.
+
+    Views span groups, so their rollup cannot be printed until every group has been read.
+    """
+    payloads_by_group = {}
+    for group in groups:
+        payloads = fetch_group(GROUPS[group].prefix, tmpdir)
+        # Flag expected tables that have never published an object.
+        for table in expected_tables(group):
+            payloads.setdefault(table, {})
+        payloads_by_group[group] = payloads
+    return payloads_by_group
+
+
+def build_report(
     groups: list[str],
     now: datetime,
     stale_seconds: float,
     lag_seconds: float,
     detailed: bool = False,
-) -> tuple[int, int]:
+) -> tuple[list[Line], int, int]:
     """
-    Print the summary for `groups`; return (not-OK table count, total tables seen).
+    Build the whole report as Lines; return (lines, not-OK count, tables seen).
 
     When `detailed`, every table gets a per-table line (OK tables included, with a
-    key-info summary); otherwise only not-OK tables are listed.
+    key-info summary); otherwise OK tables are not listed.
     """
-    print(f"Fares table status: {now.strftime('%Y-%m-%dT%H:%MZ')}")
+    key = {
+        OK: "not stale or behind",
+        BEHIND: (
+            f"latest timestamp older than {lag_seconds / 3600:g} hours, and/or uningested "
+            "data remains from source"
+        ),
+        STALE: f"no successful update within {stale_seconds / 3600:g} hours",
+    }
+    lines = [Line("Key:")]
+    lines += [Line(state, state=state, note=note, depth=1) for state, note in key.items()]
+    lines.append(Line(""))
 
-    print("\nKey:")
-    print(
-        f"\tBEHIND = Latest timestamp older than {lag_seconds / 3600:g} hours, and/or "
-        "uningested data remains from source"
-    )
-    print(f"\tSTALE = No successful update within {stale_seconds / 3600:g} hours.")
-    print("\tOK = Not stale or behind\n")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        payloads_by_group = fetch_all(groups, tmpdir)
+
+    states_by_group = {
+        group: {
+            table: classify(payload, now, stale_seconds, lag_seconds)
+            for table, payload in payloads.items()
+        }
+        for group, payloads in payloads_by_group.items()
+    }
 
     total_behind = total_stale = total_tables = 0
-    with tempfile.TemporaryDirectory() as tmpdir:
-        for group in groups:
-            payloads = fetch_group(GROUPS[group]["prefix"], tmpdir)
-            # Flag expected tables that have never published an object.
-            for table in expected_tables(group):
-                payloads.setdefault(table, {})
+    for group in groups:
+        payloads, states = payloads_by_group[group], states_by_group[group]
+        n_behind = sum(1 for state in states.values() if state == BEHIND)
+        n_stale = sum(1 for state in states.values() if state == STALE)
+        total_tables += len(states)
+        total_behind += n_behind
+        total_stale += n_stale
 
-            states = {t: classify(p, now, stale_seconds, lag_seconds) for t, p in payloads.items()}
-            n_ok = sum(1 for s in states.values() if s == OK)
-            n_behind = sum(1 for s in states.values() if s == BEHIND)
-            n_stale = sum(1 for s in states.values() if s == STALE)
-            total_tables += len(states)
-            total_behind += n_behind
-            total_stale += n_stale
+        counts = f"{len(states)} tables: {len(states) - n_behind - n_stale} ok"
+        if n_behind:
+            counts += f", {n_behind} behind"
+        if n_stale:
+            counts += f", {n_stale} STALE"
+        lines.append(Line(group, note=counts))
 
-            counts = f"{n_ok} ok"
-            if n_behind:
-                counts += f"   {n_behind} behind"
-            if n_stale:
-                counts += f"   {n_stale} STALE"
-            print(f"{group:<11} {len(states):>3} tables:  {counts}")
+        for table in sorted(states, key=lambda t: (RANK[states[t]], t)):
+            state = states[table]
+            if state == OK and not detailed:
+                continue
+            lines.append(
+                Line(table, state=state, note=note_for(state, payloads[table], now), depth=1)
+            )
+        lines.append(Line(""))
 
-            # Detail lines: not-OK always; OK too under --detailed. Worst first.
-            rank = {STALE: 0, BEHIND: 1, OK: 2}
-            for table in sorted(states, key=lambda t: (rank[states[t]], t)):
-                state = states[table]
-                if state == OK and not detailed:
-                    continue
-                if state == STALE:
-                    note = _stale_note(table, payloads[table], now)
-                elif state == BEHIND:
-                    note = _behind_note(payloads[table])
-                else:
-                    note = _ok_note(payloads[table], now)
-                print(f"  {state:<7} {table:<32} {note}")
-            print()
+    lines.append(
+        Line(f"Summary: {total_behind} behind, {total_stale} stale across {total_tables} tables.")
+    )
 
-    problems = total_behind + total_stale
-    print(f"Summary: {total_behind} behind, {total_stale} stale across {total_tables} tables.")
-    return problems, total_tables
+    summaries = [summarize_view(name, states_by_group) for name in VIEWS]
+    if summaries:
+        lines.append(Line(""))
+        lines.extend(view_lines(summaries, detailed))
+
+    return lines, total_behind + total_stale, total_tables
 
 
-def _fit_to_slack_limit(report: str, overhead: int) -> str:
+def _fit_to_slack_limit(lines: list[Line], overhead: int) -> str:
+    """
+    Render `lines`, dropping whole rows off the end until the result fits Slack's cap.
+
+    Dropping rows rather than chopping the string mid-character keeps the tail readable;
+    the notice says what happened. Not expected to trigger, see SLACK_TEXT_LIMIT.
+    """
     budget = SLACK_TEXT_LIMIT - overhead
-    if len(report) <= budget:
-        return report
-    keep = max(budget - len(TRUNCATION_NOTICE), 0)
-    return report[:keep].rstrip() + TRUNCATION_NOTICE
+    body = render(lines)
+    if len(body) <= budget:
+        return body
+
+    notice = render([Line(TRUNCATION_NOTICE)])
+    kept: list[str] = []
+    used = len(notice)
+    for row in body.split("\n"):
+        if used + len(row) + 1 > budget:
+            break
+        kept.append(row)
+        used += len(row) + 1
+    return "\n".join([*kept, notice])
 
 
 def _slack_post(webhook: str, payload: dict) -> None:
@@ -459,29 +728,36 @@ def _slack_post(webhook: str, payload: dict) -> None:
     raise RuntimeError(f"Could not post to Slack: {detail}".replace(webhook, "<webhook>"))
 
 
-def build_slack_message(report: str, problems: int, total_tables: int) -> str:
-    """Add header to status body, which can optionally contain emojis (including mbta ones)"""
+def build_slack_message(lines: list[Line], problems: int, total_tables: int, now: datetime) -> str:
+    """
+    Put a lead-in on the report and render the rest as Slack markdown.
+
+    The lead doubles as the report's title, so `lines` carries no heading of its own. No
+    code fence: rows identify themselves by their circle rather than by column alignment,
+    which is what lets emoji, bolding and indentation render throughout.
+    """
+    stamp = now.strftime("%Y-%m-%dT%H:%MZ")
     if total_tables == 0:
         # Seeing no tables at all is most likely a failure to read:
         # list_objects swallows AccessDenied/NoSuchBucket and returns an empty list.
-        lead = ":rotating_light: *Fares table status*: NO DATA. Could not read any status objects"
+        state = "🚨 NO DATA. Could not read any status objects"
     elif problems:
-        lead = f":warning: *Fares table status*: {problems} table(s) behind or stale"
+        state = f"⚠️ {problems} table(s) behind or stale"
     else:
-        lead = ":white_check_mark: *Fares table status*: all tables OK"
+        state = "✅ all tables OK"
+    lead = f"*Fares table status* {stamp}: {state}"
 
-    # The fence and the lead-in count against Slack's cap along with the report.
-    prefix = f"{lead}\n```\n"
-    suffix = "\n```"
-    body = _fit_to_slack_limit(report, len(prefix) + len(suffix))
-    return f"{prefix}{body}{suffix}"
+    return f"{lead}\n\n{_fit_to_slack_limit(lines, len(lead) + 2)}"
 
 
 def main() -> int:
     """Parse args and dispatch to the single-table or overall view."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0] if __doc__ else None)
-    parser.add_argument("--group", choices=list(GROUPS), help="restrict to one group")
-    parser.add_argument("--table", help="a single table within --group")
+    parser.add_argument(
+        "--table",
+        metavar="GROUP:TABLE",
+        help='one table, qualified by its group (e.g. "ODS:EDW.SALE_TRANSACTION")',
+    )
     parser.add_argument(
         "--lag-hours",
         type=float,
@@ -498,7 +774,7 @@ def main() -> int:
     parser.add_argument(
         "--detailed",
         action="store_true",
-        help="in the overall/group view, print a key-info line for every table, OK ones included",
+        help="in the overall report, print a key-info line for every table, OK ones included",
     )
     parser.add_argument(
         "--verbose",
@@ -531,14 +807,18 @@ def main() -> int:
 
     slack_mode = args.slack or args.slack_test
 
-    if args.table and not args.group:
-        parser.error("--table requires --group")
-
     if slack_mode and (args.json or args.table):
-        parser.error("--slack applies to the overall/group view, not to --json or --table")
+        parser.error("--slack applies to the overall report, not to --json or --table")
 
     if args.only_if_problems and not slack_mode:
         parser.error("--only-if-problems requires --slack or --slack-test")
+
+    # Report errors and exit if VIEWS constant configured incorrectly
+    errors = config_errors()
+    if errors:
+        for error in errors:
+            print(f"config error: {error}", file=sys.stderr)
+        return 2
 
     # The S3 helpers log an INFO line per list/download via Odin's shared logger, which
     # would bury this summary. Quiet that logger unless --verbose is asked for; leave the
@@ -552,23 +832,25 @@ def main() -> int:
 
     # Single table: fetch just that table's object, not the whole group.
     if args.table:
+        group, table = split_member(args.table)
+        if group not in GROUPS:
+            parser.error(f"--table must be qualified GROUP:TABLE, with GROUP one of {list(GROUPS)}")
         with tempfile.TemporaryDirectory() as tmpdir:
-            payloads = fetch_group(GROUPS[args.group]["prefix"], tmpdir, only={args.table})
-        payload = payloads.get(args.table, {})
+            payloads = fetch_group(GROUPS[group].prefix, tmpdir, only={table})
+        payload = payloads.get(table, {})
         if args.json:
             print(json.dumps(payload, indent=2))
             return 0
-        print_table_detail(args.group, args.table, payload, now, stale_seconds, lag_seconds)
+        print_table_detail(group, table, payload, now, stale_seconds, lag_seconds)
         return 0 if classify(payload, now, stale_seconds, lag_seconds) == OK else 1
 
-    # A single group, or all of them.
-    groups = [args.group] if args.group else list(GROUPS)
+    groups = list(GROUPS)
 
     if args.json:
         out: dict[str, dict] = {}
         with tempfile.TemporaryDirectory() as tmpdir:
             for group in groups:
-                out[group] = fetch_group(GROUPS[group]["prefix"], tmpdir)
+                out[group] = fetch_group(GROUPS[group].prefix, tmpdir)
         print(json.dumps(out, indent=2))
         return 0
 
@@ -578,13 +860,11 @@ def main() -> int:
             print("SLACK_WEBHOOK is unset; cannot post to Slack.", file=sys.stderr)
             return 1
 
-        # Capture the report instead of printing it. On a public repo the CI job log is
-        # world-readable, so the summary should reach Slack without passing through stdout.
-        buffer = io.StringIO()
-        with contextlib.redirect_stdout(buffer):
-            problems, total_tables = print_overall(
-                groups, now, stale_seconds, lag_seconds, args.detailed
-            )
+        # build_report prints nothing, so on this public repo's world-readable CI log the
+        # summary reaches Slack without ever passing through stdout.
+        lines, problems, total_tables = build_report(
+            groups, now, stale_seconds, lag_seconds, args.detailed
+        )
 
         # A read that turned up nothing is always worth reporting, even under
         # --only-if-problems: silence there would look identical to a healthy day.
@@ -593,7 +873,7 @@ def main() -> int:
                 print("Every table is OK; --only-if-problems would post nothing.", file=sys.stderr)
             return 0
 
-        message = build_slack_message(buffer.getvalue().strip(), problems, total_tables)
+        message = build_slack_message(lines, problems, total_tables, now)
 
         if args.slack_test:
             # The message goes to stdout so it can be piped or diffed; the size note goes
@@ -616,7 +896,11 @@ def main() -> int:
         # No tables indicates a problem regardless
         return 1 if total_tables == 0 else 0
 
-    problems, total_tables = print_overall(groups, now, stale_seconds, lag_seconds, args.detailed)
+    lines, problems, total_tables = build_report(
+        groups, now, stale_seconds, lag_seconds, args.detailed
+    )
+    header = [Line(f"Fares table status: {now.strftime('%Y-%m-%dT%H:%MZ')}"), Line("")]
+    print(render(header + lines))
     return 1 if problems or total_tables == 0 else 0
 
 
