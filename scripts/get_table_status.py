@@ -96,27 +96,7 @@ DEFAULT_LAG_HOURS = 4.0
 # Views take the status of the worst member, according to the RANK constant
 # E.g., a view with one BEHIND table is BEHIND, unless it has a STALE table
 VIEWS: dict[str, tuple[str, ...]] = {
-    "WO110": (
-        "ODS:EDW.BUSINESS_ENTITY_DIMENSION",
-        "ODS:EDW.CARD_DIMENSION",
-        "ODS:EDW.CONTACT_DIMENSION",
-        "ODS:EDW.EMPLOYEE_DIMENSION",
-        "ODS:EDW.FARE_PROD_USERS_LIST_DIMENSION",
-        "ODS:EDW.FARE_PRODUCT_DIMENSION",
-        "ODS:EDW.FEE_TYPE_DIMENSION",
-        "ODS:EDW.OPERATOR_DIMENSION",
-        "ODS:EDW.PATRON_ORDER",
-        "ODS:EDW.PATRON_ORDER_LINE_ITEM",
-        "ODS:EDW.PATRON_ORDER_PAYMENT",
-        "ODS:EDW.PATRON_ORDER_STATUS_DIMENSION",
-        "ODS:EDW.PATRON_ORDER_TYPE_DIMENSION",
-        "ODS:EDW.PAYMENT_TYPE_DIMENSION",
-        "ODS:EDW.PURSE_TYPE_DIMENSION",
-        "ODS:EDW.REASON_DIMENSION",
-        "ODS:EDW.RIDER_CLASS_DIMENSION",
-        "ODS:EDW.TRANSIT_ACCOUNT_DIMENSION",
-    ),
-    "comp_b_txn_a": (
+    "comp_b_addendum_farerev_payg_trip_txn_a": (
         "ODS:EDW.FARE_REVENUE_REPORT_SCHEDULE",
         "delta_ODS:EDW.SALE_TRANSACTION",
         "delta_ODS:EDW.USE_TRANSACTION",
@@ -130,7 +110,7 @@ VIEWS: dict[str, tuple[str, ...]] = {
         "ODS:EDW.TRIP_PAYMENT",
         "ODS:EDW.TXN_CHANNEL_MAP",
     ),
-    "comp_b_txn_c": (
+    "comp_b_farerev_payg_trip_txn_c": (
         "ODS:EDW.FARE_REVENUE_REPORT_SCHEDULE",
         "delta_ODS:EDW.SALE_TRANSACTION",
         "delta_ODS:EDW.USE_TRANSACTION",
@@ -173,6 +153,26 @@ VIEWS: dict[str, tuple[str, ...]] = {
         "ODS:EDW.REASON_DIMENSION",
         "ODS:EDW.SALE_TXN_PAYMENT",
         "ODS:EDW.TXN_CHANNEL_MAP",
+    ),
+    "patron_order_details_wo110": (
+        "ODS:EDW.BUSINESS_ENTITY_DIMENSION",
+        "ODS:EDW.CARD_DIMENSION",
+        "ODS:EDW.CONTACT_DIMENSION",
+        "ODS:EDW.EMPLOYEE_DIMENSION",
+        "ODS:EDW.FARE_PROD_USERS_LIST_DIMENSION",
+        "ODS:EDW.FARE_PRODUCT_DIMENSION",
+        "ODS:EDW.FEE_TYPE_DIMENSION",
+        "ODS:EDW.OPERATOR_DIMENSION",
+        "ODS:EDW.PATRON_ORDER",
+        "ODS:EDW.PATRON_ORDER_LINE_ITEM",
+        "ODS:EDW.PATRON_ORDER_PAYMENT",
+        "ODS:EDW.PATRON_ORDER_STATUS_DIMENSION",
+        "ODS:EDW.PATRON_ORDER_TYPE_DIMENSION",
+        "ODS:EDW.PAYMENT_TYPE_DIMENSION",
+        "ODS:EDW.PURSE_TYPE_DIMENSION",
+        "ODS:EDW.REASON_DIMENSION",
+        "ODS:EDW.RIDER_CLASS_DIMENSION",
+        "ODS:EDW.TRANSIT_ACCOUNT_DIMENSION",
     ),
 }
 
