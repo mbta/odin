@@ -19,6 +19,11 @@ runs:
     - name: Install ASDF Tools
       uses: asdf-vm/actions/install@v3
       if: steps.asdf-cache.outputs.cache-hit != 'true'
+      with:
+        # asdf master removed the Bash implementation (bin/asdf) that v3 of
+        # this action and mbta/actions/reshim-asdf rely on; pin to the last
+        # Bash release.
+        asdf_branch: v0.15.0
 
     - name: Re-shim ASDF Install
       uses: mbta/actions/reshim-asdf@v1
