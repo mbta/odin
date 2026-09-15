@@ -25,22 +25,22 @@ SELECT
     t.settlement_day_key,
     t.posting_day_key
 FROM
-    fares_data_repository.cubic_ods.edw_farerev_recovery_txn AS t
-INNER JOIN fares_data_repository.cubic_ods.edw_date_dimension AS od ON
+    cubic_ods.edw_farerev_recovery_txn AS t
+INNER JOIN cubic_ods.edw_date_dimension AS od ON
     ((od.date_key = t.operating_day_key))
-INNER JOIN fares_data_repository.cubic_ods.edw_date_dimension AS pd ON
+INNER JOIN cubic_ods.edw_date_dimension AS pd ON
     ((pd.date_key = t.posting_day_key))
-INNER JOIN fares_data_repository.cubic_ods.edw_date_dimension AS sd ON
+INNER JOIN cubic_ods.edw_date_dimension AS sd ON
     ((sd.date_key = t.settlement_day_key))
-LEFT JOIN fares_data_repository.cubic_ods.edw_service_type_dimension AS st ON
+LEFT JOIN cubic_ods.edw_service_type_dimension AS st ON
     ((st.service_type_id = t.service_type_id))
-LEFT JOIN fares_data_repository.cubic_ods.edw_stop_point_dimension AS sp ON
+LEFT JOIN cubic_ods.edw_stop_point_dimension AS sp ON
     ((sp.stop_point_key = t.stop_point_key))
-LEFT JOIN fares_data_repository.cubic_ods.edw_route_dimension AS rd ON
+LEFT JOIN cubic_ods.edw_route_dimension AS rd ON
     ((rd.route_key = t.route_key))
-LEFT JOIN fares_data_repository.cubic_ods.edw_rider_class_dimension AS rc ON
+LEFT JOIN cubic_ods.edw_rider_class_dimension AS rc ON
     ((rc.rider_class_id = t.rider_class_id))
-LEFT JOIN fares_data_repository.cubic_ods.edw_fare_product_dimension AS fp ON
+LEFT JOIN cubic_ods.edw_fare_product_dimension AS fp ON
     (((fp.fare_prod_key = t.fare_prod_key)
         AND (fp.monetary_inst_type_id = 2)))),
 EDW_farerev_recovery_txn_c AS (
@@ -49,7 +49,7 @@ SELECT
     CAST('N' AS VARCHAR) AS addendum,
     t.*
 FROM
-    fares_data_repository.cubic_ods.edw_fare_revenue_report_schedule AS rs
+    cubic_ods.edw_fare_revenue_report_schedule AS rs
 INNER JOIN edw_farerev_recovery_txn_v AS t ON
     (((t.operating_day_key = rs.comp_operating_day_key)
         AND (t.settlement_day_key <= rs.comp_max_settlement_day_key)))),

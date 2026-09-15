@@ -8,8 +8,8 @@ p.payment_type_key,
 m.txn_channel_display,
 m.sales_channel_display,
 SUM(payment_value) AS total_fare_revenue
-FROM fares_data_repository.cubic_ods.edw_payment_summary p
-	JOIN fares_data_repository.cubic_ods.edw_txn_channel_map m ON m.txn_source = p.txn_source
+FROM cubic_ods.edw_payment_summary p
+	JOIN cubic_ods.edw_txn_channel_map m ON m.txn_source = p.txn_source
 	AND m.sales_channel_key = p.sales_channel_key
 	AND m.payment_type_key = p.payment_type_key
 WHERE m.txn_group = 'Open Payment Trips'
@@ -40,9 +40,9 @@ FAREREV_PAYG_TRIP_SUMMARY.SALES_CHANNEL_DISPLAY,
 SUM(FAREREV_PAYG_TRIP_SUMMARY.TOTAL_FARE_REVENUE/100) AS total_fare_revenue
 FROM
 FAREREV_PAYG_TRIP_SUMMARY
-	JOIN fares_data_repository.cubic_ods.edw_date_dimension SETTLEMENT_DATE_DIMENSION ON SETTLEMENT_DATE_DIMENSION.DATE_KEY=FAREREV_PAYG_TRIP_SUMMARY.SETTLEMENT_DAY_KEY
-	JOIN fares_data_repository.cubic_ods.edw_date_dimension OPERATING_DATE_DIMENSION ON OPERATING_DATE_DIMENSION.DATE_KEY=FAREREV_PAYG_TRIP_SUMMARY.OPERATING_DAY_KEY
-	JOIN fares_data_repository.cubic_ods.edw_fare_revenue_report_schedule FAREREV_REPORT_SCHEDULE ON FAREREV_PAYG_TRIP_SUMMARY.OPERATING_DAY_KEY = FAREREV_REPORT_SCHEDULE.COMP_OPERATING_DAY_KEY
+	JOIN cubic_ods.edw_date_dimension SETTLEMENT_DATE_DIMENSION ON SETTLEMENT_DATE_DIMENSION.DATE_KEY=FAREREV_PAYG_TRIP_SUMMARY.SETTLEMENT_DAY_KEY
+	JOIN cubic_ods.edw_date_dimension OPERATING_DATE_DIMENSION ON OPERATING_DATE_DIMENSION.DATE_KEY=FAREREV_PAYG_TRIP_SUMMARY.OPERATING_DAY_KEY
+	JOIN cubic_ods.edw_fare_revenue_report_schedule FAREREV_REPORT_SCHEDULE ON FAREREV_PAYG_TRIP_SUMMARY.OPERATING_DAY_KEY = FAREREV_REPORT_SCHEDULE.COMP_OPERATING_DAY_KEY
 GROUP BY
 'WC700',
 operating_day,
