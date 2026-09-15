@@ -24,15 +24,15 @@ t.minimum_fare_charge AS recovery_calculation_amount,
 t.operating_day_key,
 t.settlement_day_key,
 t.posting_day_key
-FROM fares_data_repository.cubic_ods.edw_farerev_recovery_txn t
-	JOIN fares_data_repository.cubic_ods.edw_date_dimension od ON od.date_key = t.operating_day_key
-	JOIN fares_data_repository.cubic_ods.edw_date_dimension pd ON pd.date_key = t.posting_day_key
-	JOIN fares_data_repository.cubic_ods.edw_date_dimension sd ON sd.date_key = t.settlement_day_key
-	LEFT JOIN fares_data_repository.cubic_ods.edw_service_type_dimension st ON st.service_type_id = t.service_type_id
-	LEFT JOIN fares_data_repository.cubic_ods.edw_stop_point_dimension sp ON sp.stop_point_key = t.stop_point_key
-	LEFT JOIN fares_data_repository.cubic_ods.edw_route_dimension rd ON rd.route_key = t.route_key
-	LEFT JOIN fares_data_repository.cubic_ods.edw_rider_class_dimension rc ON rc.rider_class_id = t.rider_class_id
-	LEFT JOIN fares_data_repository.cubic_ods.edw_fare_product_dimension fp ON fp.fare_prod_key = t.fare_prod_key
+FROM cubic_ods.edw_farerev_recovery_txn t
+	JOIN cubic_ods.edw_date_dimension od ON od.date_key = t.operating_day_key
+	JOIN cubic_ods.edw_date_dimension pd ON pd.date_key = t.posting_day_key
+	JOIN cubic_ods.edw_date_dimension sd ON sd.date_key = t.settlement_day_key
+	LEFT JOIN cubic_ods.edw_service_type_dimension st ON st.service_type_id = t.service_type_id
+	LEFT JOIN cubic_ods.edw_stop_point_dimension sp ON sp.stop_point_key = t.stop_point_key
+	LEFT JOIN cubic_ods.edw_route_dimension rd ON rd.route_key = t.route_key
+	LEFT JOIN cubic_ods.edw_rider_class_dimension rc ON rc.rider_class_id = t.rider_class_id
+	LEFT JOIN cubic_ods.edw_fare_product_dimension fp ON fp.fare_prod_key = t.fare_prod_key
 		AND fp.monetary_inst_type_id = 2
 ),
 FAREREV_RECOVERY_SUMMARY AS (
@@ -77,9 +77,9 @@ FAREREV_RECOVERY_SUMMARY.FARE_RULE_DESCRIPTION,
 FAREREV_RECOVERY_SUMMARY.RECOVERY_TXN_TYPE AS reason_code,
 SUM(FAREREV_RECOVERY_SUMMARY.RECOVERY_CALCULATION_AMOUNT)/100 AS total_fare_revenue
 FROM FAREREV_RECOVERY_SUMMARY
-	JOIN fares_data_repository.cubic_ods.edw_fare_revenue_report_schedule FAREREV_REPORT_SCHEDULE ON FAREREV_RECOVERY_SUMMARY.OPERATING_DAY_KEY = FAREREV_REPORT_SCHEDULE.COMP_OPERATING_DAY_KEY
-	JOIN fares_data_repository.cubic_ods.edw_date_dimension SETTLEMENT_DATE_DIMENSION ON SETTLEMENT_DATE_DIMENSION.DATE_KEY=FAREREV_RECOVERY_SUMMARY.SETTLEMENT_DAY_KEY
-	JOIN fares_data_repository.cubic_ods.edw_date_dimension OPERATING_DATE_DIMENSION ON OPERATING_DATE_DIMENSION.DATE_KEY=FAREREV_RECOVERY_SUMMARY.OPERATING_DAY_KEY
+	JOIN cubic_ods.edw_fare_revenue_report_schedule FAREREV_REPORT_SCHEDULE ON FAREREV_RECOVERY_SUMMARY.OPERATING_DAY_KEY = FAREREV_REPORT_SCHEDULE.COMP_OPERATING_DAY_KEY
+	JOIN cubic_ods.edw_date_dimension SETTLEMENT_DATE_DIMENSION ON SETTLEMENT_DATE_DIMENSION.DATE_KEY=FAREREV_RECOVERY_SUMMARY.SETTLEMENT_DAY_KEY
+	JOIN cubic_ods.edw_date_dimension OPERATING_DATE_DIMENSION ON OPERATING_DATE_DIMENSION.DATE_KEY=FAREREV_RECOVERY_SUMMARY.OPERATING_DAY_KEY
 GROUP BY
 'WC700',
 operating_day,

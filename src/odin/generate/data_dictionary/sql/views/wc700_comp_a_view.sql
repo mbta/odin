@@ -15,8 +15,8 @@ SUM(COALESCE(replacement_fee, 0)) AS replacement_fee,
 SUM(COALESCE(transit_value,0) + COALESCE(benefit_value,0) + COALESCE(bankcard_payment_value,0) 
 	+ COALESCE(one_account_value,0) + COALESCE(pass_cost,0) + COALESCE(enablement_fee,0) 
 	+ COALESCE(replacement_fee, 0)) AS total_fare_revenue
-FROM fares_data_repository.cubic_ods.edw_payment_summary p
-	JOIN fares_data_repository.cubic_ods.edw_txn_channel_map m ON m.txn_source = p.txn_source 
+FROM cubic_ods.edw_payment_summary p
+	JOIN cubic_ods.edw_txn_channel_map m ON m.txn_source = p.txn_source 
 	AND m.sales_channel_key = p.sales_channel_key 
 	AND m.payment_type_key = p.payment_type_key
 WHERE m.txn_group = 'Product Sales'
@@ -52,9 +52,9 @@ COALESCE(SUM(FAREREV_PROD_SALES_SUMMARY.REPLACEMENT_FEE/100),0) AS replacement_f
 SUM(FAREREV_PROD_SALES_SUMMARY.TOTAL_FARE_REVENUE/100) AS total_fare_revenue
 FROM
 FAREREV_PROD_SALES_SUMMARY
-	JOIN fares_data_repository.cubic_ods.edw_date_dimension SETTLEMENT_DATE_DIMENSION ON SETTLEMENT_DATE_DIMENSION.DATE_KEY=FAREREV_PROD_SALES_SUMMARY.SETTLEMENT_DAY_KEY
-	JOIN fares_data_repository.cubic_ods.edw_date_dimension OPERATING_DATE_DIMENSION ON OPERATING_DATE_DIMENSION.DATE_KEY=FAREREV_PROD_SALES_SUMMARY.OPERATING_DAY_KEY
-	JOIN fares_data_repository.cubic_ods.edw_fare_revenue_report_schedule FAREREV_REPORT_SCHEDULE ON FAREREV_PROD_SALES_SUMMARY.OPERATING_DAY_KEY = FAREREV_REPORT_SCHEDULE.COMP_OPERATING_DAY_KEY 
+	JOIN cubic_ods.edw_date_dimension SETTLEMENT_DATE_DIMENSION ON SETTLEMENT_DATE_DIMENSION.DATE_KEY=FAREREV_PROD_SALES_SUMMARY.SETTLEMENT_DAY_KEY
+	JOIN cubic_ods.edw_date_dimension OPERATING_DATE_DIMENSION ON OPERATING_DATE_DIMENSION.DATE_KEY=FAREREV_PROD_SALES_SUMMARY.OPERATING_DAY_KEY
+	JOIN cubic_ods.edw_fare_revenue_report_schedule FAREREV_REPORT_SCHEDULE ON FAREREV_PROD_SALES_SUMMARY.OPERATING_DAY_KEY = FAREREV_REPORT_SCHEDULE.COMP_OPERATING_DAY_KEY 
 GROUP BY
 'WC700', 
 OPERATING_DATE_DIMENSION.DTM, 
