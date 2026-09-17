@@ -1,4 +1,3 @@
-AS
 SELECT
     strptime(posting_day_key::varchar,'%Y%m%d')::date as posting_date,
     strptime(settlement_day_key::varchar,'%Y%m%d')::date as settlement_date,
