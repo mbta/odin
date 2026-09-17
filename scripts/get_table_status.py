@@ -15,13 +15,13 @@ Four groups, one per publishing job:
 
 Each table is classified into one of three states:
 
-  * STALE: no object, or no run within --stale-hours (default 24h). Jobs are
+  * STALE: no object, or no run within --stale-seconds (default 24h). Jobs are
     serialized rather than run in parallel, so one flat threshold is more meaningful than
     each job's own cadence. A stale object means the job is not finishing -- which is
     itself the signal worth having.
   * BEHIND: running recently, but not caught up: the job's own keep-up flag says so
     (cdc_budget_nearly_full / merge_budget_full / caught_up false /
-    jobs_lag > 0), or the true backlog (seq_lag_seconds) exceeds --lag-hours.
+    jobs_lag > 0), or the true backlog (seq_lag_seconds) exceeds --lag-seconds.
   * OK: ran recently and caught up.
 
 Rarely-updated tables (like the DIMENSION tables) have a large clock_lag_seconds
@@ -90,8 +90,29 @@ OK, BEHIND, STALE = "OK", "BEHIND", "STALE"
 # STALE is considered 'worse' than BEHIND when a single status is needed
 RANK = {STALE: 0, BEHIND: 1, OK: 2}
 
-DEFAULT_STALE_HOURS = 24.0
-DEFAULT_LAG_HOURS = 4.0
+DEFAULT_STALE_SECONDS = 24 * 3600
+DEFAULT_LAG_SECONDS = 4 * 3600
+
+# Per-table BEHIND thresholds, in seconds.
+# Note: jobs that are fully caught up with source (as judged by
+# cdc_budget_nearly_full, merge_budget_full, caught_up, or jobs_lag)
+# do not trigger BEHIND regardless of threshold set here.
+LAG_SECONDS_OVERRIDES: dict[str, float] = {}
+
+# Per-table STALE thresholds, in seconds.
+# High-frequency tables should be marked as STALE after a much shorter delay that the default
+STALE_SECONDS_OVERRIDES: dict[str, float] = {
+    "ODS:EDW.PATRONAGE_SUMMARY": 1 * 3600,
+    "AFC:v_validation_taps": 1 * 3600,
+    "AFC:v_sales_txns": 1 * 3600,
+    "AFC:v_products": 1 * 3600,
+    "AFC:v_svw_balance_changes": 1 * 3600,
+    "AFC:v_eventhistory": 1 * 3600,
+    "AFC:v_mainshift": 1 * 3600,
+    "AFC:v_trips": 1 * 3600,
+    "masabi:retail.ticket_purchases": 1 * 3600,
+    "masabi:retail.activations": 1 * 3600,
+}
 
 # Views take the status of the worst member, according to the RANK constant
 # E.g., a view with one BEHIND table is BEHIND, unless it has a STALE table
@@ -301,6 +322,13 @@ def split_member(member: str) -> tuple[str, str]:
     return group, table
 
 
+def threshold_seconds(
+    overrides: dict[str, float], group: str, table: str, default_seconds: float
+) -> float:
+    """Get hardcoded threshold from `overrides`, else return `default_seconds`"""
+    return overrides.get(member_key(group, table), default_seconds)
+
+
 def fetch_group(prefix: str, tmpdir: str, only: Optional[set[str]] = None) -> dict[str, dict]:
     """Download status objects under `prefix`; return {table: payload}"""
     objects = list_objects(f"{DATA_SPRINGBOARD}/{prefix}/", in_filter=".json")
@@ -410,8 +438,12 @@ def classify(payload: dict, now: datetime, stale_seconds: float, lag_seconds: fl
     return BEHIND if is_behind(payload, lag_seconds) else OK
 
 
-def _behind_note(payload: dict) -> str:
-    """One-line reason a BEHIND table is behind, using whatever the group publishes."""
+def _behind_note(payload: dict, override_seconds: Optional[float] = None) -> str:
+    """
+    One-line reason a BEHIND table is behind, using whatever the group publishes.
+
+    Uses each table's individual threshold when one exists.
+    """
     parts = []
     seq_lag = payload.get("seq_lag_seconds")
     if isinstance(seq_lag, (int, float)):
@@ -428,10 +460,13 @@ def _behind_note(payload: dict) -> str:
         wall = payload.get("catchup_wall_seconds")
         eta = _fmt_duration(wall) if isinstance(wall, (int, float)) else "never (losing ground)"
         parts.append(f"catch up in ~{_fmt_duration(catchup)} proc / {eta} wall")
-    return ", ".join(parts) if parts else "not caught up"
+    reason = ", ".join(parts) if parts else "not caught up"
+    if override_seconds is not None:
+        reason += f" (threshold {override_seconds / 3600}h)"
+    return reason
 
 
-def _stale_note(payload: dict, now: datetime) -> str:
+def _stale_note(payload: dict, now: datetime, override_seconds: Optional[float] = None) -> str:
     """One-line reason a STALE table is stale."""
     if not payload:
         return "no status object published"
@@ -449,7 +484,8 @@ def _stale_note(payload: dict, now: datetime) -> str:
 
     ago = _fmt_duration((now - last_run).total_seconds())
     cadence = _fmt_duration(payload.get("next_run_seconds"))
-    return f"last run {ago} ago (cadence {cadence}){lag_statement}"
+    threshold = "" if override_seconds is None else f", threshold {override_seconds / 3600}h"
+    return f"last run {ago} ago (cadence {cadence}){lag_statement}{threshold}"
 
 
 def _ok_note(payload: dict, now: datetime) -> str:
@@ -475,24 +511,48 @@ def _ok_note(payload: dict, now: datetime) -> str:
     return ", ".join(parts) if parts else "caught up"
 
 
-def note_for(state: str, payload: dict, now: datetime) -> str:
+def note_for(
+    state: str,
+    payload: dict,
+    now: datetime,
+    lag_override_seconds: Optional[float] = None,
+    stale_override_seconds: Optional[float] = None,
+) -> str:
     """Pick the right one-line note for a table in `state` and name the state in it."""
     if state == STALE:
-        note = _stale_note(payload, now)
+        note = _stale_note(payload, now, stale_override_seconds)
     elif state == BEHIND:
-        note = _behind_note(payload)
+        note = _behind_note(payload, lag_override_seconds)
     else:
         note = _ok_note(payload, now)
     return state_note(state, note)
 
 
 def print_table_detail(
-    group: str, table: str, payload: dict, now: datetime, stale_seconds: float, lag_seconds: float
+    group: str,
+    table: str,
+    payload: dict,
+    now: datetime,
+    default_stale_seconds: float,
+    default_lag_seconds: float,
 ) -> None:
     """Print the full single-table summary."""
-    state = classify(payload, now, stale_seconds, lag_seconds)
+    lag_override_seconds = LAG_SECONDS_OVERRIDES.get(member_key(group, table))
+    stale_override_seconds = STALE_SECONDS_OVERRIDES.get(member_key(group, table))
+    state = classify(
+        payload,
+        now,
+        threshold_seconds(STALE_SECONDS_OVERRIDES, group, table, default_stale_seconds),
+        threshold_seconds(LAG_SECONDS_OVERRIDES, group, table, default_lag_seconds),
+    )
     print(f"{table}  ({group})")
     print(f"  state:        {STATE_EMOJI[state]} {state}")
+    if lag_override_seconds is not None:
+        bar = f"{lag_override_seconds / 3600}h"
+        print(f"  threshold: backlog over {bar} counts as behind (per-table)")
+    if stale_override_seconds is not None:
+        bar = f"{stale_override_seconds / 3600}h"
+        print(f"  threshold: no run in {bar} counts as stale (per-table)")
     views = [name for name, members in VIEWS.items() if member_key(group, table) in members]
     if views:
         print(f"  views:        {', '.join(views)}")
@@ -602,8 +662,8 @@ def fetch_all(groups: list[str], tmpdir: str) -> dict[str, dict[str, dict]]:
 def build_report(
     groups: list[str],
     now: datetime,
-    stale_seconds: float,
-    lag_seconds: float,
+    default_stale_seconds: float,
+    default_lag_seconds: float,
     detailed: bool = False,
 ) -> tuple[list[Line], int, int]:
     """
@@ -612,13 +672,18 @@ def build_report(
     When `detailed`, every table gets a per-table line (OK tables included, with a
     key-info summary); otherwise OK tables are not listed.
     """
+    behind_key = (
+        f"latest timestamp older than {default_lag_seconds / 3600} hours, and uningested "
+        "data remains from source; tables with their own threshold name it on their line"
+    )
+    stale_key = (
+        f"no successful update within {default_stale_seconds / 3600} hours; "
+        "tables with their own threshold name it on their line"
+    )
     key = {
         OK: "not stale or behind",
-        BEHIND: (
-            f"latest timestamp older than {lag_seconds / 3600:g} hours, and/or uningested "
-            "data remains from source"
-        ),
-        STALE: f"no successful update within {stale_seconds / 3600:g} hours",
+        BEHIND: behind_key,
+        STALE: stale_key,
     }
     lines = [Line("Key:")]
     lines += [Line(state, state=state, note=note, depth=1) for state, note in key.items()]
@@ -629,7 +694,12 @@ def build_report(
 
     states_by_group = {
         group: {
-            table: classify(payload, now, stale_seconds, lag_seconds)
+            table: classify(
+                payload,
+                now,
+                threshold_seconds(STALE_SECONDS_OVERRIDES, group, table, default_stale_seconds),
+                threshold_seconds(LAG_SECONDS_OVERRIDES, group, table, default_lag_seconds),
+            )
             for table, payload in payloads.items()
         }
         for group, payloads in payloads_by_group.items()
@@ -655,9 +725,14 @@ def build_report(
             state = states[table]
             if state == OK and not detailed:
                 continue
-            lines.append(
-                Line(table, state=state, note=note_for(state, payloads[table], now), depth=1)
+            note = note_for(
+                state,
+                payloads[table],
+                now,
+                LAG_SECONDS_OVERRIDES.get(member_key(group, table)),
+                STALE_SECONDS_OVERRIDES.get(member_key(group, table)),
             )
+            lines.append(Line(table, state=state, note=note, depth=1))
         lines.append(Line(""))
 
     lines.append(
@@ -759,16 +834,24 @@ def main() -> int:
         help='one table, qualified by its group (e.g. "ODS:EDW.SALE_TRANSACTION")',
     )
     parser.add_argument(
-        "--lag-hours",
+        "--lag-seconds",
         type=float,
-        default=DEFAULT_LAG_HOURS,
-        help=f"seq_lag over this many hours counts as behind (default {DEFAULT_LAG_HOURS})",
+        default=DEFAULT_LAG_SECONDS,
+        help=(
+            f"seq_lag over this many seconds counts as behind (default "
+            f"{DEFAULT_LAG_SECONDS}, i.e. {DEFAULT_LAG_SECONDS / 3600}h); "
+            "tables listed in LAG_SECONDS_OVERRIDES keep their own threshold"
+        ),
     )
     parser.add_argument(
-        "--stale-hours",
+        "--stale-seconds",
         type=float,
-        default=DEFAULT_STALE_HOURS,
-        help=f"no run within this many hours counts as stale (default {DEFAULT_STALE_HOURS:g})",
+        default=DEFAULT_STALE_SECONDS,
+        help=(
+            f"no run within this many seconds counts as stale (default "
+            f"{DEFAULT_STALE_SECONDS}, i.e. {DEFAULT_STALE_SECONDS / 3600}h); "
+            "tables listed in STALE_SECONDS_OVERRIDES keep their own threshold"
+        ),
     )
     parser.add_argument("--json", action="store_true", help="print raw payload(s), unformatted")
     parser.add_argument(
@@ -827,8 +910,8 @@ def main() -> int:
         logging.getLogger(LOGGER_NAME).setLevel(logging.WARNING)
 
     now = _utc_now()
-    lag_seconds = args.lag_hours * 3600
-    stale_seconds = args.stale_hours * 3600
+    default_lag_seconds = args.lag_seconds
+    default_stale_seconds = args.stale_seconds
 
     # Single table: fetch just that table's object, not the whole group.
     if args.table:
@@ -841,8 +924,14 @@ def main() -> int:
         if args.json:
             print(json.dumps(payload, indent=2))
             return 0
-        print_table_detail(group, table, payload, now, stale_seconds, lag_seconds)
-        return 0 if classify(payload, now, stale_seconds, lag_seconds) == OK else 1
+        print_table_detail(group, table, payload, now, default_stale_seconds, default_lag_seconds)
+        table_lag_seconds = threshold_seconds(
+            LAG_SECONDS_OVERRIDES, group, table, default_lag_seconds
+        )
+        table_stale_seconds = threshold_seconds(
+            STALE_SECONDS_OVERRIDES, group, table, default_stale_seconds
+        )
+        return 0 if classify(payload, now, table_stale_seconds, table_lag_seconds) == OK else 1
 
     groups = list(GROUPS)
 
@@ -863,7 +952,7 @@ def main() -> int:
         # build_report prints nothing, so on this public repo's world-readable CI log the
         # summary reaches Slack without ever passing through stdout.
         lines, problems, total_tables = build_report(
-            groups, now, stale_seconds, lag_seconds, args.detailed
+            groups, now, default_stale_seconds, default_lag_seconds, args.detailed
         )
 
         # A read that turned up nothing is always worth reporting, even under
@@ -897,7 +986,7 @@ def main() -> int:
         return 1 if total_tables == 0 else 0
 
     lines, problems, total_tables = build_report(
-        groups, now, stale_seconds, lag_seconds, args.detailed
+        groups, now, default_stale_seconds, default_lag_seconds, args.detailed
     )
     header = [Line(f"Fares table status: {now.strftime('%Y-%m-%dT%H:%MZ')}"), Line("")]
     print(render(header + lines))
