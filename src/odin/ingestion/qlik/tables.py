@@ -98,7 +98,7 @@ TABLE_MANIFEST: Dict[str, List[str | None]] = {
     "EDW.PATRON_ORDER_STATUS_DIMENSION": ["alpha", "alpha", None],
     "EDW.PATRON_ORDER_TYPE_DIMENSION": ["alpha", "alpha", None],
     "EDW.PATRON_TRIP": ["alpha", "alpha", None],
-    "EDW.PATRONAGE_SUMMARY": ["alpha", "beta", None],
+    "EDW.PATRONAGE_SUMMARY": ["beta", "beta", None],
     "EDW.PAYMENT_SUMMARY": ["alpha", "alpha", None],
     "EDW.PAYMENT_TYPE_DIMENSION": ["alpha", "alpha", None],
     "EDW.PROCESS_COST_SUMMARY": ["alpha", "alpha", None],
