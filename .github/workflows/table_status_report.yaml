@@ -16,14 +16,14 @@ on:
         description: Include a line for every table, OK ones included
         type: boolean
         default: false
-      stale_hours:
-        description: No run within this many hours counts as stale
+      stale_seconds:
+        description: No run within this many seconds counts as stale (86400 = 24h)
         type: string
-        default: '24'
-      lag_hours:
-        description: Backlog over this many hours counts as behind
+        default: '86400'
+      lag_seconds:
+        description: Backlog over this many seconds counts as behind (14400 = 4h)
         type: string
-        default: '4'
+        default: '14400'
 
 concurrency:
   group: table-status-report
@@ -65,6 +65,6 @@ jobs:
         run: |
           python scripts/get_table_status.py \
             --slack \
-            --stale-hours "${{ inputs.stale_hours || '24' }}" \
-            --lag-hours "${{ inputs.lag_hours || '4' }}" \
+            --stale-seconds "${{ inputs.stale_seconds || '86400' }}" \
+            --lag-seconds "${{ inputs.lag_seconds || '14400' }}" \
             ${{ inputs.detailed && '--detailed' || '' }}
