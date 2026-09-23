@@ -152,7 +152,7 @@ TABLE_MANIFEST: Dict[str, List[str | None]] = {
     "EDW.DAILY_CASH_BALANCE_SUMMARY": ["alpha", "alpha", None],
     # "EDW.DAILY_POS_CASH_BALANCE_SUMMARY": ["alpha", "alpha", None],
     # "EDW.FNP_PARSED_MANUAL_JOURNAL": ["alpha", "alpha", None],
-    "EDW.COMPONENT_MAINT_COUNT": ["gamma", "gamma", None],
+    "EDW.COMPONENT_MAINT_COUNT": ["gamma", None, "gamma"],
     "DW_MAIN.DW_SETTING": ["alpha", "alpha", None],
 }
 
