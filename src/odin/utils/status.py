@@ -9,9 +9,11 @@ Logging should never cause an exception that interrupts the update job itself.
 
 import json
 import os
+from collections.abc import Mapping
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
+from typing import TypeAlias
 
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import upload_file
@@ -21,6 +23,11 @@ from odin.utils.logger import ProcessLog
 
 SECONDS_PER_DAY = 60 * 60 * 24
 SECONDS_PER_HOUR = 60 * 60
+
+# A status field in the published JSON status files
+# Either a single value, or values grouped under a single key
+# (e.g. max_column_timestamps)
+StatusValues: TypeAlias = MdValues | dict[str, MdValues]
 
 
 def utc_now() -> datetime:
@@ -231,7 +238,7 @@ def publish_status(
     status_prefix: str,
     key: str,
     tmpdir: str,
-    payload: dict[str, MdValues],
+    payload: Mapping[str, StatusValues],
 ) -> None:
     """
     Publish `payload` to ``s3://<DATA_SPRINGBOARD>/<status_prefix>/<key>.json``.
@@ -253,7 +260,15 @@ def publish_status(
             os.path.join(DATA_SPRINGBOARD, status_prefix, f"{key}.json"),
             extra_args={"ContentType": "application/json"},
         )
-        log.complete(**payload)
+        # Nested fields are logged as compact JSON, keeping one key=value per field.
+        log.complete(
+            **{
+                field: json.dumps(value, separators=(",", ":"))
+                if isinstance(value, dict)
+                else value
+                for field, value in payload.items()
+            }
+        )
 
     except Exception as exception:
         log.failed(exception)

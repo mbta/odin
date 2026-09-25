@@ -6,6 +6,7 @@ import shutil
 import urllib3
 import time
 from collections import ChainMap
+from datetime import datetime
 from operator import itemgetter
 from pathlib import Path
 from typing import Literal, TypedDict, Generator, SupportsInt
@@ -17,9 +18,11 @@ from odin.utils.runtime import sigterm_check
 from odin.utils.runtime import disk_free_pct
 from odin.utils.logger import MdValues
 from odin.utils.logger import ProcessLog
+from odin.utils.status import iso_as_datetime
 from odin.utils.status import progress_fields
 from odin.utils.status import publish_status
 from odin.utils.status import read_status
+from odin.utils.status import StatusValues
 from odin.utils.status import utc_now
 from odin.utils.locations import AFC_DATA
 from odin.utils.locations import AFC_STATUS
@@ -206,6 +209,11 @@ class ArchiveAFCAPI(OdinJob):
         self.api_latest_job_id: int | None = None
         self.lag_truncated = False
         self.post_snapshot: AFCParquetSnapshot | None = None
+        self.pq_job_id = 0
+        # S&B's self-reported update frequency, from /tableinfos
+        self.table_frequency: str | None = None
+        # int if _log_inline_health_metrics ran, else None
+        self.regression_count: int | None = None
         # Set by run(); the denominator for the status file's rates.
         self._run_started: float | None = None
         self.headers = {
@@ -358,6 +366,7 @@ class ArchiveAFCAPI(OdinJob):
                     )
                 )
 
+        self.regression_count = len(regressions)
         for issue in regressions:
             ProcessLog(
                 "afc_api_inline_health_regression",
@@ -418,6 +427,9 @@ class ArchiveAFCAPI(OdinJob):
         # set self.table_type
         # this determines of process performs incremental load or full refresh
         self.table_type = schemas_dict[self.table]["type"]
+
+        # reported in the JSON status file
+        self.table_frequency = schemas_dict[self.table].get("frequency")
 
         # set self.pq_job_id from parquet dataset or specified start point
         last_exported_id = 0
@@ -677,8 +689,31 @@ class ArchiveAFCAPI(OdinJob):
                 jobs_lag=self.jobs_lag,
                 rows_lag=self.rows_lag,
             )
+        else:
+            self.api_latest_job_id = self.pq_job_id
         log.complete(return_duration=return_duration)
         return return_duration
+
+    def _max_timestamps(self) -> dict[str, MdValues]:
+        """Log the maximum value for each timestamp column, from parquet metadata."""
+        if not getattr(self, "ts_cols", []):
+            return {}
+        log = ProcessLog("afc_max_timestamps", table=self.table)
+        maxes: dict[str, MdValues] = {}
+        try:
+            ds = ds_from_path(s3_folder(self.export_folder))
+            for column in self.ts_cols:
+                _, col_max = ds_metadata_min_max(ds, column)
+                if col_max is None:
+                    maxes[column] = None
+                elif isinstance(col_max, datetime):
+                    maxes[column] = col_max.isoformat()
+                else:
+                    maxes[column] = str(col_max)
+            log.complete()
+        except Exception as exception:
+            log.failed(exception)
+        return maxes
 
     def _write_status(self, next_run_secs: int) -> None:
         """
@@ -692,18 +727,36 @@ class ArchiveAFCAPI(OdinJob):
         snapshot = self.post_snapshot or self._s3_parquet_snapshot()
         row_count = snapshot["total_rows"]
         prev = read_status(AFC_STATUS, self.table, self.scratch)
-        status: dict[str, MdValues] = {
+        # pending_since measures how long the pipeline has been behind the API
+        pending_since = None
+        if self.jobs_lag > 0:
+            carried = None if prev is None else iso_as_datetime(prev.get("pending_since"))
+            pending_since = (carried or now).isoformat()
+        # Carries forward while the API's most recent jobId is unchanged, restarts on new jobId
+        first_seen = now
+        if prev is not None and prev.get("api_latest_job_id") == self.api_latest_job_id:
+            first_seen = iso_as_datetime(prev.get("api_latest_job_first_seen")) or now
+        status: dict[str, StatusValues] = {
             "table": self.table,
             "table_type": getattr(self, "table_type", None),
+            "table_frequency": self.table_frequency,
             "last_run": now.isoformat(),
             "row_count": row_count,
             "object_count": snapshot["object_count"],
             "total_size_bytes": snapshot["total_size_bytes"],
             "max_job_id": snapshot["max_job_id"],
             "api_latest_job_id": self.api_latest_job_id,
+            # Most recent time this job has seen a new jobId in the API
+            # If a job carries forwards a time that is older than some
+            # threshold (e.g. 24 hours), then S&B has not published
+            # new data since that time, which might merit an alert.
+            "api_latest_job_first_seen": first_seen.isoformat(),
             "jobs_lag": self.jobs_lag,
             "rows_lag": self.rows_lag,
+            "pending_since": pending_since,
             "lag_truncated": self.lag_truncated,
+            "regression_count": self.regression_count,
+            "max_column_timestamps": self._max_timestamps() if snapshot["object_count"] else {},
             "next_run_seconds": next_run_secs,
         }
         # No watermark/lag_secs: this job has no event time, so only the row-rate half
