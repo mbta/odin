@@ -1,0 +1,39 @@
+name: Deploy Cubic Mover Lambda
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment
+        type: choice
+        options:
+          - dev
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: cubic-mover-${{ github.event.inputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      FUNCTION_NAME: cubic-mover-${{ github.event.inputs.environment }}
+    steps:
+      - name: Checkout Branch
+        uses: actions/checkout@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Package Lambda
+        # -j stores the file at the zip root, matching the handler
+        # "cubic_mover_lambda.lambda_handler" configured in terraform
+        run: zip -j cubic_mover_lambda.zip scripts/cubic_mover_lambda.py
+      - name: Update Lambda Code
+        run: |
+          aws lambda update-function-code \
+            --function-name "$FUNCTION_NAME" \
+            --zip-file fileb://cubic_mover_lambda.zip
+          aws lambda wait function-updated-v2 --function-name "$FUNCTION_NAME"
