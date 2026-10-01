@@ -33,7 +33,7 @@ def migration() -> None:
     retried safely. Note: ingestion skips LOAD files modified within the last 6 hours, so
     restored tables will not begin re-ingesting until ~6 hours after this runs.
     """
-    tables = ["EDW.PAL_CONFIRMATION", "EDW.UNSETTLED_CRDB_SYS_CONF"]
+    tables = ["EDW.SALE_TRANSACTION", "EDW.PAL_CONFIRMATION", "EDW.UNSETTLED_CRDB_SYS_CONF"]
     log = ProcessLog("odin_migration", migration="alpha_dev_0008", target_tables=", ".join(tables))
     try:
         processed_prefix = os.path.join(DATA_ARCHIVE, CUBIC_QLIK_PROCESSED, IN_QLIK_PREFIX)
