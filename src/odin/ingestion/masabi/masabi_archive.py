@@ -72,7 +72,7 @@ NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 MASABI_START_TIMESTAMP_MS: int = 1_748_736_000_000
 
 # Exclusive lower bound for the gamma historical backfill: 2018-01-01 00:00:00 UTC (ms).
-MASABI_BACKFILL_START_TIMESTAMP_MS: int = 1_514_782_800_000
+MASABI_BACKFILL_START_TIMESTAMP_MS: int = 1_514_764_800_000
 
 _YAML_TYPE_MAP: dict[str, pl.DataType] = {
     "string": pl.String(),
