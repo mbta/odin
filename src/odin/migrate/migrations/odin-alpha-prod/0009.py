@@ -26,11 +26,12 @@ def migration() -> None:
         temp_prefix=temp_prefix,
     )
 
-    # Clear any previous backup first so stale files cannot survive the copy.
-    delete_failures = delete_objects(
-        [obj.path for obj in list_objects(temp_prefix)]
-        + [obj.path for obj in list_objects(backfill_prefix)]
-    )
+    temp_files = [obj.path for obj in list_objects(temp_prefix)]
+    backfill_files = [obj.path for obj in list_objects(backfill_prefix)]
+    assert temp_files, f"Expected to find files in {temp_prefix} but found none"
+    assert backfill_files, f"Expected to find files in {backfill_prefix} but found none"
+
+    delete_failures = delete_objects(temp_files + backfill_files)
     if delete_failures:
         exception = AssertionError(f"Failed to clear backup prefix {temp_prefix}")
         log.add_metadata(delete_failures=str(delete_failures))
