@@ -1,6 +1,5 @@
 import os
 
-from odin.utils.aws.s3 import copy_objects
 from odin.utils.aws.s3 import delete_objects
 from odin.utils.aws.s3 import list_objects
 from odin.utils.locations import DATA_SPRINGBOARD
