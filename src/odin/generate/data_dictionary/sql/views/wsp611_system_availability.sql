@@ -17,10 +17,7 @@ AS
   --DT_WSP611_SA_MON_PERF_DED.ORDER2
 FROM
   ( 
-  with --date_range as
---(select date_key,dd.month_desc || '-' || dd.YEAR AS run_date from cubic_ods.edw_date_dimension dd
---  where dd.month_desc = 'March' AND dd.YEAR = 2025), --SELECT MONTH AND YEAR
-base as
+  with base as
         (SELECT ks.kpi_id,kpi_name,kpi.kpi_type,units,metric_category_id,base_qty,grouped,dd.month_desc || '-' || dd.YEAR AS run_date,
                 SUM(kpi_value) AS measured,
                 SUM(kpi_quantity) AS total_qty,
@@ -29,7 +26,6 @@ base as
          INNER JOIN cubic_ods.edw_date_dimension dd ON dd.date_key = ks.transit_day_key
          INNER JOIN cubic_ods.edw_kpi kpi ON ks.kpi_id = kpi.kpi_id and deduction_basis_id is null
                     and (metric_category_id != 8 or metric_category_id is null)
-         WHERE dd.month_desc = 'January' AND dd.YEAR = 2026 --SELECT RUN DATE AND YEAR
          GROUP BY ks.kpi_id,kpi_name,kpi_type,units,metric_category_id,base_qty,grouped,run_date
         ),                           
         child as
@@ -59,7 +55,7 @@ base as
             case when substr(b.grouped,1,3) in ('sum','max','min') then coalesce(c.total_qty,b.total_qty) else b.total_qty end total_qty,
             last_day_key 
          from base b
-         left join child c on c.kpi_id = b.kpi_id
+         left join child c on c.kpi_id = b.kpi_id and c.run_date = b.run_date
          )
   select 
   rtrim(substr(kg.kpi_id,2,2),'abcd-')::int as order0,run_date,
