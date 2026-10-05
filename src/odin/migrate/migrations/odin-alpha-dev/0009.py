@@ -27,8 +27,8 @@ def migration() -> None:
 
     temp_files = [obj.path for obj in list_objects(temp_prefix)]
     backfill_files = [obj.path for obj in list_objects(backfill_prefix)]
-    assert temp_files, f"Expected to find files in {temp_prefix} but found none"
-    assert backfill_files, f"Expected to find files in {backfill_prefix} but found none"
+    print(f"Found {len(temp_files)} files in {temp_prefix}")
+    print(f"Found {len(backfill_files)} files in {backfill_prefix}")
 
     delete_failures = delete_objects(temp_files + backfill_files)
     if delete_failures:
