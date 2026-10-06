@@ -20,7 +20,7 @@ def migration() -> None:
 
     log = ProcessLog(
         "odin_migration",
-        migration="alpha_dev_0009",
+        migration="alpha_0001",
         backfill_prefix=backfill_prefix,
         temp_prefix=temp_prefix,
     )
