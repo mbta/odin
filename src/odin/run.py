@@ -99,4 +99,7 @@ def start():
         # schedule_tableau_upload(schedule)
         schedule_dictionary(schedule)
 
+    if odin_instance in ["gamma"]:
+        schedule_masabi_archive(schedule)
+
     schedule.run()
