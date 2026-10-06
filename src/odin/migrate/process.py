@@ -112,15 +112,16 @@ def start_migrations():
     `000X`. Future migration attempts will skip this migration as all migrations are run in
     incremental order.
     """
-    task_name = os.getenv("ECS_TASK_GROUP")
+    task_name = os.getenv("ODIN_INSTANCE")
     if task_name is None:
         # Only run in AWS
         return
-    task_name = task_name.replace("family:", "")
+    task_name = "odin-" + task_name
     log = ProcessLog("start_migrations", task_name=task_name)
     try:
         here = os.path.dirname(os.path.abspath(__file__))
         modules_path = os.path.join(here, "migrations", task_name)
+        print(modules_path)
         run_task_migration(modules_path, task_name)
         log.complete()
     except FileNotFoundError as fnfe:
