@@ -112,11 +112,11 @@ def start_migrations():
     `000X`. Future migration attempts will skip this migration as all migrations are run in
     incremental order.
     """
-    task_name = os.getenv("ECS_TASK_GROUP")
+    task_name = "alpha"  # os.getenv("ODIN_INSTANCE")
     if task_name is None:
         # Only run in AWS
         return
-    task_name = task_name.replace("family:", "")
+    task_name = "odin-" + task_name
     log = ProcessLog("start_migrations", task_name=task_name)
     try:
         here = os.path.dirname(os.path.abspath(__file__))
