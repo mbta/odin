@@ -38,13 +38,11 @@ inner join cubic_ods.edw_date_dimension dd
 on ks.transit_day_key = dd.date_key
 inner join cubic_ods.edw_kpi kpi
 on ks.kpi_id = kpi.kpi_id  and COALESCE(grouped,'xxx') not like 'sum%'
-where dd.month_desc = 'February' AND dd.YEAR = 2026
---dd.dtm >= '2025-08-01 00:00:00.000'
---AND dd.dtm <= '2025-08-31 23:59:59.000'
-and metric_category_id = 8
+where metric_category_id = 8
 group by ks.kpi_id,kpi_name,kpi_type,units,dd.month_desc,dd.YEAR) s1 --S1 IS WORKING BY ITSELF
 	left join
 (select kpi_id,
+dd.month_desc || '-' || dd.YEAR AS run_date,
 case when location_category in ('A','B','C','D') then location_category
 when kpi_id in ('P1-18','P2-19.1','P2-19.2','P2-20','P3-21') and failure_level = 999 then 'PTT'
 else location_category end location_category,
@@ -54,14 +52,13 @@ sum(kpi_value)/100 as deduction
 from cubic_ods.edw_kpi_detail_events_by_day kpi_detail_events_by_day
 inner join cubic_ods.edw_date_dimension dd
 on  kpi_detail_events_by_day.transit_day_key = dd.date_key
-where dd.month_desc = 'February' AND dd.YEAR = 2026
---dd.dtm >= '2025-08-01 00:00:00.000'
---AND dd.dtm <= '2025-08-31 23:59:59.000'
 group by kpi_id,
+dd.month_desc,
+dd.YEAR,
 case when location_category in ('A','B','C','D') then location_category
 when kpi_id in ('P1-18','P2-19.1','P2-19.2','P2-20','P3-21') and failure_level = 999 then 'PTT'
 else location_category end) s2 --S2 IS WORKING BY ITSELF
-on s1.kpi_id = s2.kpi_id)
+on s1.kpi_id = s2.kpi_id and s1.run_date = s2.run_date)
 order by rtrim(substr(s1.kpi_id,2,2),'abcd-')::int,
 length(substr(s1.kpi_id,1,4)),substr(s1.kpi_id,2,3),
 cast(ltrim(substr(s1.kpi_id,4,6),'abcd-') AS float),location_category
