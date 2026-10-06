@@ -254,7 +254,8 @@ def publish_status(
     try:
         status_path = os.path.join(tmpdir, "status.json")
         with open(status_path, "w") as status_file:
-            json.dump(payload, status_file, indent=2)
+            # explicitly convert to dict for json serialization
+            json.dump(dict(payload), status_file, indent=2)
         upload_file(
             status_path,
             os.path.join(DATA_SPRINGBOARD, status_prefix, f"{key}.json"),
