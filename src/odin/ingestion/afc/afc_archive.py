@@ -690,6 +690,8 @@ class ArchiveAFCAPI(OdinJob):
                 rows_lag=self.rows_lag,
             )
         else:
+            # Nothing newer than pq_job_id was downloaded, so it is the API's latest jobId.
+            # Leaving None would look like a new jobId and reset api_latest_job_first_seen.
             self.api_latest_job_id = self.pq_job_id
         log.complete(return_duration=return_duration)
         return return_duration
@@ -704,12 +706,8 @@ class ArchiveAFCAPI(OdinJob):
             ds = ds_from_path(s3_folder(self.export_folder))
             for column in self.ts_cols:
                 _, col_max = ds_metadata_min_max(ds, column)
-                if col_max is None:
-                    maxes[column] = None
-                elif isinstance(col_max, datetime):
-                    maxes[column] = col_max.isoformat()
-                else:
-                    maxes[column] = str(col_max)
+                # sync_parquet stores ts_cols as Datetime; anything else is unknown
+                maxes[column] = col_max.isoformat() if isinstance(col_max, datetime) else None
             log.complete()
         except Exception as exception:
             log.failed(exception)
