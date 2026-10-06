@@ -14,7 +14,7 @@ from odin.utils.locations import ODIN_MIGRATIONS
 def test_get_last_run_migration(ls: MagicMock):
     """Test get_last_migration helper function"""
     # no existing migration status
-    status_path = "aws_s3_bucket/odin/migrations/_odin-test"
+    status_path = "aws_s3_bucket/odin/migrations/odin-test"
     ls.return_value = []
     assert get_last_run_migration(status_path) is None
 
@@ -43,9 +43,9 @@ def test_migrate_not_in_aws(caplog):
 
 @patch("odin.migrate.process.list_objects")
 def test_no_migrations_available(ls: MagicMock, caplog, monkeypatch):
-    """Test no migrations available for ECS_TASK_GROUP."""
+    """Test no migrations available for a given instance."""
     ls.return_value = []
-    monkeypatch.setenv("ECS_TASK_GROUP", "family:_odin_no_migration")
+    monkeypatch.setenv("ODIN_INSTANCE", "missing")
     start_migrations()
     assert len(caplog.messages) == 2
     assert "no_migrations_found=True" in caplog.messages[-1]
@@ -58,8 +58,8 @@ def test_no_migrations_available(ls: MagicMock, caplog, monkeypatch):
 def test_migration_failure(ls: MagicMock, infinite: MagicMock, caplog, monkeypatch):
     """Test migration failed creates infinte loop."""
     ls.return_value = []
-    monkeypatch.setenv("ECS_TASK_GROUP", "family:_odin-test")
-    task_name = "_odin-test"
+    monkeypatch.setenv("ODIN_INSTANCE", "test")
+    task_name = "odin-test"
     start_migrations()
     infinite.assert_called_once_with(f"Migration failed for {task_name=}.")
     assert "status=failed" in caplog.messages[-1]
@@ -71,11 +71,11 @@ def test_migration_failure(ls: MagicMock, infinite: MagicMock, caplog, monkeypat
 @patch("odin.migrate.process.get_last_run_migration")
 def test_migration_process(last_run: MagicMock, upload: MagicMock, caplog, monkeypatch):
     """Test migration process."""
-    monkeypatch.setenv("ECS_TASK_GROUP", "family:_odin-test")
+    monkeypatch.setenv("ODIN_INSTANCE", "test")
 
     last_run.return_value = "0001"
     start_migrations()
-    status_path = os.path.join("bucket", ODIN_MIGRATIONS, "_odin-test")
+    status_path = os.path.join("bucket", ODIN_MIGRATIONS, "odin-test")
     last_run.assert_called_once_with(status_path)
     upload.assert_called_once_with(status_path, "0002")
     assert len(caplog.messages) == 6

@@ -112,7 +112,7 @@ def start_migrations():
     `000X`. Future migration attempts will skip this migration as all migrations are run in
     incremental order.
     """
-    task_name = "alpha"  # os.getenv("ODIN_INSTANCE")
+    task_name = os.getenv("ODIN_INSTANCE")
     if task_name is None:
         # Only run in AWS
         return
@@ -121,6 +121,7 @@ def start_migrations():
     try:
         here = os.path.dirname(os.path.abspath(__file__))
         modules_path = os.path.join(here, "migrations", task_name)
+        print(modules_path)
         run_task_migration(modules_path, task_name)
         log.complete()
     except FileNotFoundError as fnfe:
