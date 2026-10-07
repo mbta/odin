@@ -71,8 +71,8 @@ NEXT_RUN_LONG = 60 * 60 * 12  # 12 hours
 # Exclusive lower bound for the live pipeline: 2025-06-01 00:00:00 UTC (ms).
 MASABI_START_TIMESTAMP_MS: int = 1_748_736_000_000
 
-# Exclusive lower bound for the gamma historical backfill: 2021-01-01 00:00:00 UTC (ms).
-MASABI_BACKFILL_START_TIMESTAMP_MS: int = 1_609_459_200_000
+# Exclusive lower bound for the gamma historical backfill: 2018-01-01 00:00:00 UTC (ms).
+MASABI_BACKFILL_START_TIMESTAMP_MS: int = 1_514_764_800_000
 
 _YAML_TYPE_MAP: dict[str, pl.DataType] = {
     "string": pl.String(),
