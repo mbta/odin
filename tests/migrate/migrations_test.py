@@ -4,6 +4,7 @@ from datetime import datetime
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from odin.utils.aws.s3 import s3_folder
 from odin.utils.aws.s3 import S3Object
 from odin.migrate.process import start_migrations
 from odin.migrate.process import get_last_run_migration
@@ -75,7 +76,7 @@ def test_migration_process(last_run: MagicMock, upload: MagicMock, caplog, monke
 
     last_run.return_value = "0001"
     start_migrations()
-    status_path = os.path.join("bucket", ODIN_MIGRATIONS, "odin-test")
+    status_path = s3_folder(os.path.join("bucket", ODIN_MIGRATIONS, "odin-test"))
     last_run.assert_called_once_with(status_path)
     upload.assert_called_once_with(status_path, "0002")
     assert len(caplog.messages) == 6
