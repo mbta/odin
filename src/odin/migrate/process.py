@@ -7,6 +7,7 @@ from odin.utils.logger import ProcessLog
 from odin.utils.runtime import infinite_wait
 from odin.utils.locations import DATA_ARCHIVE
 from odin.utils.locations import ODIN_MIGRATIONS
+from odin.utils.aws.s3 import s3_folder
 from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import upload_file
 from odin.utils.aws.s3 import delete_objects
@@ -53,7 +54,7 @@ def run_task_migration(modules_path: str, task_name: str) -> None:
     :param modules_path: Path to local folder containing task migration files.
     :param task_name: Task name of ECS instance running migration.
     """
-    status_path = os.path.join(DATA_ARCHIVE, ODIN_MIGRATIONS, task_name)
+    status_path = s3_folder(os.path.join(DATA_ARCHIVE, ODIN_MIGRATIONS, task_name))
     odin_root = find_spec("odin").submodule_search_locations[0]  # type: ignore[index, union-attr]
     format_check = re.compile(r"^\d{4}\.py$")
     last_run_migration = get_last_run_migration(status_path)
@@ -121,7 +122,6 @@ def start_migrations():
     try:
         here = os.path.dirname(os.path.abspath(__file__))
         modules_path = os.path.join(here, "migrations", task_name)
-        print(modules_path)
         run_task_migration(modules_path, task_name)
         log.complete()
     except FileNotFoundError as fnfe:
