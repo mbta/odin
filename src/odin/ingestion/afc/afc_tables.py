@@ -1,6 +1,5 @@
 from odin.utils.instance import get_odin_instance
 
-# Table returned by `tableinfos` endpoint as of October 2, 2026
 API_TABLES_ALPHA = [
     "v_accesslevel",
     "v_audits",
@@ -15,6 +14,7 @@ API_TABLES_ALPHA = [
     "v_eventgroup",
     "v_eventtext",
     "v_fraud_events",
+    "v_fraud_rules",
     "v_groups_roles",
     "v_inspections",
     "v_legal_persons",
@@ -22,6 +22,7 @@ API_TABLES_ALPHA = [
     "v_medium_types",
     "v_moneycontainercontentsum",
     "v_moneycontainersum",
+    "v_paramgroupitem",
     "v_payment_method_instances",
     "v_payment_methods",
     "v_person",
