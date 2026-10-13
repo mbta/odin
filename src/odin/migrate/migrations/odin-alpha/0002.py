@@ -26,8 +26,9 @@ def migration() -> None:
     assert api_files, f"No files found in {api_prefix}"
     assert not temp_files, f"Temporary prefix {temp_prefix} is not empty"
 
-    copy_jobs = [(obj.path, obj.path.replace(api_prefix, temp_prefix)) for obj
-                 in list_objects(api_prefix)]
+    copy_jobs = [
+        (obj.path, obj.path.replace(api_prefix, temp_prefix)) for obj in list_objects(api_prefix)
+    ]
     copy_failures = copy_objects(copy_jobs)
     if copy_failures:
         exception = AssertionError(f"Failed to copy Masabi data to temp prefix: {temp_prefix}")
