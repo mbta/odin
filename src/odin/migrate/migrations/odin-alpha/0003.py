@@ -12,10 +12,9 @@ from odin.utils.logger import ProcessLog
 
 def migration() -> None:
     """
-    Clear out temporary storage from the previous backfill, for the new backfill.
+    Copy backfill data to the main data path.
 
-    Deletes every object under MASABI_BACKFILL and MASABI_TEMPORARY; these had been
-    the previous backfill data and the backup of the pre-previous-backfill data.
+    The main data path is cleared prior to the transfer.
     """
     backfill_prefix = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_BACKFILL))
     data_prefix = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_DATA))
