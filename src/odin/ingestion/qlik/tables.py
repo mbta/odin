@@ -127,6 +127,7 @@ TABLE_MANIFEST: Dict[str, List[str | None]] = {
     "EDW.SVN_U_KPI_LEVEL": ["alpha", "alpha", None],
     "EDW.SVN_WM_ORDER": ["alpha", "alpha", None],
     "EDW.SVN_WM_TASK": ["alpha", "alpha", None],
+    "EDW.TAP_CREATION_REASON_DIMENSION": ["alpha", "alpha", None],
     "EDW.TAP_USAGE_SUMMARY": ["alpha", "alpha", None],
     "EDW.TIME_PERIOD_DIMENSION": ["alpha", "alpha", None],
     "EDW.TOKEN_HISTORY": ["alpha", "alpha", None],

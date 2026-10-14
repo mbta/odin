@@ -1,5 +1,5 @@
 DROP VIEW IF EXISTS cubic_reports.unprocessed_taps;
-CREATE VIEW cubic_reports.unprocessed_taps;
+CREATE VIEW cubic_reports.unprocessed_taps
 AS
 SELECT
     REPROCESS_LOG_ID,
@@ -24,4 +24,4 @@ SELECT
     EDW_UPDATED_DTM,
     STATUS_FLAG,
     JOB_ID
-FROM cubic_ods.edw_abp_reprocess_log r
+FROM cubic_ods.edw_abp_reprocess_log r;
