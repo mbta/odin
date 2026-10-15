@@ -111,7 +111,7 @@ TABLE_MANIFEST: Dict[str, List[str | None]] = {
     "EDW.RIDER_CLASS_DIMENSION": ["alpha", "alpha", None],
     "EDW.RIDE_TYPE_DIMENSION": ["alpha", "alpha", None],
     "EDW.ROUTE_DIMENSION": ["alpha", "alpha", None],
-    "EDW.SALE_TRANSACTION": ["gamma", None, "gamma"],
+    "EDW.SALE_TRANSACTION": ["alpha", None, "alpha"],
     "EDW.SALES_CHANNEL_DIMENSION": ["alpha", "alpha", None],
     "EDW.SALES_SUMMARY_BY_DAY": ["alpha", "alpha", None],
     "EDW.SALE_TXN_PAYMENT": ["alpha", "alpha", None],

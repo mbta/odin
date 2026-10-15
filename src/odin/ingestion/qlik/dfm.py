@@ -65,49 +65,6 @@ class DFMdataInfocolumns(TypedDict):
     primaryKeyPos: int
 
 
-class DFMprecisionException(TypedDict):
-    """Column matcher that pins a drifted DFM precision back to its archived value."""
-
-    name: str
-    type: str
-    scale: int
-    drift_precision: int
-    archive_precision: int
-
-
-# Qlik has been observed changing the declared precision of a column without any change to the
-# values it holds. Because the declared precision determines the polars (and therefore parquet)
-# type, that drift re-types the column and newly ingested files can no longer be unioned with the
-# files already in the archive:
-#
-#   ArrowTypeError: Unable to merge: Field <column> has incompatible types:
-#                   int64 vs decimal128(19, 0)
-#
-# Each entry below matches a column whose precision drifted and pins it back to the precision the
-# existing archive was written with, so the ingested type stays stable.
-#
-# This is a work-around. An entry should only be removed alongside a re-write of the archived
-# files for that column.
-DFM_PRECISION_EXCEPTIONS: List[DFMprecisionException] = [
-    # PAL_CONFIRMATION_KEY went from NUMERIC(10, 0) -> NUMERIC(19, 0), which moves it from
-    # Int64 to Decimal(19, 0). Values are keys nowhere near the Int64 limit.
-    {
-        "name": "PAL_CONFIRMATION_KEY",
-        "type": "NUMERIC",
-        "scale": 0,
-        "drift_precision": 19,
-        "archive_precision": 10,
-    },
-    {
-        "name": "PAL_CONFIRMATION_ID",
-        "type": "NUMERIC",
-        "scale": 0,
-        "drift_precision": 19,
-        "archive_precision": 10,
-    },
-]
-
-
 class DFMdataInfo(TypedDict):
     """DFM fields of dataInfo"""
 
@@ -141,20 +98,6 @@ def dfm_from_s3(dfm_path: str) -> QlikDFM:
     return json.load(stream_object(dfm_path))
 
 
-def dfm_escapes_quotes(dfm: QlikDFM) -> bool:
-    """
-    Report whether a dfm file escapes quotes embedded in a quoted field.
-
-    Cubic exports data with escapeChar == '"' for specific tables to
-    enable parsing of CLOB data.
-
-    :param dfm: DFM object to check
-
-    :return: True if embedded quotes are escaped
-    """
-    return dfm["formatInfo"]["options"]["escapeChar"] == '"'
-
-
 def dfm_snapshot_dt(dfm: QlikDFM) -> datetime:
     """
     Convert Qlik DFM fileInfo.startWriteTimestamp to datetime object.
@@ -166,26 +109,6 @@ def dfm_snapshot_dt(dfm: QlikDFM) -> datetime:
     return datetime.fromisoformat(dfm["fileInfo"]["startWriteTimestamp"])
 
 
-def dfm_field_precision(field: DFMdataInfocolumns) -> int:
-    """
-    Get the precision to use for a DFM column, applying any DFM_PRECISION_EXCEPTIONS match.
-
-    :param field: Qlik DFM column
-
-    :return: archived precision if 'field' matches an exception, otherwise declared precision
-    """
-    for exception in DFM_PRECISION_EXCEPTIONS:
-        if (
-            field["name"].upper() == exception["name"]
-            and field["type"] == exception["type"]
-            and field["scale"] == exception["scale"]
-            and field["precision"] == exception["drift_precision"]
-        ):
-            return exception["archive_precision"]
-
-    return field["precision"]
-
-
 def dfm_type_to_polars(field: DFMdataInfocolumns) -> pl.DataType:
     """
     Convert Qlik types to polars types.
@@ -195,7 +118,6 @@ def dfm_type_to_polars(field: DFMdataInfocolumns) -> pl.DataType:
     :return: qlik type converted to polars
     """
     qlik_type = field["type"]
-    field["precision"] = dfm_field_precision(field)
 
     if field["name"] == "header__change_seq":
         return pl.String()
