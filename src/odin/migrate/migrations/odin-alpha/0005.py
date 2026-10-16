@@ -5,7 +5,7 @@ from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import s3_folder
 from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import MASABI_BACKFILL
-from odin.utils.locations import MASABI_TEMP 
+from odin.utils.locations import MASABI_TEMP
 from odin.utils.logger import ProcessLog
 
 
@@ -18,7 +18,7 @@ def migration() -> None:
         "odin_migration",
         migration="alpha_0005",
         backfill_prefix=backfill_prefix,
-        temp_prefix=temp_prefix
+        temp_prefix=temp_prefix,
     )
 
     backfill_files = [obj.path for obj in list_objects(backfill_prefix)]
