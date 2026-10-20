@@ -32,7 +32,6 @@ API_TABLES_ALPHA = [
     "v_routes",
     "v_salesdetail",
     "v_salestransaction",
-    "v_shiftevent",
     "v_stop_points",
     "v_ta_ca_relations",
     "v_ta_legal_relations",
@@ -56,7 +55,9 @@ API_TABLES_BETA: list[str] = [
     "v_cashless_payments",
 ]
 
-API_TABLES_GAMMA: list[str] = []
+API_TABLES_GAMMA: list[str] = [
+    "v_shiftevent",
+]
 
 API_TABLES_DELTA: list[str] = []
 
