@@ -54,7 +54,8 @@ def start():
             "DATA_ERROR",
             "DATA_INCOMING",
             "DATA_SPRINGBOARD",
-            # "MASABI_DATA_SCHEMA_URL",  ## Uncomment when this variable is added to ECS environment
+            "MASABI_DATA_SCHEMA_URL",
+            "SENTRY_DSN",
         ],
         private=[
             "AFC_API_CLIENT_ID",
