@@ -4,7 +4,7 @@ import sched
 import time
 from multiprocessing import get_context
 
-from unittest.mock import patch 
+from unittest.mock import patch
 
 from odin.job import OdinJob
 from odin.job import job_proc_schedule as real_job_proc_schedule
