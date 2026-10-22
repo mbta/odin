@@ -18,10 +18,13 @@ from odin.utils.logger import MdValues
 from odin.utils.logger import ProcessLog
 from odin.utils.logger import free_disk_bytes
 from odin.utils.runtime import sigterm_check
+from odin.utils.status import StatusValues
+from odin.utils.status import iso_column_maxes
 from odin.utils.status import lag_seconds
 from odin.utils.status import progress_fields
 from odin.utils.status import publish_status
 from odin.utils.status import read_status
+from odin.utils.status import timestamp_columns
 from odin.utils.status import utc_now
 from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import CUBIC_ODS_FACT_DATA
@@ -378,8 +381,26 @@ class CubicODSFact(OdinJob):
 
         return all_cdc_frames, total_cdc_rows, total_cdc_nbytes
 
+    def _max_column_timestamps(self, fact_ds: pd.UnionDataset) -> dict[str, MdValues]:
+        """Max of each timestamp and date column, from parquet metadata."""
+        log = ProcessLog("ods_max_column_timestamps", table=self.table)
+        maxes: dict[str, MdValues] = {}
+        try:
+            # Footers are cached on fact_ds, so each column after the first is free
+            maxes = iso_column_maxes(
+                {
+                    column: ds_metadata_min_max(fact_ds, column)[1]
+                    for column in timestamp_columns(fact_ds.schema)
+                }
+            )
+            log.complete()
+        except Exception as exception:
+            log.failed(exception)
+        return maxes
+
     def write_status(
         self,
+        fact_ds: pd.UnionDataset,
         max_seq: Any,
         history_max_seq: Any,
         row_count: int,
@@ -406,6 +427,7 @@ class CubicODSFact(OdinJob):
         Status is best-effort telemetry: a failure here is logged and swallowed so it can
         never fail an otherwise successful load.
 
+        :param fact_ds: the fact table as of this run's end
         :param max_seq: max header__change_seq in the fact table after this run
         :param history_max_seq: max header__change_seq available upstream in history
         :param row_count: fact table row count after this run
@@ -419,7 +441,7 @@ class CubicODSFact(OdinJob):
         history_seq_dt = seq_as_datetime(history_max_seq)
         seq_lag = lag_seconds(history_seq_dt, seq_dt)
         prev = read_status(CUBIC_ODS_FACT_STATUS, self.table, self.scratch)
-        status: dict[str, MdValues] = {
+        status: dict[str, StatusValues] = {
             "table": self.table,
             "last_run": now.isoformat(),
             "snapshot": self.history_snapshot,
@@ -436,6 +458,7 @@ class CubicODSFact(OdinJob):
             "clock_lag_seconds": lag_seconds(now, seq_dt),
             "cdc_budget_nearly_full": cdc_budget_nearly_full,
             "cdc_records_pending": cdc_records_pending,
+            "max_column_timestamps": self._max_column_timestamps(fact_ds),
             "next_run_seconds": next_run_secs,
         }
         status.update(
@@ -515,6 +538,7 @@ class CubicODSFact(OdinJob):
             logger.complete(cdc_records_found=0, cdc_accumulated_nbytes=0)
             next_run_secs = _long_run_interval()
             self.write_status(
+                fact_ds=fact_ds,
                 max_seq=max_fact_seq,
                 history_max_seq=history_max_seq,
                 row_count=initial_row_count,
@@ -729,6 +753,7 @@ class CubicODSFact(OdinJob):
             next_run_secs = _default_run_interval()
 
         self.write_status(
+            fact_ds=verify_ds,
             max_seq=verify_max,
             history_max_seq=history_max_seq,
             row_count=final_row_count,
