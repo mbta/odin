@@ -1,5 +1,7 @@
 """Shared helpers for delta-rs-backed jobs."""
 
+from typing import Any
+
 import pyarrow as pa
 import pyarrow.compute as pc
 
@@ -27,6 +29,25 @@ def column_max(dt: DeltaTable, column: str) -> int:
         if len(valid) > 0:
             return pc.max(valid).as_py()
     return 0
+
+
+def column_maxes(dt: DeltaTable, columns: list[str]) -> dict[str, Any]:
+    """
+    Read the max of each column from delta file statistics.
+
+    Columns outside of delta.dataSkippingNumIndexedCols (the first 32 columns by
+    default) will have a max of None.
+    """
+    actions = pa.table(dt.get_add_actions(flatten=True))
+    maxes: dict[str, Any] = {}
+    for column in columns:
+        field = f"max.{column}"
+        if actions.num_rows == 0 or field not in actions.schema.names:
+            maxes[column] = None
+            continue
+        valid = pc.drop_null(actions[field])
+        maxes[column] = pc.max(valid).as_py() if len(valid) > 0 else None
+    return maxes
 
 
 def row_count(dt: DeltaTable) -> int:
