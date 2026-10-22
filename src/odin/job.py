@@ -18,6 +18,7 @@ from sentry_sdk.integrations.logging import LoggingIntegration
 import logging
 
 from odin.utils.aws.ecs import AWS_ENV
+from odin.utils.aws.ecs import SENTRY_DSN
 from odin.utils.logger import ProcessLog
 from odin.utils.logger import MdValues
 from odin.utils.runtime import sigterm_check
@@ -111,7 +112,7 @@ class OdinJob(ABC):
         """Start Odin job with logging."""
         # Re-initialize Sentry in the subprocess
         sentry_sdk.init(
-            dsn="https://3754469300c152623b00648eb7cdd491@o89189.ingest.us.sentry.io/4511949758529536",
+            dsn=SENTRY_DSN,
             send_default_pii=False,
             environment=AWS_ENV,
             integrations=[
