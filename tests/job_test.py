@@ -4,6 +4,8 @@ import sched
 import time
 from multiprocessing import get_context
 
+from unittest.mock import patch 
+
 from odin.job import OdinJob
 from odin.job import job_proc_schedule as real_job_proc_schedule
 from odin.job import _monitor_proc_peak_usage
@@ -24,7 +26,8 @@ def job_proc_schedule(job: OdinJob, schedule: sched.scheduler) -> None:
     manager = get_context("spawn").Manager()
     return_val = manager.Value("i", 0)
     tmpdir_val = manager.Value("u", "")
-    job.start(return_val, tmpdir_val)
+    with patch("sentry_sdk.init", return_value=None):
+        job.start(return_val, tmpdir_val)
     schedule.enter(return_val.value, 1, job_proc_schedule, (job, schedule))
 
 
@@ -42,6 +45,7 @@ def test_odin_job(caplog, monkeypatch) -> None:
 
     test_job = TestJob()
     job_proc_schedule(test_job, scheduler)
+
     assert len(caplog.messages) == 2
     assert "TestJob" in caplog.messages[0]
     assert "test=True" in caplog.messages[0]
