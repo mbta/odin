@@ -12,7 +12,7 @@ def migration() -> None:
     status_path = os.path.join(
         DATA_SPRINGBOARD, CUBIC_ODS_FACT_STATUS, "EDW.COMPONENT_MAINT_COUNT.json"
     )
-    log = ProcessLog("odin_migration", migration="alpha_0006", status_path=status_path)
+    log = ProcessLog("odin_migration", migration="alpha_0007", status_path=status_path)
 
     if not object_exists(status_path):
         log.complete(not_found=True)
