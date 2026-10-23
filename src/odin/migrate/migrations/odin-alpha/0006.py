@@ -12,13 +12,9 @@ def migration() -> None:
     """Clear out Masabi backfill status objects."""
     status_prefix = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_STATUS))
 
-    log = ProcessLog(
-        "odin_migration",
-        migration="alpha_0006",
-        status_prefix=status_prefix
-    )
+    log = ProcessLog("odin_migration", migration="alpha_0006", status_prefix=status_prefix)
 
-    status_files = [obj.path for obj in list_objects(status_prefix) if '_backfill' in obj.path]
+    status_files = [obj.path for obj in list_objects(status_prefix) if "_backfill" in obj.path]
     print(f"Found {len(status_files)} files in {status_prefix}")
     assert len(status_files) > 0, f"No backfill status files found in {status_prefix}"
 
