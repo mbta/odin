@@ -6,7 +6,6 @@ import shutil
 import urllib3
 import time
 from collections import ChainMap
-from datetime import datetime
 from operator import itemgetter
 from pathlib import Path
 from typing import Literal, TypedDict, Generator, SupportsInt
@@ -19,6 +18,7 @@ from odin.utils.runtime import disk_free_pct
 from odin.utils.logger import MdValues
 from odin.utils.logger import ProcessLog
 from odin.utils.status import iso_as_datetime
+from odin.utils.status import iso_column_maxes
 from odin.utils.status import progress_fields
 from odin.utils.status import publish_status
 from odin.utils.status import read_status
@@ -704,10 +704,10 @@ class ArchiveAFCAPI(OdinJob):
         maxes: dict[str, MdValues] = {}
         try:
             ds = ds_from_path(s3_folder(self.export_folder))
-            for column in self.ts_cols:
-                _, col_max = ds_metadata_min_max(ds, column)
-                # sync_parquet stores ts_cols as Datetime; anything else is unknown
-                maxes[column] = col_max.isoformat() if isinstance(col_max, datetime) else None
+            # sync_parquet stores ts_cols as Datetime; anything else is unknown
+            maxes = iso_column_maxes(
+                {column: ds_metadata_min_max(ds, column)[1] for column in self.ts_cols}
+            )
             log.complete()
         except Exception as exception:
             log.failed(exception)

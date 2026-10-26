@@ -10,10 +10,14 @@ Logging should never cause an exception that interrupts the update job itself.
 import json
 import os
 from collections.abc import Mapping
+from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
+from typing import Any
 from typing import TypeAlias
+
+import pyarrow as pa
 
 from odin.utils.aws.s3 import download_object
 from odin.utils.aws.s3 import upload_file
@@ -83,6 +87,27 @@ def iso_as_datetime(value: MdValues) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def timestamp_columns(schema: pa.Schema) -> list[str]:
+    """Names of the timestamp and date columns in `schema`."""
+    return [
+        field.name
+        for field in schema
+        if pa.types.is_timestamp(field.type) or pa.types.is_date(field.type)
+    ]
+
+
+def iso_column_maxes(maxes: Mapping[str, Any]) -> dict[str, MdValues]:
+    """
+    Format column maxima for max_column_timestamps.
+
+    Dates and datetimes become ISO-8601 strings, else None
+    """
+    return {
+        column: value.isoformat() if isinstance(value, date) else None
+        for column, value in maxes.items()
+    }
 
 
 def read_status(status_prefix: str, key: str, tmpdir: str) -> dict[str, MdValues] | None:
