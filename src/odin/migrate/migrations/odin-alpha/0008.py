@@ -12,11 +12,7 @@ def migration() -> None:
     """Start regeneration of Masabi table retail.ticket_refunds"""
     tr_data_prefix = s3_folder(os.path.join(DATA_SPRINGBOARD, MASABI_DATA, "retail.ticket_refunds"))
 
-    log = ProcessLog(
-        "odin_migration",
-        migration="alpha_0008",
-        tr_data_prefix=tr_data_prefix
-    )
+    log = ProcessLog("odin_migration", migration="alpha_0008", tr_data_prefix=tr_data_prefix)
 
     tr_files = [obj.path for obj in list_objects(tr_data_prefix)]
     print(f"Found {len(tr_files)} files in {tr_data_prefix}")
