@@ -128,6 +128,7 @@ TABLE_PII_DROP_COLUMNS: dict[str, list[str]] = {
         "salesAgent",
         "zipCode",
     ],
+    "retail.ticket_refunds": ["cardSignature", "cardName", "panFirstSix", "panLastFour", "zipCode"],
     "retail.tickets": ["ipAddress", "salesAgent"],
     "validation.scans": ["location", "username"],
     "validation.telemetry": ["inspector", "ipAddress", "location", "username"],
