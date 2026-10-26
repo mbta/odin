@@ -68,6 +68,7 @@ def start():
             "ECS_CLUSTER",
             "ECS_TASK_GROUP",
             "ODIN_INSTANCE",
+            "SENTRY_DSN",
         ],
     )
     log_installed_packages()
