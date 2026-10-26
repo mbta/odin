@@ -10,7 +10,7 @@ on:
   schedule:
     # 11:58 UTC daily (07:58 ET in summer, 06:58 ET in winter)
     # [scheduled actions are subject to delays or drops when load is high](https://docs.github.com/en/enterprise-cloud@latest/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
-    - cron: "0 11 58 * *"
+    - cron: "58 11 * * *"
   workflow_dispatch:
     inputs:
       detailed:
