@@ -8,8 +8,9 @@ name: Table Status Report
 
 on:
   schedule:
-    # 12:00 UTC daily (08:00 ET in summer, 07:00 ET in winter)
-    - cron: '0 12 * * *'
+    # 11:58 UTC daily (07:58 ET in summer, 06:58 ET in winter)
+    # [scheduled actions are subject to delays or drops when load is high](https://docs.github.com/en/enterprise-cloud@latest/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
+    - cron: "0 11 58 * *"
   workflow_dispatch:
     inputs:
       detailed:
@@ -19,11 +20,11 @@ on:
       stale_seconds:
         description: No run within this many seconds counts as stale (86400 = 24h)
         type: string
-        default: '86400'
+        default: "86400"
       lag_seconds:
         description: Backlog over this many seconds counts as behind (14400 = 4h)
         type: string
-        default: '14400'
+        default: "14400"
 
 concurrency:
   group: table-status-report
@@ -43,7 +44,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: "3.13"
 
       # The status script only touches S3 via odin.utils.aws.s3, so it needs boto3 and
       # psutil, not the full requirements.txt
