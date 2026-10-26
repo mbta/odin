@@ -8,9 +8,9 @@ name: Table Status Report
 
 on:
   schedule:
-    # 11:58 UTC daily (07:58 ET in summer, 06:58 ET in winter)
+    # 12:37 UTC daily (08:37 ET in summer, 07:37 ET in winter)
     # [scheduled actions are subject to delays or drops when load is high](https://docs.github.com/en/enterprise-cloud@latest/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
-    - cron: "58 11 * * *"
+    - cron: "37 12 * * *"
   workflow_dispatch:
     inputs:
       detailed:
