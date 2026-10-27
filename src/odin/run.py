@@ -64,12 +64,12 @@ def start():
             "TABLEAU_PERSONAL_ACCESS_TOKEN_SECRET",
             "MASABI_DATA_API_USERNAME",
             "MASABI_DATA_API_PASSWORD",
+            "SENTRY_DSN",
         ],
         aws=[
             "ECS_CLUSTER",
             "ECS_TASK_GROUP",
             "ODIN_INSTANCE",
-            "SENTRY_DSN",
         ],
     )
     log_installed_packages()
