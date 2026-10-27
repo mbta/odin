@@ -19,6 +19,7 @@ TABLE_MANIFEST: Dict[str, List[str | None]] = {
     "EC_STAGE.METRIC_HISTORY": ["alpha", "alpha", None],
     "EDW.ABP_REPROCESS_LOG": ["alpha", "alpha", None],
     "EDW.ABP_TAP": ["alpha", "alpha", None],
+    "EDW.ABP_TAP_STATUS_DIMENSION": ["alpha", "alpha", None],
     "EDW.ABP_TRANSIT_ACCOUNT_X_TOKEN": ["alpha", "alpha", None],
     "EDW.ACCOUNT_BALANCE_BY_DAY": ["alpha", "alpha", None],
     "EDW.ACCOUNT_TRANSIT_LIABILITY": ["alpha", "alpha", None],
