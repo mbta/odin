@@ -8,10 +8,13 @@ import urllib3
 import json
 import yaml
 import polars as pl
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from odin.utils.logger import MdValues
 from odin.utils.logger import ProcessLog
+from odin.utils.status import StatusValues
+from odin.utils.status import iso_column_maxes
 from odin.utils.status import lag_seconds
 from odin.utils.status import ms_as_datetime
 from odin.utils.status import progress_fields
@@ -158,6 +161,15 @@ TABLE_PII_DROP_COLUMNS: dict[str, list[str]] = {
     ],
     "view.validators": ["username"],
 }
+
+# Masabi timestamps appear as Unix time (ms since 1970), so cannot be ID'd by type
+# It appears that they are consistently labeled "*Timestamp" in the schema, so this
+# suffix can be used to identify them
+EPOCH_MS_COLUMN_SUFFIX = "Timestamp"
+# As a further step, this sets a bound on timestamp values before we naively parse
+# and report them as Unix time. The found max value must be within 2000-2100
+# (01/01 to 01/01) to be passed as as valid timestamp
+_EPOCH_MS_PLAUSIBLE = (946_684_800_000, 4_102_444_800_000)
 
 TABLE_PII_RESTRICTED_ALLOWED: dict[str, list[str]] = {
     "retail.rider_entitlement_events": ["proofId"],
@@ -498,6 +510,8 @@ class ArchiveMasabi(OdinJob):
 
         self.existing_rows = 0
         self.existing_max_ts: int | None = None
+        # Set by setup_job; its footers are cached, so status can reuse it for free
+        self.existing_ds: Any = None
         self._run_started: float | None = None
 
         if restricted:
@@ -777,6 +791,7 @@ class ArchiveMasabi(OdinJob):
         )
         existing_ds = ds_from_path(self.export_folder)
         existing_ds_rows = existing_ds.count_rows()
+        self.existing_ds = existing_ds
 
         self.existing_rows = existing_ds_rows
         if existing_ds_rows:
@@ -787,6 +802,36 @@ class ArchiveMasabi(OdinJob):
 
         log.complete(from_ts=from_ts, existing_ds_size=existing_ds_rows)
         return from_ts
+
+    def _max_column_timestamps(self, ds: Any) -> dict[str, MdValues]:
+        """Max of each epoch-ms *Timestamp column, from parquet metadata."""
+        if ds is None:
+            return {}
+        # Columns only available in restricted copy are left out
+        restricted_only = (
+            set(TABLE_PII_RESTRICTED_ALLOWED.get(self.table, [])) if self.restricted else set()
+        )
+        log = ProcessLog("masabi_max_column_timestamps", table=self.table)
+        maxes: dict[str, MdValues] = {}
+        try:
+            low, high = _EPOCH_MS_PLAUSIBLE
+            epoch_ms_maxes = {}
+            for field in ds.schema:
+                numeric = pa.types.is_integer(field.type) or pa.types.is_floating(field.type)
+                if (
+                    not numeric
+                    or not field.name.endswith(EPOCH_MS_COLUMN_SUFFIX)
+                    or field.name in restricted_only
+                ):
+                    continue
+                _, col_max = ds_metadata_min_max(ds, field.name)
+                plausible = isinstance(col_max, (int, float)) and low <= col_max < high
+                epoch_ms_maxes[field.name] = ms_as_datetime(col_max) if plausible else None
+            maxes = iso_column_maxes(epoch_ms_maxes)
+            log.complete()
+        except Exception as exception:
+            log.failed(exception)
+        return maxes
 
     def _write_status(
         self,
@@ -808,12 +853,15 @@ class ArchiveMasabi(OdinJob):
         now = utc_now()
         max_ts = self.existing_max_ts
         row_count = self.existing_rows
+        # Pre-run dataset unless this run wrote data and the re-read succeeds
+        status_ds = self.existing_ds
         if wrote_data:
             try:
                 ds = ds_from_path(self.export_folder)
                 row_count = ds.count_rows()
                 _, new_max_ts = ds_metadata_min_max(ds, ts_key)
                 max_ts = None if new_max_ts is None else int(new_max_ts)
+                status_ds = ds
             except Exception as exception:
                 # Fall back to the pre-run values rather than fail an archived run.
                 ProcessLog("masabi_status_reread", table=self.table).failed(exception)
@@ -821,7 +869,7 @@ class ArchiveMasabi(OdinJob):
         max_ts_dt = ms_as_datetime(max_ts)
         clock_lag = lag_seconds(now, max_ts_dt)
         prev = read_status(MASABI_STATUS, self.status_key, self.scratch)
-        status: dict[str, MdValues] = {
+        status: dict[str, StatusValues] = {
             "table": self.table,
             "restricted": self.restricted,
             "export_folder": self.export_folder,
@@ -832,6 +880,7 @@ class ArchiveMasabi(OdinJob):
             "max_timestamp_datetime": None if max_ts_dt is None else max_ts_dt.isoformat(),
             "clock_lag_seconds": clock_lag,
             "caught_up": not hit_row_limit,
+            "max_column_timestamps": self._max_column_timestamps(status_ds),
             "next_run_seconds": next_run_secs,
         }
         status.update(

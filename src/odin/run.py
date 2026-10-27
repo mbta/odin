@@ -56,7 +56,6 @@ def start():
             "DATA_INCOMING",
             "DATA_SPRINGBOARD",
             "MASABI_DATA_SCHEMA_URL",
-            "SENTRY_DSN",
         ],
         private=[
             "AFC_API_CLIENT_ID",
@@ -70,6 +69,7 @@ def start():
             "ECS_CLUSTER",
             "ECS_TASK_GROUP",
             "ODIN_INSTANCE",
+            "SENTRY_DSN",
         ],
     )
     log_installed_packages()
