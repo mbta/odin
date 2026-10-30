@@ -74,6 +74,7 @@ from odin.utils.aws.s3 import list_objects
 from odin.utils.aws.s3 import list_partitions
 from odin.utils.aws.s3 import s3_file
 from odin.utils.aws.s3 import s3_folder
+from odin.utils.delta import column_maxes
 from odin.utils.delta import open_delta
 from odin.utils.delta import row_count as delta_row_count
 from odin.utils.locations import CUBIC_ODS_DELTA_DATA
@@ -87,10 +88,13 @@ from odin.utils.logger import ProcessLog
 from odin.utils.parquet import ds_from_path
 from odin.utils.parquet import ds_metadata_min_max
 from odin.utils.runtime import sigterm_check
+from odin.utils.status import StatusValues
+from odin.utils.status import iso_column_maxes
 from odin.utils.status import lag_seconds
 from odin.utils.status import progress_fields
 from odin.utils.status import publish_status
 from odin.utils.status import read_status
+from odin.utils.status import timestamp_columns
 from odin.utils.status import utc_now
 from odin.ingestion.qlik.dfm import QlikDFM
 from odin.ingestion.qlik.dfm import dfm_from_s3
@@ -552,6 +556,20 @@ class CubicODSDelta(OdinJob):
         _, max_seq = ds_metadata_min_max(ds_from_path(files), "header__change_seq")
         return None if max_seq is None else str(max_seq)
 
+    def _max_column_timestamps(self) -> dict[str, MdValues]:
+        """Max of each timestamp and date column, from delta file statistics."""
+        if self.silver is None:
+            return {}
+        log = ProcessLog("delta_max_column_timestamps", table=self.table)
+        maxes: dict[str, MdValues] = {}
+        try:
+            schema = pa.schema(self.silver.schema().to_arrow())  # type: ignore[arg-type]
+            maxes = iso_column_maxes(column_maxes(self.silver, timestamp_columns(schema)))
+            log.complete()
+        except Exception as exception:
+            log.failed(exception)
+        return maxes
+
     def _write_status(self, next_run_secs: int) -> None:
         """
         Publish this table's freshness status to S3 as JSON.
@@ -571,7 +589,7 @@ class CubicODSDelta(OdinJob):
         seq_lag = lag_seconds(history_seq_dt, seq_dt)
         row_count = None if self.silver is None else delta_row_count(self.silver)
         prev = read_status(CUBIC_ODS_DELTA_STATUS, self.table, self.scratch)
-        status: dict[str, MdValues] = {
+        status: dict[str, StatusValues] = {
             "table": self.table,
             "last_run": now.isoformat(),
             "snapshot": self.history_snapshot,
@@ -587,6 +605,7 @@ class CubicODSDelta(OdinJob):
             "seq_lag_seconds": seq_lag,
             "clock_lag_seconds": lag_seconds(now, seq_dt),
             "merge_budget_full": self.more_pending,
+            "max_column_timestamps": self._max_column_timestamps(),
             "next_run_seconds": next_run_secs,
         }
         status.update(

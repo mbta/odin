@@ -12,6 +12,7 @@ from odin.utils.logger import ProcessLog
 from odin.migrate.process import start_migrations
 from odin.utils.aws.ecs import check_for_parallel_tasks
 from odin.utils.aws.ecs import AWS_ENV
+from odin.utils.aws.ecs import SENTRY_DSN
 from odin.ingestion.qlik.tables import log_cubic_table_manifest
 
 # Job Schedule functions
@@ -42,7 +43,7 @@ def start():
     fail in a way that interrupts the execution of subsequently scheduled jobs.
     """
     sentry_sdk.init(
-        dsn="https://3754469300c152623b00648eb7cdd491@o89189.ingest.us.sentry.io/4511949758529536",
+        dsn=SENTRY_DSN,
         send_default_pii=False,
         environment=AWS_ENV,
     )
@@ -54,15 +55,17 @@ def start():
             "DATA_ERROR",
             "DATA_INCOMING",
             "DATA_SPRINGBOARD",
-            # "MASABI_DATA_SCHEMA_URL",  ## Uncomment when this variable is added to ECS environment
         ],
         private=[
+            "AFC_ROOT",
             "AFC_API_CLIENT_ID",
             "AFC_API_CLIENT_SECRET",
             "TABLEAU_PERSONAL_ACCESS_TOKEN_NAME",
             "TABLEAU_PERSONAL_ACCESS_TOKEN_SECRET",
+            "MASABI_DATA_SCHEMA_URL",
             "MASABI_DATA_API_USERNAME",
             "MASABI_DATA_API_PASSWORD",
+            "SENTRY_DSN",
         ],
         aws=[
             "ECS_CLUSTER",
