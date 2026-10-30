@@ -136,7 +136,7 @@ TABLE_MANIFEST: Dict[str, List[str | None]] = {
     "EDW.TRANSIT_ACCOUNT_BALANCE": ["alpha", "alpha", None],
     "EDW.TRANSIT_ACCOUNT_DIMENSION": ["alpha", "alpha", None],
     "EDW.TRAVEL_MODE_DIMENSION": ["alpha", "alpha", None],
-    "EDW.TRIP_PAYMENT": ["alpha", "alpha", None],
+    "EDW.TRIP_PAYMENT": ["alpha", None, "alpha"],
     "EDW.TXN_CHANNEL_MAP": ["alpha", "alpha", None],
     "EDW.TXN_STATUS_DIMENSION": ["alpha", "alpha", None],
     "EDW.UNSETTLED_CCA_CASH_COUNT": ["alpha", "alpha", None],
