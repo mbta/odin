@@ -24,7 +24,7 @@ WITH agg AS (
     INNER JOIN cubic_ods.edw_patron_trip AS tr ON
         (((tr.patron_trip_id = ut.patron_trip_id)
             AND (tr."source" = ut."source")))
-    INNER JOIN cubic_ods.edw_trip_payment AS tp ON
+    INNER JOIN cubic_delta.edw_trip_payment AS tp ON
         (((tp.patron_trip_id = tr.patron_trip_id)
             AND (tp."source" = tr."source")
                 AND (tp.trip_price_count = ut.trip_price_count)
