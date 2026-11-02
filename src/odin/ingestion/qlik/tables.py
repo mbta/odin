@@ -30,6 +30,7 @@ TABLE_MANIFEST: Dict[str, List[str | None]] = {
     "EDW.CARD_ACTION_TYPE_DIMENSION": ["alpha", "alpha", None],
     "EDW.CARD_DIMENSION": ["alpha", "alpha", None],
     "EDW.CASHBOX_EVENT_DIMENSION": ["alpha", "alpha", None],
+    "EDW.CASHBOX_MANUAL_COUNTS": ["alpha", "alpha", None],
     "EDW.CCH_ACCOUNT": ["alpha", "alpha", None],
     "EDW.CCH_AFC_TRANSACTION": ["delta", None, "delta"],
     "EDW.CCH_APPORTION_RULE": ["alpha", "alpha", None],
