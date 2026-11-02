@@ -31,6 +31,7 @@ class ViewBuilder:
     schema: str
     template: Template
     is_delta: bool = False
+    superceded_by: str | None = None
 
 
 DROP_VIEW = "DROP VIEW IF EXISTS $schema.$table;"
@@ -43,7 +44,7 @@ dataset_views = [
         schema="sb_api",
         template=Template(
             f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT $columns FROM {READ_PQ};"
-        ),
+        )
     ),
     ViewBuilder(
         s3_prefix=os.path.join(DATA_SPRINGBOARD, AFC_RESTRICTED),
@@ -58,6 +59,7 @@ dataset_views = [
         template=Template(
             f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT $columns FROM {READ_PQ};"
         ),
+        superceded_by=os.path.join(DATA_SPRINGBOARD, CUBIC_ODS_DELTA_DATA),
     ),
     ViewBuilder(
         s3_prefix=os.path.join(DATA_SPRINGBOARD, CUBIC_QLIK_DATA),
@@ -71,7 +73,7 @@ dataset_views = [
     ),
     ViewBuilder(
         s3_prefix=os.path.join(DATA_SPRINGBOARD, CUBIC_ODS_DELTA_DATA),
-        schema="cubic_delta",
+        schema="cubic_ods",
         template=Template(
             f"{DROP_VIEW} CREATE VIEW $schema.$table AS SELECT $columns FROM {READ_D};"
         ),
@@ -118,8 +120,15 @@ def create_fares_db(folder: str) -> str:
             con.execute(f"CREATE SCHEMA IF NOT EXISTS {view.schema};")
             for view_table in list_partitions(view.s3_prefix):
                 view_log = ProcessLog(
-                    "create_table_views", schema=view.schema, view_table=view_table
+                    "create_table_views", schema=view.schema, view_table=view_table,
+                    s3_prefix=view.s3_prefix
                 )
+
+                if view.superceded_by and list_partitions(os.path.join(view.superceded_by,
+                                                                       view_table)):
+                    view_log.complete(superceded=True)
+                    continue
+
                 try:
                     s3_path = f"s3://{os.path.join(view.s3_prefix, view_table)}"
                     if view.is_delta:
