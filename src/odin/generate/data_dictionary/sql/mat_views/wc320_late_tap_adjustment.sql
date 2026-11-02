@@ -13,7 +13,7 @@ SELECT
 FROM
     cubic_delta.edw_sale_transaction s
 JOIN
-    cubic_ods.edw_trip_payment tp
+    cubic_delta.edw_trip_payment tp
     ON
         tp.purse_load_id = s.purse_load_id
 JOIN

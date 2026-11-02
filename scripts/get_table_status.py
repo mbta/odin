@@ -128,7 +128,7 @@ VIEWS: dict[str, tuple[str, ...]] = {
         "ODS:EDW.PAYMENT_TYPE_DIMENSION",
         "ODS:EDW.READ_TRANSACTION",
         "ODS:EDW.SALE_TXN_PAYMENT",
-        "ODS:EDW.TRIP_PAYMENT",
+        "delta_ODS:EDW.TRIP_PAYMENT",
         "ODS:EDW.TXN_CHANNEL_MAP",
     ),
     "comp_b_farerev_payg_trip_txn_c": (
@@ -142,7 +142,7 @@ VIEWS: dict[str, tuple[str, ...]] = {
         "ODS:EDW.PAYMENT_TYPE_DIMENSION",
         "ODS:EDW.READ_TRANSACTION",
         "ODS:EDW.SALE_TXN_PAYMENT",
-        "ODS:EDW.TRIP_PAYMENT",
+        "delta_ODS:EDW.TRIP_PAYMENT",
         "ODS:EDW.TXN_CHANNEL_MAP",
     ),
     "comp_a_addendum_farerev_prod_sales_txn_a": (
