@@ -63,7 +63,7 @@ SELECT
         ELSE NULL
     END AS transfer_or_multiride
 FROM
-    cubic_delta.edw_use_transaction AS ut
+    cubic_ods.edw_use_transaction AS ut
 LEFT JOIN cubic_ods.edw_fare_product_dimension AS fpd ON
     ((ut.fare_prod_key = fpd.fare_prod_key))
 LEFT JOIN cubic_ods.edw_operator_dimension AS opd ON
