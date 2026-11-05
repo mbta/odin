@@ -85,6 +85,10 @@ def start():
 
     # Schedule ODIN Jobs
     schedule_sigterm_check(schedule)
+    if odin_instance in ["alpha"]:
+        schedule_dictionary(schedule)
+        schedule_restricted_afc_archive(schedule)
+
     if odin_instance in ["alpha", "beta", "gamma", "delta"]:
         schedule_cubic_archive_qlik(schedule)
         schedule_cubic_ods_fact_gen(schedule)
@@ -96,10 +100,5 @@ def start():
 
     if odin_instance in ["gamma", "delta"]:
         schedule_delta_ods(schedule)
-
-    if odin_instance in ["alpha"]:
-        schedule_restricted_afc_archive(schedule)
-        # schedule_tableau_upload(schedule)
-        schedule_dictionary(schedule)
 
     schedule.run()
