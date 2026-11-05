@@ -53,10 +53,11 @@ class Settings:
     @classmethod
     def from_environment(cls) -> "Settings":
         """Validate locations and table names before accessing S3."""
-        incoming_bucket = os.environ["S3_BUCKET_INCOMING"]
-        archive_bucket = os.environ["S3_BUCKET_ARCHIVE"]
-        incoming_prefix = os.environ.get("S3_BUCKET_PREFIX_INCOMING", "")
-        archive_prefix = os.environ.get("S3_BUCKET_PREFIX_ARCHIVE", "")
+        # FOR TESTING ONLY put in proper env vars before prod deploy
+        incoming_bucket = os.environ.get("S3_BUCKET_INCOMING", "mbta-ctd-dataplatform-dev-incoming")
+        archive_bucket = os.environ.get("S3_BUCKET_ARCHIVE", "mbta-ctd-dataplatform-dev-archive")
+        incoming_prefix = os.environ.get("S3_BUCKET_PREFIX_INCOMING", "cubic/ods_qlik")
+        archive_prefix = os.environ.get("S3_BUCKET_PREFIX_ARCHIVE", "mover_test/incoming")
 
         for bucket in (incoming_bucket, archive_bucket):
             if not bucket or "/" in bucket or bucket != bucket.strip():
@@ -111,21 +112,14 @@ def head_object(client: Any, bucket: str, key: str) -> dict[str, Any] | None:
         raise
 
 
-def snapshot_for_source(
-    client: Any, settings: Settings, relative_key: str, source: dict[str, Any]
-) -> str:
+def table_snapshots(client: Any, settings: Settings, table: str) -> set[datetime]:
     """
-    Select the base table's first-LOAD S3 modification time, as data_platform did.
+    Read snapshot state once per table scan, before moving any first-LOAD files.
 
     Read incoming anchors before archive directories so a moving anchor cannot
     disappear between those reads. __ct files share the base table's snapshot.
     """
-    directory, filename = relative_key.rsplit("/", 1)
-    source_time = source["LastModified"].astimezone(UTC).replace(microsecond=0)
-    if filename in FIRST_LOAD_NAMES and not directory.endswith("__ct"):
-        return source_time.strftime(SNAPSHOT_FORMAT)
-
-    base_directory = directory.removesuffix("__ct")
+    base_directory = QLIK_PREFIX + table
     snapshot_times = set()
 
     for first_load in FIRST_LOAD_NAMES:
@@ -150,6 +144,18 @@ def snapshot_for_source(
                 if parsed.strftime(SNAPSHOT_FORMAT) != timestamp:
                     raise ValueError(f"Invalid snapshot partition: {entry['Prefix']}")
                 snapshot_times.add(parsed)
+
+    return snapshot_times
+
+
+def snapshot_for_source(
+    relative_key: str, source: dict[str, Any], snapshot_times: set[datetime]
+) -> str:
+    """Choose the newest snapshot not after this CSV, preserving the legacy layout."""
+    directory, filename = relative_key.rsplit("/", 1)
+    source_time = source["LastModified"].astimezone(UTC).replace(microsecond=0)
+    if filename in FIRST_LOAD_NAMES and not directory.endswith("__ct"):
+        return source_time.strftime(SNAPSHOT_FORMAT)
 
     eligible_times = [timestamp for timestamp in snapshot_times if timestamp <= source_time]
     if not eligible_times:
@@ -189,13 +195,14 @@ def copy_verified(
         raise RuntimeError(f"Copy verification failed: {destination_key}")
 
 
-def process_record(client: Any, settings: Settings, record: dict[str, Any]) -> str:
-    """Move one selected CSV/DFM pair only when both sources and destinations are unambiguous."""
+def notification_table(settings: Settings, record: dict[str, Any]) -> str | None:
+    """Treat a CSV or DFM creation as a table wake-up, not an object-processing command."""
     if record["eventSource"] != "aws:s3":
         raise ValueError("Expected a direct S3 notification")
 
     if not record["eventName"].startswith("ObjectCreated:"):
-        return "ignored_event"
+        LOGGER.info("Ignoring non-creation notification: %s", record["eventName"])
+        return None
 
     source_bucket = record["s3"]["bucket"]["name"]
     source_key = unquote_plus(record["s3"]["object"]["key"])
@@ -211,36 +218,50 @@ def process_record(client: Any, settings: Settings, record: dict[str, Any]) -> s
     if (
         not relative_key.startswith(QLIK_PREFIX)
         or len(key_parts) != 4
-        or not relative_key.endswith(".csv.gz")
+        or not relative_key.endswith((".csv.gz", ".dfm"))
     ):
-        return "ignored_key"
+        LOGGER.info("Ignoring non-Qlik notification: %s", relative_key)
+        return None
 
-    if key_parts[2].removesuffix("__ct") not in TABLE_PREFIXES:
+    table = key_parts[2].removesuffix("__ct")
+    if table not in TABLE_PREFIXES:
         LOGGER.warning("Ignoring table outside allowlist: %s", relative_key)
-        return "ignored_table"
+        return None
 
-    source = head_object(client, source_bucket, source_key)
-    event_object = record["s3"]["object"]
-    event_time = datetime.fromisoformat(record["eventTime"])
-    if event_time.tzinfo is None:
-        raise ValueError("S3 eventTime must include a timezone")
+    return table
 
+
+def check_source_consistency(source: dict[str, Any] | None, listed: dict[str, Any]) -> dict[str, Any]:
+    """Refuse files that disappeared or changed since this scan's listing."""
     if (
         source is None
         or source["ContentLength"] <= 0
-        or source["ETag"].strip('"') != event_object["eTag"].strip('"')
-        or source["ContentLength"] != event_object["size"]
-        or source.get("VersionId") != event_object.get("versionId")
-        or source["LastModified"] > event_time
+        or source["ETag"] != listed["ETag"]
+        or source["ContentLength"] != listed["Size"]
+        or source["LastModified"] != listed["LastModified"]
     ):
-        raise RuntimeError(f"CSV missing, empty or replaced: {source_key}")
+        raise RuntimeError(f"Source missing, empty or replaced during scan: {listed['Key']}")
+    return source
 
-    dfm_source_key = source_key.removesuffix(".csv.gz") + ".dfm"
+def move_pair(
+    client: Any,
+    settings: Settings,
+    csv_listed: dict[str, Any],
+    dfm_listed: dict[str, Any],
+    snapshot_times: set[datetime],
+) -> None:
+    """Move one scanned pair; never recover or overwrite an ambiguous destination."""
+    source_bucket = settings.incoming_bucket
+    source_key = csv_listed["Key"]
+    dfm_source_key = dfm_listed["Key"]
+    source = head_object(client, source_bucket, source_key)
     dfm_source = head_object(client, source_bucket, dfm_source_key)
-    if dfm_source is None or dfm_source["ContentLength"] <= 0:
-        raise RuntimeError(f"DFM missing or empty: {dfm_source_key}")
 
-    snapshot = snapshot_for_source(client, settings, relative_key, source)
+    source = check_source_consistency(source, csv_listed)
+    dfm_source = check_source_consistency(dfm_source, dfm_listed)
+
+    relative_key = source_key.removeprefix(settings.incoming_prefix)
+    snapshot = snapshot_for_source(relative_key, source, snapshot_times)
     directory, filename = relative_key.rsplit("/", 1)
     destination_key = f"{settings.archive_prefix}{directory}/snapshot={snapshot}/{filename}"
     dfm_destination_key = destination_key.removesuffix(".csv.gz") + ".dfm"
@@ -275,33 +296,84 @@ def process_record(client: Any, settings: Settings, record: dict[str, Any]) -> s
         settings.archive_bucket,
         destination_key,
     )
-    return "archived"
+
+
+def scan_table(client: Any, settings: Settings, table: str) -> int:
+    """
+    Scan both incoming directories and move pairs in CSV LastModified/key order.
+
+    Finish listing before deleting: mutations must not affect pagination. Require
+    complete pairs in the listing so a lone DFM left by a failed delete cannot be
+    silently abandoned. A temporarily incomplete upload can succeed on a later scan.
+    """
+    objects: dict[str, dict[str, Any]] = {}
+    for directory in (table, table + "__ct"):
+        prefix = f"{settings.incoming_prefix}{QLIK_PREFIX}{directory}/"
+        pages = client.get_paginator("list_objects_v2").paginate(
+            Bucket=settings.incoming_bucket, Prefix=prefix, Delimiter="/"
+        )
+        for page in pages:
+            for listed in page.get("Contents", []):
+                if listed["Key"].endswith((".csv.gz", ".dfm")):
+                    objects[listed["Key"]] = listed
+
+    for key in objects:
+        companion_key = (
+            key.removesuffix(".csv.gz") + ".dfm"
+            if key.endswith(".csv.gz")
+            else key.removesuffix(".dfm") + ".csv.gz"
+        )
+        if companion_key not in objects:
+            raise RuntimeError(f"Incomplete incoming pair: {key}; missing {companion_key}")
+
+    csv_objects = sorted(
+        (listed for key, listed in objects.items() if key.endswith(".csv.gz")),
+        key=lambda listed: (listed["LastModified"], listed["Key"]),
+    )
+    if not csv_objects:
+        LOGGER.info("No incoming pairs for table=%s", table)
+        return 0
+
+    snapshot_times = table_snapshots(client, settings, table)
+    for listed in csv_objects:
+        dfm_key = listed["Key"].removesuffix(".csv.gz") + ".dfm"
+        move_pair(client, settings, listed, objects[dfm_key], snapshot_times)
+
+    LOGGER.info("Scanned table=%s archived_pairs=%s", table, len(csv_objects))
+    return len(csv_objects)
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, int]:
-    """Process all records; log failures requiring reconciliation and fail the invocation."""
+    """Scan notified tables once each, or all configured tables for an explicit sweep."""
     if event.get("Event") == "s3:TestEvent":
         LOGGER.info("Received S3 notification configuration test")
         return {"test_event": 1}
 
     settings = Settings.from_environment()
-    records = event.get("Records")
-    if not isinstance(records, list) or not records:
-        raise ValueError("Expected a nonempty Records list")
+    # A scheduler can use this same explicit payload; no synthetic S3 events are needed.
+    if event == {"scan": True}:
+        tables = set(TABLE_PREFIXES)
+    else:
+        records = event.get("Records")
+        if not isinstance(records, list) or not records:
+            raise ValueError('Expected a nonempty Records list or {"scan": true}')
+        tables = set() 
+        for record in records:
+            table = notification_table(settings, record)
+            if table is not None and table not in tables:
+                tables.add(table)
 
-    outcomes: dict[str, int] = {}
+    archived_pairs = 0
     failures = []
 
-    for record in records:
+    for table in tables:
         try:
-            outcome = process_record(s3_client(), settings, record)
-            outcomes[outcome] = outcomes.get(outcome, 0) + 1
-            LOGGER.info("Cubic mover outcome=%s", outcome)
+            archived_pairs += scan_table(s3_client(), settings, table)
         except (BotoCoreError, ClientError, KeyError, TypeError, ValueError, RuntimeError) as error:
-            LOGGER.exception("Cubic move failed; manual reconciliation required: %s", record)
+            LOGGER.exception("Table scan failed; manual reconciliation required: %s", table)
             failures.append(error)
 
     if failures:
         raise ExceptionGroup("Cubic moves failed; manual reconciliation required", failures)
 
-    return outcomes
+    return {"tables_scanned": len(tables), "archived": archived_pairs}
