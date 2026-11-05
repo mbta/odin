@@ -87,13 +87,13 @@ class Configuration:
     @classmethod
     def from_environment(cls) -> "Configuration":
         """Read configuration without silently accepting missing bucket names."""
-        incoming_bucket = os.environ["S3_BUCKET_INCOMING"]
-        archive_bucket = os.environ["S3_BUCKET_ARCHIVE"]
+        incoming_bucket = os.environ.get("S3_BUCKET_INCOMING", "mbta-ctd-dataplatform-dev-incoming")
+        archive_bucket = os.environ.get("S3_BUCKET_ARCHIVE", "mbta-ctd-dataplatform-dev-archive")
         if not incoming_bucket or not archive_bucket:
             raise ValueError("S3_BUCKET_INCOMING and S3_BUCKET_ARCHIVE must be nonempty")
 
-        incoming_prefix = os.getenv("S3_BUCKET_PREFIX_INCOMING", "")
-        archive_prefix = os.getenv("S3_BUCKET_PREFIX_ARCHIVE", "")
+        incoming_prefix = os.environ.get("S3_BUCKET_PREFIX_INCOMING", "cubic/ods_qlik/")
+        archive_prefix = os.environ.get("S3_BUCKET_PREFIX_ARCHIVE", "mover_test/incoming/")
         for name, prefix in (
             ("S3_BUCKET_PREFIX_INCOMING", incoming_prefix),
             ("S3_BUCKET_PREFIX_ARCHIVE", archive_prefix),
