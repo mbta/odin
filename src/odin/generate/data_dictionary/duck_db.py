@@ -112,7 +112,6 @@ def create_fares_db(folder: str) -> str:
             "CREATE OR REPLACE SECRET secret (TYPE s3, PROVIDER credential_chain, REFRESH auto);"
         )
 
-        con.execute("SET memory_limit='30GB'")
         con.execute(f"SET temp_directory = '{spill_path}'")
         con.execute("PRAGMA disable_progress_bar;")
         con.execute("PRAGMA disable_print_progress_bar;")
