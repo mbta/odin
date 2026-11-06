@@ -22,6 +22,12 @@ jobs:
     steps:
       - name: Checkout Branch
         uses: actions/checkout@v3
+      - uses: ./.github/actions/python_deps
+      - name: Verify Lambda
+        run: |
+          python -m pytest tests/scripts/cubic_mover_lambda_test.py
+          ruff check scripts/cubic_mover_lambda.py tests/scripts/cubic_mover_lambda_test.py
+          mypy scripts/cubic_mover_lambda.py tests/scripts/cubic_mover_lambda_test.py
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
