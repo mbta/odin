@@ -18,7 +18,6 @@ from odin.utils.locations import AFC_RESTRICTED
 from odin.utils.locations import CUBIC_ODS_REPORTS
 from odin.utils.locations import MASABI_DATA
 from odin.utils.locations import MASABI_RESTRICTED
-from odin.utils.aws.ecs import SENTRY_DSN
 from odin.utils.parquet import ds_from_path
 
 
