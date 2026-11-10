@@ -25,7 +25,7 @@ from odin.ingestion.afc.afc_archive import schedule_afc_archive
 from odin.ingestion.afc.afc_restricted import schedule_restricted_afc_archive
 from odin.ingestion.masabi.masabi_archive import schedule_masabi_archive
 from odin.generate.data_dictionary.dictionary import schedule_dictionary
-# from odin.ingestion.tableau.tableau_upload import schedule_tableau_upload
+from odin.ingestion.fiserv.fiserv_archive import schedule_fiserv_archive
 
 
 def start():
@@ -88,6 +88,7 @@ def start():
     if odin_instance in ["alpha"]:
         schedule_dictionary(schedule)
         schedule_restricted_afc_archive(schedule)
+        schedule_fiserv_archive(schedule)
 
     if odin_instance in ["alpha", "beta", "gamma", "delta"]:
         schedule_cubic_archive_qlik(schedule)
