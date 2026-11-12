@@ -4,6 +4,7 @@ from importlib.resources import files
 from string import Template
 
 import duckdb
+import sentry_sdk
 
 from odin.utils.logger import ProcessLog
 from odin.utils.aws.s3 import list_partitions
@@ -136,6 +137,7 @@ def create_fares_db(folder: str) -> str:
                     )
                     con.execute(view_query)
                 except Exception as exception:
+                    sentry_sdk.capture_exception(exception)
                     view_log.failed(exception=exception)
 
         con.execute("SET preserve_insertion_order=false")
@@ -163,6 +165,7 @@ def create_fares_db(folder: str) -> str:
 
                 view_log.complete()
             except Exception as exception:
+                sentry_sdk.capture_exception(exception)
                 view_log.failed(exception=exception)
         con.execute("SET threads='4'")
         for view_file in files("odin.generate.data_dictionary.sql.views").iterdir():
@@ -177,6 +180,7 @@ def create_fares_db(folder: str) -> str:
                 view_query = view_file.read_text()
                 con.execute(view_query)
             except Exception as exception:
+                sentry_sdk.capture_exception(exception)
                 view_log.failed(exception=exception)
 
     return write_path
