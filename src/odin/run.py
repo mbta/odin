@@ -66,6 +66,10 @@ def start():
             "MASABI_DATA_API_USERNAME",
             "MASABI_DATA_API_PASSWORD",
             "SENTRY_DSN",
+            "FISERV_SFTP_PASSWORD",
+            "FISERV_SFTP_USERNAME",
+            "FISERV_SFTP_URL",
+            "FISERV_SFTP_PORT",
         ],
         aws=[
             "ECS_CLUSTER",
