@@ -8,12 +8,9 @@ from odin.utils.logger import ProcessLog
 def migration() -> None:
     """Delete empty parquet file for EC_STAGE.METRIC_HISTORY"""
     parquet_path = os.path.join(
-        DATA_SPRINGBOARD,
-        CUBIC_ODS_FACT_DATA,
-        "EC_STAGE.METRIC_HISTORY",
-        "year_013.parquet"
+        DATA_SPRINGBOARD, CUBIC_ODS_FACT_DATA, "EC_STAGE.METRIC_HISTORY", "year_013.parquet"
     )
-    log = ProcessLog("odin_migration", migration="alpha_0009", parquet_path=parquet_path)
+    log = ProcessLog("odin_migration", migration="alpha_0010", parquet_path=parquet_path)
 
     if not object_exists(parquet_path):
         log.complete(object_found=False)
