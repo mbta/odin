@@ -16,7 +16,7 @@ TABLE_MANIFEST: Dict[str, List[str | None]] = {
     "CCH_STAGE.CATEGORY": ["alpha", "alpha", None],
     "CCH_STAGE.REPROCESS_ACTION": ["alpha", "alpha", None],
     "CCH_STAGE.TRANSACTION_TYPE": ["alpha", "alpha", None],
-    "EC_STAGE.METRIC_HISTORY": ["alpha", "alpha", None],
+    "EC_STAGE.METRIC_HISTORY": ["gamma", None, "gamma"],
     "EDW.ABP_REPROCESS_LOG": ["alpha", "alpha", None],
     "EDW.ABP_TAP": ["alpha", "alpha", None],
     "EDW.ABP_TAP_STATUS_DIMENSION": ["alpha", "alpha", None],
