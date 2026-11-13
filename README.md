@@ -82,3 +82,9 @@ Running `start-odin` from the CLI will start the application.
 ## Job Configuration
 
 When running in aws, these jobs are set to run based on their specific instance of Odin ("alpha", "beta", "gamma", or "delta"), as are specific tables. Set the environment variable `ODIN_INSTANCE` to one of these to run the jobs and tables associated with that instance (see src/odin/run.py for details).
+
+## Cubic mover Lambda
+
+The standalone incoming-to-archive mover is documented in
+[Cubic mover Lambda](docs/cubic_mover_lambda.md), including its snapshot layout,
+configuration, retry behavior, and required infrastructure/cutover checks.
