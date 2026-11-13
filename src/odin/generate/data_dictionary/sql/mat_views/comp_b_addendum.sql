@@ -17,17 +17,17 @@ SELECT
     as extension_charge_reason
     ,ut.retrieval_ref_nbr
 FROM
-    cubic_delta.edw_use_transaction ut
+    cubic_ods.edw_use_transaction ut
 JOIN cubic_ods.edw_patron_trip tr
     ON tr.patron_trip_id = ut.patron_trip_id AND tr.source = ut.source
-JOIN cubic_delta.edw_trip_payment tp
+JOIN cubic_ods.edw_trip_payment tp
     ON
         tp.patron_trip_id = ut.patron_trip_id
         AND tp.source = ut.source
         AND tp.trip_price_count = ut.trip_price_count
 JOIN cubic_ods.edw_card_dimension cd
     ON cd.card_key = ut.card_key
-LEFT JOIN cubic_delta.edw_sale_transaction s
+LEFT JOIN cubic_ods.edw_sale_transaction s
     ON s.purse_load_id = tp.purse_load_id
 WHERE
     s.sale_type_key = 26
