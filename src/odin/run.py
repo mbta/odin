@@ -90,6 +90,8 @@ def start():
     if odin_instance in ["alpha"]:
         schedule_dictionary(schedule)
         schedule_restricted_afc_archive(schedule)
+
+    if odin_instance in ["delta"]:
         schedule_fiserv_archive(schedule)
 
     if odin_instance in ["alpha", "beta", "gamma", "delta"]:
