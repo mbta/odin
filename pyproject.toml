@@ -27,6 +27,7 @@ dependencies = [
 optional-dependencies.dev = [
     "ipykernel",
     "mypy",
+    "types-paramiko",
     "pyarrow-stubs",
     "pytest",
     "ruff",

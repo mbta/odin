@@ -275,7 +275,9 @@ cryptography==45.0.7 \
     --hash=sha256:f3df7b3d0f91b88b2106031fd995802a2e9ae13e02c36c1fc075b43f420f3a17 \
     --hash=sha256:f5414a788ecc6ee6bc58560e85ca624258a55ca434884445440a810796ea0e0b \
     --hash=sha256:fa26fa54c0a9384c27fcdc905a2fb7d60ac6e47d14bc2692145f2b3b1e2cfdbd
-    # via paramiko
+    # via
+    #   paramiko
+    #   types-paramiko
 debugpy==1.8.17 \
     --hash=sha256:045290c010bcd2d82bc97aa2daf6837443cd52f6328592698809b4549babcee1 \
     --hash=sha256:1440fd514e1b815edd5861ca394786f90eb24960eb26d6f7200994333b1d79e3 \
@@ -846,6 +848,10 @@ traitlets==5.14.3 \
     #   jupyter-client
     #   jupyter-core
     #   matplotlib-inline
+types-paramiko==5.0.0.20261021 \
+    --hash=sha256:17c54761b448caa60cf31cdbb06944e24b841f218b2f301967c140c637ec21b2 \
+    --hash=sha256:b3e72859ebc6983b668a5aa4e986f1e748454c4dc0c427b671bb93898be1289f
+    # via odin (pyproject.toml)
 types-psutil==7.0.0.20251001 \
     --hash=sha256:60d696200ddae28677e7d88cdebd6e960294e85adefbaafe0f6e5d0e7b4c1963 \
     --hash=sha256:adc31de8386d31c61bd4123112fd51e2c700c7502a001cad72a3d56ba6b463d1
