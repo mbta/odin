@@ -33,7 +33,7 @@ class FiservArchive(OdinJob):
 
         client.connect(
             hostname=environ.get("FISERV_SFTP_URL", "unset"),
-            port=int(environ.get("FISERV_SFTP_PORT", "unset")),
+            port=int(environ.get("FISERV_SFTP_PORT", 0)),
             username=environ.get("FISERV_SFTP_USERNAME", "unset"),
             password=environ.get("FISERV_SFTP_PASSWORD", "unset"),
             look_for_keys=False,
