@@ -159,25 +159,29 @@ class DataDictionary(OdinJob):
             ]
         }
         """
-        # Create and upload Data Dictionary json file.
-        column_descriptions = fetch_AFC_column_descriptions()
-        data_dictionary = [
-            d
-            for d in generate_dictionary(
-                ODIN_ROOT,
-                column_descriptions_by_table=column_descriptions,
-            )
-        ]
-
-        json_tmp = os.path.join(self.tmpdir, "temp.json")
-        with open(json_tmp, "w") as json_writer:
-            json.dump(data_dictionary, json_writer)
-
         dd_obj_name = "data_dictionary.json"
         if AWS_ENV.lower() != "prod":
             dd_obj_name = f"data_dictionary_{AWS_ENV}.json"
         upload_path = os.path.join(DATA_SPRINGBOARD, ODIN_DICTIONARY, dd_obj_name)
-        upload_file(json_tmp, upload_path)
+
+        try:
+            # Create and upload Data Dictionary json file.
+            column_descriptions = fetch_AFC_column_descriptions()
+            data_dictionary = [
+                d
+                for d in generate_dictionary(
+                    ODIN_ROOT,
+                    column_descriptions_by_table=column_descriptions,
+                )
+            ]
+
+            json_tmp = os.path.join(self.tmpdir, "temp.json")
+            with open(json_tmp, "w") as json_writer:
+                json.dump(data_dictionary, json_writer)
+
+            upload_file(json_tmp, upload_path)
+        except Exception as exception:
+            ProcessLog("data_dictionary_job").failed(exception=exception)
 
         # Create and upload DuckDB access file.
         db_file = create_fares_db(self.tmpdir)
