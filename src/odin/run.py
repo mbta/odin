@@ -25,7 +25,7 @@ from odin.ingestion.afc.afc_archive import schedule_afc_archive
 from odin.ingestion.afc.afc_restricted import schedule_restricted_afc_archive
 from odin.ingestion.masabi.masabi_archive import schedule_masabi_archive
 from odin.generate.data_dictionary.dictionary import schedule_dictionary
-# from odin.ingestion.tableau.tableau_upload import schedule_tableau_upload
+from odin.ingestion.fiserv.fiserv_archive import schedule_fiserv_archive
 
 
 def start():
@@ -60,12 +60,14 @@ def start():
             "AFC_ROOT",
             "AFC_API_CLIENT_ID",
             "AFC_API_CLIENT_SECRET",
-            "TABLEAU_PERSONAL_ACCESS_TOKEN_NAME",
-            "TABLEAU_PERSONAL_ACCESS_TOKEN_SECRET",
             "MASABI_DATA_SCHEMA_URL",
             "MASABI_DATA_API_USERNAME",
             "MASABI_DATA_API_PASSWORD",
             "SENTRY_DSN",
+            "FISERV_SFTP_PASSWORD",
+            "FISERV_SFTP_USERNAME",
+            "FISERV_SFTP_URL",
+            "FISERV_SFTP_PORT",
         ],
         aws=[
             "ECS_CLUSTER",
@@ -88,6 +90,9 @@ def start():
     if odin_instance in ["alpha"]:
         schedule_dictionary(schedule)
         schedule_restricted_afc_archive(schedule)
+
+    if odin_instance in ["delta"]:
+        schedule_fiserv_archive(schedule)
 
     if odin_instance in ["alpha", "beta", "gamma", "delta"]:
         schedule_cubic_archive_qlik(schedule)
