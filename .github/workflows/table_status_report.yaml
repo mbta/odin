@@ -1,6 +1,8 @@
 name: Table Status Report
 
-# Posts the Odin per-table freshness summary to Slack once a day.
+# Posts two Odin per-table freshness reports to Slack once a day:
+# 1) the full engineering report to one channel (to #tid-fares-tech-data-platform)
+# 2) a stakeholder report with just time-based rules (to #tt-fares-data-stakeholders)
 #
 # The report is never written to this job's log: `get_table_status.py --slack` captures
 # its own stdout and POSTs it to the webhook. mbta/odin is a public repository, so job
@@ -22,7 +24,7 @@ on:
         type: string
         default: "86400"
       lag_seconds:
-        description: Backlog over this many seconds counts as behind (14400 = 4h)
+        description: Backlog over this many seconds counts as BEHIND_SOURCE (14400 = 4h)
         type: string
         default: "14400"
 
@@ -57,9 +59,10 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: Post Status Report to Slack
+      - name: Post Status Reports to Slack
         env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_FULL_REPORT_WEBHOOK: ${{ secrets.SLACK_FULL_REPORT_WEBHOOK }}
+          SLACK_STAKEHOLDER_WEBHOOK: ${{ secrets.SLACK_STAKEHOLDER_WEBHOOK }}
           DATA_SPRINGBOARD: mbta-ctd-dataplatform-springboard
           PYTHONPATH: src
           ODIN_INSTANCE: alpha
@@ -67,5 +70,5 @@ jobs:
           python scripts/get_table_status.py \
             --slack \
             --stale-seconds "${{ inputs.stale_seconds || '86400' }}" \
-            --lag-seconds "${{ inputs.lag_seconds || '14400' }}" \
+            --source-lag-seconds "${{ inputs.lag_seconds || '14400' }}" \
             ${{ inputs.detailed && '--detailed' || '' }}
