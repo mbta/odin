@@ -74,6 +74,7 @@ MINUTE = 60
 HOUR = MINUTE * 60
 DAY = HOUR * 24
 
+
 class Group(NamedTuple):
     prefix: str  # location of logs in bucket
     module: str  # location of table lists in code
@@ -139,18 +140,12 @@ TIME_RANGES: dict[str, TimeRange] = {
     "AFC:v_sales_txns": TimeRange(
         "transactiontimestamp", max_behind_seconds=4 * HOUR, max_ahead_seconds=0
     ),
-    "AFC:v_products": TimeRange(
-        "txn_timestamp", max_behind_seconds=4 * HOUR, max_ahead_seconds=0
-    ),
+    "AFC:v_products": TimeRange("txn_timestamp", max_behind_seconds=4 * HOUR, max_ahead_seconds=0),
     "AFC:v_svw_balance_changes": TimeRange(
         "timestamp", max_behind_seconds=4 * HOUR, max_ahead_seconds=0
     ),
-    "AFC:v_eventhistory": TimeRange(
-        "eventtime", max_behind_seconds=4 * HOUR, max_ahead_seconds=0
-    ),
-    "AFC:v_mainshift": TimeRange(
-        "startcreadate", max_behind_seconds=4 * HOUR, max_ahead_seconds=0
-    ),
+    "AFC:v_eventhistory": TimeRange("eventtime", max_behind_seconds=4 * HOUR, max_ahead_seconds=0),
+    "AFC:v_mainshift": TimeRange("startcreadate", max_behind_seconds=4 * HOUR, max_ahead_seconds=0),
     "AFC:v_trips": TimeRange(
         "transactiontimestamp", max_behind_seconds=4 * HOUR, max_ahead_seconds=0
     ),
