@@ -1,4 +1,5 @@
 import os
+import time
 from dataclasses import dataclass
 from importlib.resources import files
 from string import Template
@@ -15,9 +16,16 @@ from odin.utils.locations import CUBIC_ODS_DELTA_DATA
 from odin.utils.locations import AFC_DATA
 from odin.utils.locations import AFC_RESTRICTED
 from odin.utils.locations import CUBIC_ODS_REPORTS
+from odin.utils.locations import MATERIALIZED_VIEW_STATUS
 from odin.utils.locations import MASABI_DATA
 from odin.utils.locations import MASABI_RESTRICTED
 from odin.utils.parquet import ds_from_path
+from odin.utils.parquet import ds_metadata_min_max
+from odin.utils.status import StatusValues
+from odin.utils.status import iso_column_maxes
+from odin.utils.status import publish_status
+from odin.utils.status import timestamp_columns
+from odin.utils.status import utc_now
 
 
 DB_FILE = "fares_data_repository.db"
@@ -96,6 +104,35 @@ dataset_views = [
 ]
 
 
+def publish_mat_view_status(
+    view_name: str,
+    parquet_path: str,
+    run_duration_secs: float,
+    tmpdir: str,
+) -> None:
+    """Publish status of materialized view to `MATERIALIZED_VIEW_STATUS`/`view_name`.json"""
+    log = ProcessLog("mat_view_status", view_name=view_name)
+    try:
+        ds = ds_from_path(parquet_path)
+        status: dict[str, StatusValues] = {
+            "view": view_name,
+            "last_run": utc_now().isoformat(),
+            "row_count": ds.count_rows(),
+            "max_column_timestamps": iso_column_maxes(
+                {
+                    column: ds_metadata_min_max(ds, column)[1]
+                    for column in timestamp_columns(ds.schema)
+                }
+            ),
+            "run_duration_seconds": round(run_duration_secs, 2),
+        }
+        log.complete()
+    except Exception as exception:
+        log.failed(exception)
+        return
+    publish_status(MATERIALIZED_VIEW_STATUS, view_name, tmpdir, status)
+
+
 def create_fares_db(folder: str) -> str:
     """
     Create fares data DUCK DB file.
@@ -165,14 +202,17 @@ def create_fares_db(folder: str) -> str:
 
                 mat_view_path = os.path.join(folder, "table.parquet")
                 mat_view_query = f"COPY ({view_query}) TO '{mat_view_path}' (FORMAT parquet);"
+                started = time.perf_counter()
                 con.execute(mat_view_query)
                 upload_path = os.path.join(
                     DATA_SPRINGBOARD, CUBIC_ODS_REPORTS, view_name, "table.parquet"
                 )
                 upload_file(mat_view_path, upload_path)
+                run_duration_secs = time.perf_counter() - started
                 view_query = f"CREATE VIEW cubic_reports.{view_name} AS SELECT * FROM read_parquet('s3://{upload_path}')"
                 con.execute(view_query)
 
+                publish_mat_view_status(view_name, mat_view_path, run_duration_secs, folder)
                 os.remove(mat_view_path)
 
                 view_log.complete()

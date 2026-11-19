@@ -24,6 +24,7 @@ CUBIC_QLIK_IGNORED = f"{ODIN_ARCHIVE}/cubic_qlik/ignored"
 # CUBIC ODS FACT
 CUBIC_ODS_FACT_DATA = f"{ODIN_DATA}/cubic/ods"
 CUBIC_ODS_REPORTS = f"{ODIN_DATA}/cubic/reports"
+MATERIALIZED_VIEW_STATUS = f"{ODIN_LOGS}/mat_views"
 
 # Per-table fact status JSON, published for anyone with read access to the bucket
 CUBIC_ODS_FACT_STATUS = f"{ODIN_LOGS}/ods"
