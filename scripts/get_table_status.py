@@ -6,12 +6,13 @@ Each job writes one small JSON object per table under odin/logs/<group>/<table>.
 every time it runs (see odin/utils/status.py). This script reads those objects so a
 user with S3 access can answer "is this table keeping up?" without scraping logs.
 
-Four groups, one per publishing job:
+Five groups, one per publishing job:
 
   * ODS        Cubic ODS fact tables  (odin/logs/ods/)
   * delta_ODS  Cubic ODS Delta tables (odin/logs/ods_delta/)
   * AFC        S&B AFC API ingestion  (odin/logs/afc/)
   * masabi     Masabi API ingestion   (odin/logs/masabi/)
+  * mat_view   Materialized cubic_reports views (odin/logs/cubic_reports/)
 
 Each table gets three independent checks, and a table can fail any number of them at
 once. A table that fails none is OK.
@@ -19,7 +20,8 @@ once. A table that fails none is OK.
   * STALE: no object, or no run within --stale-seconds (default 24h). Jobs are
     serialized rather than run in parallel, so one flat threshold is more meaningful than
     each job's own cadence. A stale object means the job is not finishing -- which is
-    itself the signal worth having.
+    itself the signal worth having. A group whose job runs on a fixed slower cadence
+    (mat_view, rebuilt once a day) carries its own threshold instead.
   * BEHIND_SOURCE: more recent data was available but not ingested when the job was
     last run, the job's own keep-up signal says so (cdc_records_pending /
     merge_budget_full / caught_up false / jobs_lag > 0), or the backlog
@@ -64,6 +66,7 @@ from odin.utils.aws.s3 import list_objects
 from odin.utils.locations import AFC_STATUS
 from odin.utils.locations import CUBIC_ODS_DELTA_STATUS
 from odin.utils.locations import CUBIC_ODS_FACT_STATUS
+from odin.utils.locations import MATERIALIZED_VIEW_STATUS
 from odin.utils.locations import DATA_SPRINGBOARD
 from odin.utils.locations import MASABI_STATUS
 from odin.utils.logger import LOGGER_NAME
@@ -80,6 +83,7 @@ class Group(NamedTuple):
     module: str  # location of table lists in code
     attr: str  # name of table list
     manifest_index: Optional[str] = None  # used for delta_ODS; see expected_tables()
+    stale_seconds: Optional[float] = None  # stale threshold for group
 
 
 GROUPS: dict[str, Group] = {
@@ -95,6 +99,12 @@ GROUPS: dict[str, Group] = {
     ),
     "AFC": Group(AFC_STATUS, "odin.ingestion.afc.afc_tables", "API_TABLES_INSTANCE"),
     "masabi": Group(MASABI_STATUS, "odin.ingestion.masabi.masabi_tables", "TABLES_INSTANCE"),
+    "mat_view": Group(
+        MATERIALIZED_VIEW_STATUS,
+        "odin.generate.data_dictionary.sql.mat_views",
+        "MAT_VIEWS",
+        stale_seconds=30 * HOUR,
+    ),
 }
 
 OK, STALE, BEHIND_SOURCE, DATA_OUT_OF_TIME_RANGE = (
@@ -151,6 +161,19 @@ TIME_RANGES: dict[str, TimeRange] = {
     ),
     "masabi:retail.activations": TimeRange(
         "purchaseTimestamp", max_behind_seconds=4 * HOUR, max_ahead_seconds=0
+    ),
+    # Adding a day; operating_date is only YYYY-MM-DD, so can appear <24 hours behind
+    "mat_view:materialized_use_txns_wa160": TimeRange(
+        "operating_date", max_behind_seconds=3 * DAY, max_ahead_seconds=0
+    ),
+    "mat_view:comp_a_farerev_prod_sales_txn_c": TimeRange(
+        "transaction_dtm", max_behind_seconds=2 * DAY, max_ahead_seconds=0
+    ),
+    "mat_view:edw_farerev_payg_trip_txn": TimeRange(
+        "transaction_dtm", max_behind_seconds=2 * DAY, max_ahead_seconds=0
+    ),
+    "mat_view:wc231_clearing_house": TimeRange(
+        "transaction_dtm", max_behind_seconds=2 * DAY, max_ahead_seconds=0
     ),
 }
 
@@ -550,6 +573,17 @@ def check_time_range(group: str, table: str, payload: dict, now: datetime) -> Op
     return None
 
 
+def stale_threshold(group: str, table: str, default: float) -> tuple[float, Optional[str]]:
+    """Return stale threshold in seconds and basis (per-group vs per-table) for table"""
+    table_seconds = STALE_SECONDS_OVERRIDES.get(member_key(group, table))
+    if table_seconds is not None:
+        return table_seconds, "per-table"
+    group_seconds = GROUPS[group].stale_seconds
+    if group_seconds is not None:
+        return group_seconds, "per-group"
+    return default, None
+
+
 def check_table(
     group: str,
     table: str,
@@ -565,9 +599,8 @@ def check_table(
     replace the defaults, if available.
     """
     key = member_key(group, table)
-    stale_override = STALE_SECONDS_OVERRIDES.get(key)
-    stale_seconds = default_stale_seconds if stale_override is None else stale_override
-    stale_note = "" if stale_override is None else f", threshold {_fmt_duration(stale_override)}"
+    stale_seconds, stale_source = stale_threshold(group, table, default_stale_seconds)
+    stale_note = "" if stale_source is None else f", threshold {_fmt_duration(stale_seconds)}"
     lag_seconds = SOURCE_LAG_SECONDS_OVERRIDES.get(key, default_source_lag_seconds)
 
     stale = check_stale(payload, now, stale_seconds, stale_note)
@@ -626,7 +659,7 @@ def print_table_detail(
     """Print the full single-table summary."""
     key = member_key(group, table)
     lag_override_seconds = SOURCE_LAG_SECONDS_OVERRIDES.get(key)
-    stale_override_seconds = STALE_SECONDS_OVERRIDES.get(key)
+    stale_seconds, stale_source = stale_threshold(group, table, DEFAULT_STALE_SECONDS)
     time_range = TIME_RANGES.get(key)
     print(f"{table}  ({group})")
     if findings:
@@ -638,9 +671,9 @@ def print_table_detail(
     if lag_override_seconds is not None:
         bar = _fmt_duration(lag_override_seconds)
         print(f"  threshold: backlog over {bar} counts as behind source (per-table)")
-    if stale_override_seconds is not None:
-        bar = _fmt_duration(stale_override_seconds)
-        print(f"  threshold: no run in {bar} counts as stale (per-table)")
+    if stale_source is not None:
+        bar = _fmt_duration(stale_seconds)
+        print(f"  threshold: no run in {bar} counts as stale ({stale_source})")
     if time_range is not None:
         behind = _fmt_duration(time_range.max_behind_seconds)
         ahead = _fmt_duration(time_range.max_ahead_seconds)
@@ -666,6 +699,8 @@ def print_table_detail(
         print(f"  next run in:  {_fmt_duration(payload.get('next_run_seconds'))}")
     if "row_count" in payload:
         print(f"  rows:         {_fmt_count(payload.get('row_count'))}")
+    if isinstance(payload.get("run_duration_seconds"), (int, float)):
+        print(f"  run took:     {_fmt_duration(payload['run_duration_seconds'])}")
 
     # Two lags, kept distinct: clock lag is data age (theirs), seq lag is backlog (ours).
     if isinstance(payload.get("clock_lag_seconds"), (int, float)):
