@@ -11,7 +11,7 @@ from typing import Union
 from typing import Optional
 
 import psutil
-
+import sentry_sdk
 
 def free_disk_bytes() -> int:
     """Bytes of free disk space in root partition."""
@@ -165,6 +165,8 @@ class ProcessLog:
 
         # Log Process Failure
         LOGGER.info(self._get_log_string())
+
+        sentry_sdk.capture_exception(exception)
 
 
 def log_max_mem_usage(stop_log_event: threading.Event) -> None:
